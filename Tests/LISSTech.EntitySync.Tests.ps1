@@ -34,15 +34,16 @@ Describe 'LISSTech.EntitySync' {
     $help.Name | Should -Be 'about_LISSTech.EntitySync'
   }
 
-  It 'Exposes Type alias and validated entity types for Get-EntitySyncEntity' {
-    $command = Get-Command Get-EntitySyncEntity
-    $parameter = $command.Parameters['EntityType']
-    $parameter.Aliases | Should -Contain 'Type'
-    $validValues = $parameter.Attributes |
-      Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } |
-      Select-Object -ExpandProperty ValidValues
-    $validValues | Should -Contain 'Customer'
-    $validValues | Should -Contain 'Client'
+  It 'Completes only vendor-specific entity types for Get-EntitySyncEntity' {
+    $haloInput = 'Get-EntitySyncEntity -Vendor HaloPSA -Type '
+    $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
+    $haloTypes | Should -Contain 'Client'
+    $haloTypes | Should -Not -Contain 'Customer'
+
+    $netSuiteInput = 'Get-EntitySyncEntity -Vendor NetSuite -Type '
+    $netSuiteTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($netSuiteInput, $netSuiteInput.Length, $null).CompletionMatches.CompletionText
+    $netSuiteTypes | Should -Contain 'Customer'
+    $netSuiteTypes | Should -Not -Contain 'Client'
   }
 
   It 'Completes only vendor-specific Connect-EntitySyncVendor parameters' {
