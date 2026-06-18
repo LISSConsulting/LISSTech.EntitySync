@@ -145,7 +145,7 @@ graph LR
 | Signal | Why it matters |
 |---|---|
 | Existing external ID | Strongest signal. If a target is already linked, do not rematch by vibes. |
-| Normalized name | Handles punctuation, casing, leading `The`, and a curated legal suffix database across US/international entity forms. |
+| Normalized name | Handles punctuation, casing, leading `The`, and legal suffix terms derived from [`cleanco`](https://github.com/psolin/cleanco)'s organization type database. |
 | Address details | Helps separate same-name entities and messy subsidiaries. |
 | Score thresholds | `-AutoLinkScore` defaults to `90`; `-ReviewScore` defaults to `70`. |
 | Reasons | Plan items explain which evidence pushed the score up or down. |
