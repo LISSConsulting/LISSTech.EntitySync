@@ -13,6 +13,8 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet
     public string Vendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true, Position = 1)]
+    [Alias("Type")]
+    [ValidateSet("Customer", "Client")]
     public string EntityType { get; set; } = string.Empty;
 
     [Parameter]

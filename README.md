@@ -105,7 +105,7 @@ graph LR
 | `Connect-EntitySyncVendor` | Configure and register a NetSuite or HaloPSA adapter. |
 | `Get-EntitySyncConnection` | Inspect registered vendor connections. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
-| `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor. |
+| `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor; `-Type` autocompletes supported entity types. |
 | `New-EntitySyncPlan` | Compare source entities to target entities and emit a plan. |
 | `Export-EntitySyncPlan` | Persist a plan to JSON. |
 | `Import-EntitySyncPlan` | Reload a previously reviewed plan. |

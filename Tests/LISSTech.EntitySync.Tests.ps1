@@ -34,6 +34,17 @@ Describe 'LISSTech.EntitySync' {
     $help.Name | Should -Be 'about_LISSTech.EntitySync'
   }
 
+  It 'Exposes Type alias and validated entity types for Get-EntitySyncEntity' {
+    $command = Get-Command Get-EntitySyncEntity
+    $parameter = $command.Parameters['EntityType']
+    $parameter.Aliases | Should -Contain 'Type'
+    $validValues = $parameter.Attributes |
+      Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] } |
+      Select-Object -ExpandProperty ValidValues
+    $validValues | Should -Contain 'Customer'
+    $validValues | Should -Contain 'Client'
+  }
+
   It 'Normalizes legal suffixes from entity names' -ForEach @(
     @{ Name = 'Acme, Inc.'; Expected = 'acme' }
     @{ Name = 'The Acme Corporation'; Expected = 'acme' }
