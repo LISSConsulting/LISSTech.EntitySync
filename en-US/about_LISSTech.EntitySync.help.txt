@@ -1,0 +1,24 @@
+TOPIC
+    about_LISSTech.EntitySync
+
+SHORT DESCRIPTION
+    Safe vendor entity synchronization for PowerShell 7.
+
+LONG DESCRIPTION
+    LISSTech.EntitySync provides a vendor-neutral synchronization engine with
+    ports and adapters for external systems. The first adapters support
+    NetSuite customers and HaloPSA clients.
+
+    The module separates discovery, matching, planning, review, and apply.
+    Plans are deterministic and can be exported, reviewed, imported, and
+    replayed. Write operations require Invoke-EntitySyncPlan -Apply and also
+    support PowerShell -WhatIf and -Confirm.
+
+CONFIGURATION
+    Configure vendors with Connect-EntitySyncVendor. Values may be passed as
+    parameters or supplied from environment variables.
+
+SEE ALSO
+    Connect-EntitySyncVendor
+    New-EntitySyncPlan
+    Invoke-EntitySyncPlan

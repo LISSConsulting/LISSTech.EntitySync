@@ -1,0 +1,49 @@
+# Build output
+bin/
+obj/
+src/bin/
+src/obj/
+Release/
+dist/
+artifacts/
+
+# Module build artifacts. Keep the manifest in source control.
+Module/*.dll
+Module/*.pdb
+Module/*.deps.json
+Module/*.xml
+Module/*.nupkg
+Module/en-US/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.secret.ps1
+*.secrets.ps1
+*.key
+*.pem
+*.pfx
+
+# PowerShell noise
+*.ps1xml.tmp
+Transcript*.txt
+
+# .NET / test noise
+TestResults/
+coverage/
+coverage.*
+*.trx
+*.coverage
+*.coveragexml
+
+# Editor / OS noise
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+Thumbs.db
+Desktop.ini
+.DS_Store

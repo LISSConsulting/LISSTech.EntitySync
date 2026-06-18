@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>LISSTech.EntitySync</AssemblyName>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <OutputPath>../Module</OutputPath>
+    <TargetFramework>net8.0</TargetFramework>
+    <TargetName>LISSTech.EntitySync</TargetName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management.Automation" Version="7.4.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\en-US\*" CopyToOutputDirectory="PreserveNewest" Link="en-US\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
