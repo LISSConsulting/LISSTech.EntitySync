@@ -31,7 +31,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var requestedTotal = query.Count;
         var pageSize = Math.Min(requestedTotal.GetValueOrDefault(DefaultPageSize), DefaultPageSize);
         var pageNumber = 1;
-        int? recordCount = null;
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         while (!requestedTotal.HasValue || entities.Count < requestedTotal.Value)
         {
@@ -41,19 +41,21 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
-            recordCount ??= root.GetInt("record_count", "recordcount", "total_count", "totalcount");
             var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
             if (clients.ValueKind != JsonValueKind.Array || clients.GetArrayLength() == 0) break;
 
+            var addedFromPage = 0;
             foreach (var item in clients.EnumerateArray())
             {
                 var entity = MapClient(item);
-                if (query.FullObjects && !string.IsNullOrWhiteSpace(entity.Id)) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(entity.Id) && !seenIds.Add(entity.Id)) continue;
+                if (!string.IsNullOrWhiteSpace(entity.Id) && (query.FullObjects || IsAddressEmpty(entity.BillingAddress))) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
                 entities.Add(entity);
+                addedFromPage++;
                 if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) break;
             }
 
-            if (recordCount.HasValue && entities.Count >= recordCount.Value) break;
+            if (addedFromPage == 0) break;
             if (clients.GetArrayLength() < pageSize) break;
             pageNumber++;
         }
@@ -157,6 +159,11 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         };
     }
 
+    private static bool IsAddressEmpty(EntityAddress? address)
+    {
+        return address == null || string.IsNullOrWhiteSpace(address.Compact());
+    }
+
     private static string? ReadAddressString(JsonElement item, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
@@ -172,12 +179,23 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private static string? ReadNestedString(JsonElement item, string propertyName)
     {
-        foreach (var objectName in new[] { "invoice_address", "invoiceaddress", "invoiceAddress", "address" })
+        foreach (var objectName in new[] { "invoice_address", "invoiceaddress", "invoiceAddress", "address", "addresses", "sites" })
         {
-            if (item.TryGetPropertyIgnoreCase(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object)
+            if (!item.TryGetPropertyIgnoreCase(objectName, out var nested)) continue;
+            if (nested.ValueKind == JsonValueKind.Object)
             {
                 var value = nested.GetString(propertyName);
                 if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
+
+            if (nested.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var nestedItem in nested.EnumerateArray())
+                {
+                    if (nestedItem.ValueKind != JsonValueKind.Object) continue;
+                    var value = nestedItem.GetString(propertyName);
+                    if (!string.IsNullOrWhiteSpace(value)) return value;
+                }
             }
         }
 
