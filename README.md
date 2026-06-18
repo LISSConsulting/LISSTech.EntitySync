@@ -145,7 +145,7 @@ graph LR
 | Signal | Why it matters |
 |---|---|
 | Existing external ID | Strongest signal. If a target is already linked, do not rematch by vibes. |
-| Normalized name | Handles punctuation, casing, and common formatting drift. |
+| Normalized name | Handles punctuation, casing, leading `The`, and a curated legal suffix database across US/international entity forms. |
 | Address details | Helps separate same-name entities and messy subsidiaries. |
 | Score thresholds | `-AutoLinkScore` defaults to `90`; `-ReviewScore` defaults to `70`. |
 | Reasons | Plan items explain which evidence pushed the score up or down. |

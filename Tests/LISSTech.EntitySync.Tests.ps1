@@ -33,4 +33,21 @@ Describe 'LISSTech.EntitySync' {
     $help = Get-Help about_LISSTech.EntitySync
     $help.Name | Should -Be 'about_LISSTech.EntitySync'
   }
+
+  It 'Normalizes legal suffixes from entity names' -ForEach @(
+    @{ Name = 'Acme, Inc.'; Expected = 'acme' }
+    @{ Name = 'The Acme Corporation'; Expected = 'acme' }
+    @{ Name = 'Contoso Pty Ltd'; Expected = 'contoso' }
+    @{ Name = 'Northwind GmbH & Co. KG'; Expected = 'northwind' }
+    @{ Name = 'Fabrikam S. de R.L. de C.V.'; Expected = 'fabrikam' }
+    @{ Name = 'Adventure Works Sp. z o.o.'; Expected = 'adventure works' }
+    @{ Name = 'Tailspin S.A.R.L.'; Expected = 'tailspin' }
+    @{ Name = 'Wingtip Sdn Bhd'; Expected = 'wingtip' }
+  ) {
+    [LISSTech.EntitySync.Core.EntityNormalizer]::NormalizeName($Name) | Should -Be $Expected
+  }
+
+  It 'Does not strip legal words from the middle of names' {
+    [LISSTech.EntitySync.Core.EntityNormalizer]::NormalizeName('The Limited Company Shop LLC') | Should -Be 'limited company shop'
+  }
 }
