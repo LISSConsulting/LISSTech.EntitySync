@@ -21,4 +21,12 @@ public static class ConnectionRegistry
     {
         return Adapters.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
     }
+
+    public static IReadOnlyList<EntitySyncConnection> Connections()
+    {
+        return Adapters
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => new EntitySyncConnection { Vendor = pair.Key, Adapter = pair.Value })
+            .ToArray();
+    }
 }

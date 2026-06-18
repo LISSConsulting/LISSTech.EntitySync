@@ -4,11 +4,11 @@ using LISSTech.EntitySync.Runtime;
 namespace LISSTech.EntitySync.Commands;
 
 [Cmdlet(VerbsCommon.Get, "EntitySyncConnection")]
-[OutputType(typeof(string))]
+[OutputType(typeof(EntitySyncConnection))]
 public sealed class GetEntitySyncConnectionCommand : PSCmdlet
 {
     protected override void EndProcessing()
     {
-        foreach (var name in ConnectionRegistry.Names()) WriteObject(name);
+        foreach (var connection in ConnectionRegistry.Connections()) WriteObject(connection);
     }
 }

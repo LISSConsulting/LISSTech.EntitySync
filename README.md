@@ -102,8 +102,8 @@ graph LR
 
 | Cmdlet | Role |
 |---|---|
-| `Connect-EntitySyncVendor` | Configure and register a NetSuite or HaloPSA adapter. |
-| `Get-EntitySyncConnection` | Inspect registered vendor connections. |
+| `Connect-EntitySyncVendor` | Configure and register a NetSuite or HaloPSA adapter; vendor-specific parameters appear after `-Vendor`. |
+| `Get-EntitySyncConnection` | Inspect registered vendor connection objects. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
 | `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor; `-Type` autocompletes supported entity types. |
 | `New-EntitySyncPlan` | Compare source entities to target entities and emit a plan. |

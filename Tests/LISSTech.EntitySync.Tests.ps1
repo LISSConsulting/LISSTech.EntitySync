@@ -45,6 +45,24 @@ Describe 'LISSTech.EntitySync' {
     $validValues | Should -Contain 'Client'
   }
 
+  It 'Completes only vendor-specific Connect-EntitySyncVendor parameters' {
+    $haloInput = 'Connect-EntitySyncVendor -Vendor HaloPSA -'
+    $halo = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
+    $halo | Should -Contain '-HaloBaseUrl'
+    $halo | Should -Contain '-HaloClientId'
+    $halo | Should -Not -Contain '-NetSuiteRestletUrl'
+
+    $netSuiteInput = 'Connect-EntitySyncVendor -Vendor NetSuite -'
+    $netSuite = [System.Management.Automation.CommandCompletion]::CompleteInput($netSuiteInput, $netSuiteInput.Length, $null).CompletionMatches.CompletionText
+    $netSuite | Should -Contain '-NetSuiteRestletUrl'
+    $netSuite | Should -Contain '-NetSuiteAccountId'
+    $netSuite | Should -Not -Contain '-HaloBaseUrl'
+  }
+
+  It 'Declares object output for Get-EntitySyncConnection' {
+    (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
+  }
+
   It 'Normalizes legal suffixes from entity names' -ForEach @(
     @{ Name = 'Acme, Inc.'; Expected = 'acme' }
     @{ Name = 'The Acme Corporation'; Expected = 'acme' }

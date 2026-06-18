@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Management.Automation;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters.Halo;
@@ -8,51 +9,40 @@ namespace LISSTech.EntitySync.Commands;
 
 [Cmdlet(VerbsCommunications.Connect, "EntitySyncVendor", DefaultParameterSetName = "HaloPSA")]
 [OutputType(typeof(EntitySyncConnection))]
-public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
+public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
     [ValidateSet("HaloPSA", "NetSuite")]
     public string Vendor { get; set; } = string.Empty;
 
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string? HaloBaseUrl { get; set; }
+    private RuntimeDefinedParameterDictionary? dynamicParameters;
 
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string? HaloClientId { get; set; }
+    public object? GetDynamicParameters()
+    {
+        dynamicParameters = new RuntimeDefinedParameterDictionary();
+        if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDynamicParameter<string>("HaloBaseUrl");
+            AddDynamicParameter<string>("HaloClientId");
+            AddDynamicParameter<string>("HaloClientSecret");
+            AddDynamicParameter<string>("HaloScope", "all");
+            AddDynamicParameter<int>("HaloTopLevelId", 1);
+            AddDynamicParameter<string>("HaloDefaultColour", "#E83C4A");
+            AddDynamicParameter<string>("HaloNetSuiteCustomerIdField", "CFNetSuiteCustomerID");
+        }
+        else if (Vendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDynamicParameter<string>("NetSuiteRestletUrl");
+            AddDynamicParameter<string>("NetSuiteAccountId");
+            AddDynamicParameter<string>("NetSuiteConsumerKey");
+            AddDynamicParameter<string>("NetSuiteConsumerSecret");
+            AddDynamicParameter<string>("NetSuiteTokenId");
+            AddDynamicParameter<string>("NetSuiteTokenSecret");
+        }
 
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string? HaloClientSecret { get; set; }
-
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string HaloScope { get; set; } = "all";
-
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public int HaloTopLevelId { get; set; } = 1;
-
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string HaloDefaultColour { get; set; } = "#E83C4A";
-
-    [Parameter(ParameterSetName = "HaloPSA")]
-    public string HaloNetSuiteCustomerIdField { get; set; } = "CFNetSuiteCustomerID";
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteRestletUrl { get; set; }
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteAccountId { get; set; }
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteConsumerKey { get; set; }
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteConsumerSecret { get; set; }
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteTokenId { get; set; }
-
-    [Parameter(ParameterSetName = "NetSuite")]
-    public string? NetSuiteTokenSecret { get; set; }
+        return dynamicParameters;
+    }
 
     protected override void EndProcessing()
     {
@@ -60,16 +50,20 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
         {
             if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             {
-                var haloBaseUrl = Require(HaloBaseUrl, "HALO_BASE_URL", "HaloBaseUrl");
-                var haloClientId = Require(HaloClientId, "HALO_CLIENT_ID", "HaloClientId");
-                var haloClientSecret = Require(HaloClientSecret, "HALO_CLIENT_SECRET", "HaloClientSecret");
+                var haloScope = DynamicValue("HaloScope", "all");
+                var haloTopLevelId = DynamicValue("HaloTopLevelId", 1);
+                var haloDefaultColour = DynamicValue("HaloDefaultColour", "#E83C4A");
+                var haloNetSuiteCustomerIdField = DynamicValue("HaloNetSuiteCustomerIdField", "CFNetSuiteCustomerID");
+                var haloBaseUrl = Require(DynamicValue<string?>("HaloBaseUrl", null), "HALO_BASE_URL", "HaloBaseUrl");
+                var haloClientId = Require(DynamicValue<string?>("HaloClientId", null), "HALO_CLIENT_ID", "HaloClientId");
+                var haloClientSecret = Require(DynamicValue<string?>("HaloClientSecret", null), "HALO_CLIENT_SECRET", "HaloClientSecret");
                 var options = new HaloOptions
                 {
                     BaseUrl = haloBaseUrl,
-                    AccessToken = GetHaloAccessToken(haloBaseUrl, haloClientId, haloClientSecret, HaloScope),
-                    TopLevelId = HaloTopLevelId,
-                    DefaultColour = HaloDefaultColour,
-                    NetSuiteCustomerIdField = HaloNetSuiteCustomerIdField
+                    AccessToken = GetHaloAccessToken(haloBaseUrl, haloClientId, haloClientSecret, haloScope),
+                    TopLevelId = haloTopLevelId,
+                    DefaultColour = haloDefaultColour,
+                    NetSuiteCustomerIdField = haloNetSuiteCustomerIdField
                 };
                 var adapter = new HaloEntityAdapter(options);
                 ConnectionRegistry.Set(adapter);
@@ -79,12 +73,12 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
 
             var nsOptions = new NetSuiteOptions
             {
-                RestletUrl = Require(NetSuiteRestletUrl, "NETSUITE_RESTLET_URL", "NetSuiteRestletUrl"),
-                AccountId = Require(NetSuiteAccountId, "NETSUITE_ACCOUNT_ID", "NetSuiteAccountId"),
-                ConsumerKey = Require(NetSuiteConsumerKey, "NETSUITE_CONSUMER_KEY", "NetSuiteConsumerKey"),
-                ConsumerSecret = Require(NetSuiteConsumerSecret, "NETSUITE_CONSUMER_SECRET", "NetSuiteConsumerSecret"),
-                TokenId = Require(NetSuiteTokenId, "NETSUITE_TOKEN_ID", "NetSuiteTokenId"),
-                TokenSecret = Require(NetSuiteTokenSecret, "NETSUITE_TOKEN_SECRET", "NetSuiteTokenSecret")
+                RestletUrl = Require(DynamicValue<string?>("NetSuiteRestletUrl", null), "NETSUITE_RESTLET_URL", "NetSuiteRestletUrl"),
+                AccountId = Require(DynamicValue<string?>("NetSuiteAccountId", null), "NETSUITE_ACCOUNT_ID", "NetSuiteAccountId"),
+                ConsumerKey = Require(DynamicValue<string?>("NetSuiteConsumerKey", null), "NETSUITE_CONSUMER_KEY", "NetSuiteConsumerKey"),
+                ConsumerSecret = Require(DynamicValue<string?>("NetSuiteConsumerSecret", null), "NETSUITE_CONSUMER_SECRET", "NetSuiteConsumerSecret"),
+                TokenId = Require(DynamicValue<string?>("NetSuiteTokenId", null), "NETSUITE_TOKEN_ID", "NetSuiteTokenId"),
+                TokenSecret = Require(DynamicValue<string?>("NetSuiteTokenSecret", null), "NETSUITE_TOKEN_SECRET", "NetSuiteTokenSecret")
             };
             var nsAdapter = new NetSuiteEntityAdapter(nsOptions);
             ConnectionRegistry.Set(nsAdapter);
@@ -94,6 +88,24 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
         {
             ThrowTerminatingError(new ErrorRecord(ex, "ConnectEntitySyncVendorFailed", ErrorCategory.ConnectionError, Vendor));
         }
+    }
+
+    private void AddDynamicParameter<T>(string name, T? defaultValue = default)
+    {
+        if (dynamicParameters == null) return;
+        var attributes = new Collection<Attribute> { new ParameterAttribute() };
+        var parameter = new RuntimeDefinedParameter(name, typeof(T), attributes) { Value = defaultValue };
+        dynamicParameters.Add(name, parameter);
+    }
+
+    private T DynamicValue<T>(string name, T defaultValue)
+    {
+        if (dynamicParameters != null && dynamicParameters.TryGetValue(name, out var parameter) && parameter.Value is T value)
+        {
+            return value;
+        }
+
+        return defaultValue;
     }
 
     private string Require(string? parameterValue, string environmentVariable, string parameterName)
