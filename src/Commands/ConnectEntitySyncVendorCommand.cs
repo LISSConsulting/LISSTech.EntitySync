@@ -1,4 +1,5 @@
 using System.Management.Automation;
+using System.Text.Json;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Runtime;
@@ -18,7 +19,13 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
     public string? HaloBaseUrl { get; set; }
 
     [Parameter(ParameterSetName = "HaloPSA")]
-    public string? HaloAccessToken { get; set; }
+    public string? HaloClientId { get; set; }
+
+    [Parameter(ParameterSetName = "HaloPSA")]
+    public string? HaloClientSecret { get; set; }
+
+    [Parameter(ParameterSetName = "HaloPSA")]
+    public string HaloScope { get; set; } = "all";
 
     [Parameter(ParameterSetName = "HaloPSA")]
     public int HaloTopLevelId { get; set; } = 1;
@@ -53,10 +60,13 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
         {
             if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             {
+                var haloBaseUrl = Require(HaloBaseUrl, "HALO_BASE_URL", "HaloBaseUrl");
+                var haloClientId = Require(HaloClientId, "HALO_CLIENT_ID", "HaloClientId");
+                var haloClientSecret = Require(HaloClientSecret, "HALO_CLIENT_SECRET", "HaloClientSecret");
                 var options = new HaloOptions
                 {
-                    BaseUrl = Require(HaloBaseUrl, "HALO_BASE_URL", "HaloBaseUrl"),
-                    AccessToken = Require(HaloAccessToken, "HALO_ACCESS_TOKEN", "HaloAccessToken"),
+                    BaseUrl = haloBaseUrl,
+                    AccessToken = GetHaloAccessToken(haloBaseUrl, haloClientId, haloClientSecret, HaloScope),
                     TopLevelId = HaloTopLevelId,
                     DefaultColour = HaloDefaultColour,
                     NetSuiteCustomerIdField = HaloNetSuiteCustomerIdField
@@ -93,4 +103,35 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
         if (string.IsNullOrWhiteSpace(value)) throw new InvalidOperationException($"{parameterName} is required. Pass -{parameterName} or set {environmentVariable}.");
         return value;
     }
+
+    private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)
+    {
+        using var httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(baseUrl)) };
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "client_credentials",
+            ["client_id"] = clientId,
+            ["client_secret"] = clientSecret,
+            ["scope"] = scope
+        });
+
+        using var response = httpClient.PostAsync("auth/token", content).GetAwaiter().GetResult();
+        var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HaloPSA token request failed with HTTP {(int)response.StatusCode}: {body}");
+        }
+
+        using var document = JsonDocument.Parse(body);
+        if (!document.RootElement.TryGetProperty("access_token", out var tokenElement))
+        {
+            throw new InvalidOperationException("HaloPSA token response did not include access_token.");
+        }
+
+        var token = tokenElement.GetString();
+        if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("HaloPSA token response included an empty access_token.");
+        return token;
+    }
+
+    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 }

@@ -18,6 +18,11 @@ CONFIGURATION
     Configure vendors with Connect-EntitySyncVendor. Values may be passed as
     parameters or supplied from environment variables.
 
+    HaloPSA uses client credentials. Set HALO_BASE_URL, HALO_CLIENT_ID, and
+    HALO_CLIENT_SECRET, or pass the matching Connect-EntitySyncVendor
+    parameters. The module requests the bearer token from HaloPSA and does not
+    require a pre-generated access token.
+
 SEE ALSO
     Connect-EntitySyncVendor
     New-EntitySyncPlan

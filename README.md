@@ -170,7 +170,10 @@ Pass credentials as parameters or environment variables. Secrets are used to con
 | Variable | Parameter |
 |---|---|
 | `HALO_BASE_URL` | `-HaloBaseUrl` |
-| `HALO_ACCESS_TOKEN` | `-HaloAccessToken` |
+| `HALO_CLIENT_ID` | `-HaloClientId` |
+| `HALO_CLIENT_SECRET` | `-HaloClientSecret` |
+
+The module requests a bearer token from `auth/token` using HaloPSA client credentials. `-HaloScope` defaults to `all`.
 
 Optional Halo controls: `-HaloTopLevelId`, `-HaloDefaultColour`, `-HaloNetSuiteCustomerIdField`.
 
