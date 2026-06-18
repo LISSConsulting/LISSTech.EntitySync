@@ -116,12 +116,43 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet
         });
 
         using var response = httpClient.PostAsync("auth/token", content).GetAwaiter().GetResult();
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return GetHaloAccessToken(baseUrl, clientId, clientSecret, scope, "token");
+        }
+
         var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"HaloPSA token request failed with HTTP {(int)response.StatusCode}: {body}");
         }
 
+        return ReadHaloAccessToken(body);
+    }
+
+    private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope, string tokenPath)
+    {
+        using var httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(baseUrl)) };
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "client_credentials",
+            ["client_id"] = clientId,
+            ["client_secret"] = clientSecret,
+            ["scope"] = scope
+        });
+
+        using var response = httpClient.PostAsync(tokenPath, content).GetAwaiter().GetResult();
+        var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"HaloPSA token request failed with HTTP {(int)response.StatusCode}: {body}");
+        }
+
+        return ReadHaloAccessToken(body);
+    }
+
+    private static string ReadHaloAccessToken(string body)
+    {
         using var document = JsonDocument.Parse(body);
         if (!document.RootElement.TryGetProperty("access_token", out var tokenElement))
         {

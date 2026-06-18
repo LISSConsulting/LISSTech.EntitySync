@@ -173,9 +173,11 @@ Pass credentials as parameters or environment variables. Secrets are used to con
 | `HALO_CLIENT_ID` | `-HaloClientId` |
 | `HALO_CLIENT_SECRET` | `-HaloClientSecret` |
 
-The module requests a bearer token from `auth/token` using HaloPSA client credentials. `-HaloScope` defaults to `all`.
+The module requests a bearer token using HaloPSA client credentials. It tries `auth/token` first and falls back to `token`, matching Halo's client-credentials Postman collection. `-HaloScope` defaults to `all`.
 
 Optional Halo controls: `-HaloTopLevelId`, `-HaloDefaultColour`, `-HaloNetSuiteCustomerIdField`.
+
+Halo client retrieval automatically pages through `api/client` with `page_no` and `count`. If the count is lower than the Halo UI, check `-IncludeInactive` and `-HaloTopLevelId`; both affect which clients are returned.
 
 ### NetSuite
 

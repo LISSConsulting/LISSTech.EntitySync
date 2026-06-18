@@ -9,6 +9,8 @@ namespace LISSTech.EntitySync.Adapters.Halo;
 
 public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
+    private const int DefaultPageSize = 100;
+
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
 
@@ -25,26 +27,48 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
         if (!query.EntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("HaloPSA adapter currently supports EntityType Client.");
+        var entities = new List<ExternalEntity>();
+        var requestedTotal = query.Count;
+        var pageSize = Math.Min(requestedTotal.GetValueOrDefault(DefaultPageSize), DefaultPageSize);
+        var pageNumber = 1;
+        int? recordCount = null;
+
+        while (!requestedTotal.HasValue || entities.Count < requestedTotal.Value)
+        {
+            var url = BuildClientListUrl(query, pageSize, pageNumber);
+            using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var root = document.RootElement;
+            recordCount ??= root.GetInt("record_count", "recordcount", "total_count", "totalcount");
+            var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
+            if (clients.ValueKind != JsonValueKind.Array || clients.GetArrayLength() == 0) break;
+
+            foreach (var item in clients.EnumerateArray())
+            {
+                var entity = MapClient(item);
+                if (query.FullObjects && !string.IsNullOrWhiteSpace(entity.Id)) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
+                entities.Add(entity);
+                if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) break;
+            }
+
+            if (recordCount.HasValue && entities.Count >= recordCount.Value) break;
+            if (clients.GetArrayLength() < pageSize) break;
+            pageNumber++;
+        }
+
+        return entities;
+    }
+
+    private string BuildClientListUrl(EntityQuery query, int pageSize, int pageNumber)
+    {
         var url = new StringBuilder("api/client?includeinactive=").Append(query.IncludeInactive ? "true" : "false");
         url.Append("&toplevel_id=").Append(options.TopLevelId);
+        url.Append("&count=").Append(pageSize);
+        url.Append("&page_no=").Append(pageNumber);
         if (!string.IsNullOrWhiteSpace(query.Search)) url.Append("&search=").Append(Uri.EscapeDataString(query.Search));
-        if (query.Count.HasValue) url.Append("&count=").Append(query.Count.Value);
-        else url.Append("&count=9999");
-
-        using var response = await httpClient.GetAsync(url.ToString(), cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        var root = document.RootElement;
-        var clients = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("clients", out var array) ? array : root;
-        var entities = new List<ExternalEntity>();
-        foreach (var item in clients.EnumerateArray())
-        {
-            var entity = MapClient(item);
-            if (query.FullObjects && !string.IsNullOrWhiteSpace(entity.Id)) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
-            entities.Add(entity);
-        }
-        return entities;
+        return url.ToString();
     }
 
     public async Task<EntityWriteResult> CreateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
@@ -78,7 +102,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         var root = document.RootElement;
-        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("clients", out var clients) && clients.ValueKind == JsonValueKind.Array && clients.GetArrayLength() > 0)
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var clients) && clients.ValueKind == JsonValueKind.Array && clients.GetArrayLength() > 0)
         {
             return MapClient(clients[0]);
         }
@@ -98,17 +122,10 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             Website = item.GetString("website"),
             Domain = EntityNormalizer.NormalizeDomain(item.GetString("website"), item.GetString("emailaddress", "email")),
             IsActive = item.GetBool("active", "isactive"),
-            BillingAddress = new EntityAddress
-            {
-                Line1 = ReadNestedString(item, "invoice_address", "line1"),
-                Line2 = ReadNestedString(item, "invoice_address", "line2"),
-                City = ReadNestedString(item, "invoice_address", "line3"),
-                State = ReadNestedString(item, "invoice_address", "line4"),
-                PostalCode = ReadNestedString(item, "invoice_address", "postcode")
-            }
+            BillingAddress = MapAddress(item)
         };
 
-        if (item.TryGetProperty("customfields", out var customFields) && customFields.ValueKind == JsonValueKind.Array)
+        if (item.TryGetPropertyIgnoreCase("customfields", out var customFields) && customFields.ValueKind == JsonValueKind.Array)
         {
             foreach (var field in customFields.EnumerateArray())
             {
@@ -126,9 +143,45 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return entity;
     }
 
-    private static string? ReadNestedString(JsonElement item, string objectName, string propertyName)
+    private static EntityAddress MapAddress(JsonElement item)
     {
-        return item.TryGetProperty(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object ? nested.GetString(propertyName) : null;
+        return new EntityAddress
+        {
+            Line1 = ReadAddressString(item, "line1", "address1", "addr1", "address_1", "addressline1", "address_line1", "invoice_address_line1", "invoiceaddress1"),
+            Line2 = ReadAddressString(item, "line2", "address2", "addr2", "address_2", "addressline2", "address_line2", "invoice_address_line2", "invoiceaddress2"),
+            Line3 = ReadAddressString(item, "line3", "address3", "addr3", "address_3", "addressline3", "address_line3", "invoice_address_line3", "invoiceaddress3"),
+            City = ReadAddressString(item, "city", "town", "line4", "address4", "addr4", "address_4", "addressline4", "address_line4", "invoice_address_line4", "invoiceaddress4"),
+            State = ReadAddressString(item, "state", "county", "province", "region", "line5", "address5", "addr5", "address_5", "invoice_address_line5", "invoiceaddress5"),
+            PostalCode = ReadAddressString(item, "postcode", "postalcode", "postal_code", "zip", "zipcode", "zip_code", "invoice_address_postcode", "invoiceaddresspostcode"),
+            Country = ReadAddressString(item, "country", "country_name", "invoice_address_country", "invoiceaddresscountry")
+        };
+    }
+
+    private static string? ReadAddressString(JsonElement item, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            var nested = ReadNestedString(item, propertyName);
+            if (!string.IsNullOrWhiteSpace(nested)) return nested;
+            var flat = item.GetString(propertyName);
+            if (!string.IsNullOrWhiteSpace(flat)) return flat;
+        }
+
+        return null;
+    }
+
+    private static string? ReadNestedString(JsonElement item, string propertyName)
+    {
+        foreach (var objectName in new[] { "invoice_address", "invoiceaddress", "invoiceAddress", "address" })
+        {
+            if (item.TryGetPropertyIgnoreCase(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object)
+            {
+                var value = nested.GetString(propertyName);
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
+        }
+
+        return null;
     }
 
     private Dictionary<string, object?> ToHaloClientPayload(EntityWriteRequest request, bool includeId)

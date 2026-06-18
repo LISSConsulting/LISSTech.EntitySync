@@ -20,7 +20,7 @@ Connect-EntitySyncVendor -Vendor NetSuite [-NetSuiteRestletUrl <String>] [-NetSu
 ## DESCRIPTION
 Connects a vendor adapter for later discovery, planning, and sync operations. Configuration may come from parameters or environment variables.
 
-HaloPSA connections use client credentials. The cmdlet posts `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope` to `auth/token`, then uses the returned `access_token` for API calls.
+HaloPSA connections use client credentials. The cmdlet posts `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope` to `auth/token`, falls back to `token` if needed, then uses the returned `access_token` for API calls.
 
 ## EXAMPLES
 
