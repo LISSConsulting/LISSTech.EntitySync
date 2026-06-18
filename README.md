@@ -179,6 +179,8 @@ Optional Halo controls: `-HaloTopLevelId`, `-HaloDefaultColour`, `-HaloNetSuiteC
 
 Halo client retrieval automatically pages through `api/client` with `page_no` and `count`. If the count is lower than the Halo UI, check `-IncludeInactive` and `-HaloTopLevelId`; both affect which clients are returned.
 
+Mapped Halo entities include the source payload in `Raw` for troubleshooting vendor field names, for example: `Get-EntitySyncEntity -Vendor HaloPSA -Type Client -Count 1 | Select-Object -ExpandProperty Raw`.
+
 ### NetSuite
 
 | Variable | Parameter |

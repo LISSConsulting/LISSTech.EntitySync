@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Management.Automation;
 using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
@@ -10,6 +11,7 @@ namespace LISSTech.EntitySync.Adapters.Halo;
 public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
+    private static readonly string[] PageParameters = { "page_no", "page", "pageno", "pageNumber", "page_number" };
 
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
@@ -31,16 +33,14 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var requestedTotal = query.Count;
         var pageSize = Math.Min(requestedTotal.GetValueOrDefault(DefaultPageSize), DefaultPageSize);
         var pageNumber = 1;
+        PageRequest? pageRequest = null;
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         while (!requestedTotal.HasValue || entities.Count < requestedTotal.Value)
         {
-            var url = BuildClientListUrl(query, pageSize, pageNumber);
-            using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-            var root = document.RootElement;
+            using var document = await GetClientListPageAsync(query, pageSize, pageNumber, pageRequest, seenIds, cancellationToken).ConfigureAwait(false);
+            pageRequest ??= document.PageRequest;
+            var root = document.Json.RootElement;
             var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
             if (clients.ValueKind != JsonValueKind.Array || clients.GetArrayLength() == 0) break;
 
@@ -63,12 +63,54 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return entities;
     }
 
-    private string BuildClientListUrl(EntityQuery query, int pageSize, int pageNumber)
+    private async Task<ClientListPage> GetClientListPageAsync(EntityQuery query, int pageSize, int pageNumber, PageRequest? pageRequest, HashSet<string> seenIds, CancellationToken cancellationToken)
+    {
+        var candidates = pageRequest != null
+            ? new[] { pageRequest.WithPageNumber(pageNumber) }
+            : pageNumber <= 1
+                ? new[] { new PageRequest(PageParameters[0], pageNumber, false) }
+                : PageParameters.SelectMany(parameter => new[] { new PageRequest(parameter, pageNumber, false), new PageRequest(parameter, pageNumber - 1, true) }).ToArray();
+
+        ClientListPage? duplicatePage = null;
+        foreach (var candidate in candidates)
+        {
+            var page = await FetchClientListPageAsync(BuildClientListUrl(query, pageSize, candidate), candidate, cancellationToken).ConfigureAwait(false);
+            if (pageNumber <= 1 || PageHasNewIds(page.Json.RootElement, seenIds)) return page;
+            duplicatePage ??= page;
+        }
+
+        var fallback = new PageRequest(PageParameters[0], pageNumber, false);
+        return duplicatePage ?? await FetchClientListPageAsync(BuildClientListUrl(query, pageSize, fallback), fallback, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ClientListPage> FetchClientListPageAsync(string url, PageRequest pageRequest, CancellationToken cancellationToken)
+    {
+        using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return new ClientListPage(document, pageRequest);
+    }
+
+    private static bool PageHasNewIds(JsonElement root, HashSet<string> seenIds)
+    {
+        var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
+        if (clients.ValueKind != JsonValueKind.Array) return true;
+        foreach (var item in clients.EnumerateArray())
+        {
+            var id = item.GetString("id", "client_id");
+            if (string.IsNullOrWhiteSpace(id) || !seenIds.Contains(id)) return true;
+        }
+
+        return false;
+    }
+
+    private string BuildClientListUrl(EntityQuery query, int pageSize, PageRequest pageRequest)
     {
         var url = new StringBuilder("api/client?includeinactive=").Append(query.IncludeInactive ? "true" : "false");
         url.Append("&toplevel_id=").Append(options.TopLevelId);
         url.Append("&count=").Append(pageSize);
-        url.Append("&page_no=").Append(pageNumber);
+        url.Append('&').Append(pageRequest.Parameter).Append('=').Append(pageRequest.Value);
         if (!string.IsNullOrWhiteSpace(query.Search)) url.Append("&search=").Append(Uri.EscapeDataString(query.Search));
         return url.ToString();
     }
@@ -119,12 +161,13 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             EntityType = "Client",
             Id = item.GetString("id", "client_id") ?? string.Empty,
             Name = item.GetString("name", "client_name") ?? string.Empty,
-            Email = item.GetString("emailaddress", "email"),
-            Phone = item.GetString("phonenumber", "phone"),
-            Website = item.GetString("website"),
-            Domain = EntityNormalizer.NormalizeDomain(item.GetString("website"), item.GetString("emailaddress", "email")),
-            IsActive = item.GetBool("active", "isactive"),
-            BillingAddress = MapAddress(item)
+            Email = item.GetString("emailaddress", "email_address", "email", "mainemail", "main_email"),
+            Phone = item.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone"),
+            Website = item.GetString("website", "web_site", "url"),
+            Domain = EntityNormalizer.NormalizeDomain(item.GetString("website", "web_site", "url"), item.GetString("emailaddress", "email_address", "email", "mainemail", "main_email")),
+            IsActive = item.GetBool("active", "isactive") ?? (item.GetBool("inactive", "isinactive") is bool inactive ? !inactive : null),
+            BillingAddress = MapAddress(item),
+            Raw = JsonToPsObject(item)
         };
 
         if (item.TryGetPropertyIgnoreCase("customfields", out var customFields) && customFields.ValueKind == JsonValueKind.Array)
@@ -162,6 +205,11 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     private static bool IsAddressEmpty(EntityAddress? address)
     {
         return address == null || string.IsNullOrWhiteSpace(address.Compact());
+    }
+
+    private static PSObject JsonToPsObject(JsonElement item)
+    {
+        return PSObject.AsPSObject(JsonSerializer.Deserialize<Dictionary<string, object?>>(item.GetRawText()) ?? new Dictionary<string, object?>());
     }
 
     private static string? ReadAddressString(JsonElement item, params string[] propertyNames)
@@ -218,4 +266,26 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     }
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
+
+    private sealed class ClientListPage : IDisposable
+    {
+        public ClientListPage(JsonDocument json, PageRequest pageRequest)
+        {
+            Json = json;
+            PageRequest = pageRequest;
+        }
+
+        public JsonDocument Json { get; }
+        public PageRequest PageRequest { get; }
+
+        public void Dispose() => Json.Dispose();
+    }
+
+    private sealed record PageRequest(string Parameter, int Value, bool ZeroBased)
+    {
+        public PageRequest WithPageNumber(int pageNumber)
+        {
+            return this with { Value = ZeroBased ? pageNumber - 1 : pageNumber };
+        }
+    }
 }
