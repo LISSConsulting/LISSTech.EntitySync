@@ -39,7 +39,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         while (!requestedTotal.HasValue || entities.Count < requestedTotal.Value)
         {
             using var document = await GetClientListPageAsync(query, pageSize, pageNumber, pageRequest, seenIds, cancellationToken).ConfigureAwait(false);
-            pageRequest ??= document.PageRequest;
+            if (pageNumber > 1) pageRequest ??= document.PageRequest;
             var root = document.Json.RootElement;
             var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
             if (clients.ValueKind != JsonValueKind.Array || clients.GetArrayLength() == 0) break;
