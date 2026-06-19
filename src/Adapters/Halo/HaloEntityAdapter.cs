@@ -12,6 +12,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private static readonly string[] PageParameters = { "page_no", "page", "pageno", "pageNumber", "page_number" };
+    private static readonly string[] PageSizeParameters = { "count", "page_size", "pagesize", "pageSize" };
+    private static readonly string[] OffsetParameters = { "start", "offset", "skip" };
 
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
@@ -25,6 +27,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     }
 
     public string Vendor => "HaloPSA";
+
+    public Action<string>? Trace { get; set; }
 
     public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
@@ -50,6 +54,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
                 var entity = MapClient(item);
                 if (!string.IsNullOrWhiteSpace(entity.Id) && !seenIds.Add(entity.Id)) continue;
                 if (!string.IsNullOrWhiteSpace(entity.Id) && (query.FullObjects || IsAddressEmpty(entity.BillingAddress))) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
+                if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = await GetMainSiteAddressAsync(entity.Raw, cancellationToken).ConfigureAwait(false) ?? entity.BillingAddress;
                 entities.Add(entity);
                 addedFromPage++;
                 if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) break;
@@ -68,8 +73,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var candidates = pageRequest != null
             ? new[] { pageRequest.WithPageNumber(pageNumber) }
             : pageNumber <= 1
-                ? new[] { new PageRequest(PageParameters[0], pageNumber, false) }
-                : PageParameters.SelectMany(parameter => new[] { new PageRequest(parameter, pageNumber, false), new PageRequest(parameter, pageNumber - 1, true) }).ToArray();
+                ? new[] { new PageRequest("count", PageParameters[0], pageNumber, false, null) }
+                : BuildPageRequests(pageSize, pageNumber);
 
         ClientListPage? duplicatePage = null;
         foreach (var candidate in candidates)
@@ -79,12 +84,26 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             duplicatePage ??= page;
         }
 
-        var fallback = new PageRequest(PageParameters[0], pageNumber, false);
+        var fallback = new PageRequest("count", PageParameters[0], pageNumber, false, null);
         return duplicatePage ?? await FetchClientListPageAsync(BuildClientListUrl(query, pageSize, fallback), fallback, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static PageRequest[] BuildPageRequests(int pageSize, int pageNumber)
+    {
+        var numbered = PageSizeParameters.SelectMany(sizeParameter =>
+            PageParameters.SelectMany(pageParameter => new[]
+            {
+                new PageRequest(sizeParameter, pageParameter, pageNumber, false, null),
+                new PageRequest(sizeParameter, pageParameter, pageNumber - 1, true, null)
+            }));
+        var offsets = PageSizeParameters.SelectMany(sizeParameter =>
+            OffsetParameters.Select(offsetParameter => new PageRequest(sizeParameter, null, null, false, new OffsetRequest(offsetParameter, (pageNumber - 1) * pageSize))));
+        return numbered.Concat(offsets).ToArray();
     }
 
     private async Task<ClientListPage> FetchClientListPageAsync(string url, PageRequest pageRequest, CancellationToken cancellationToken)
     {
+        Trace?.Invoke("HaloPSA GET " + url);
         using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -109,8 +128,10 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     {
         var url = new StringBuilder("api/client?includeinactive=").Append(query.IncludeInactive ? "true" : "false");
         url.Append("&toplevel_id=").Append(options.TopLevelId);
-        url.Append("&count=").Append(pageSize);
-        url.Append('&').Append(pageRequest.Parameter).Append('=').Append(pageRequest.Value);
+        url.Append('&').Append(pageRequest.SizeParameter).Append('=').Append(pageSize);
+        if (pageRequest.Offset != null) url.Append('&').Append(pageRequest.Offset.Parameter).Append('=').Append(pageRequest.Offset.Value);
+        else url.Append('&').Append(pageRequest.PageParameter).Append('=').Append(pageRequest.Value);
+        url.Append("&paginate=true");
         if (!string.IsNullOrWhiteSpace(query.Search)) url.Append("&search=").Append(Uri.EscapeDataString(query.Search));
         return url.ToString();
     }
@@ -153,6 +174,24 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return MapClient(root);
     }
 
+    private async Task<EntityAddress?> GetMainSiteAddressAsync(PSObject? raw, CancellationToken cancellationToken)
+    {
+        var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
+
+        using var response = await httpClient.GetAsync("api/site/" + Uri.EscapeDataString(siteId), cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) return null;
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var root = document.RootElement;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("sites", out var sites) && sites.ValueKind == JsonValueKind.Array && sites.GetArrayLength() > 0)
+        {
+            return MapAddress(sites[0]);
+        }
+
+        return MapAddress(root);
+    }
+
     private ExternalEntity MapClient(JsonElement item)
     {
         var entity = new ExternalEntity
@@ -167,6 +206,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             Domain = EntityNormalizer.NormalizeDomain(item.GetString("website", "web_site", "url"), item.GetString("emailaddress", "email_address", "email", "mainemail", "main_email")),
             IsActive = item.GetBool("active", "isactive") ?? (item.GetBool("inactive", "isinactive") is bool inactive ? !inactive : null),
             BillingAddress = MapAddress(item),
+            CreatedAt = item.GetDate("datecreated", "created_at", "created"),
+            UpdatedAt = item.GetDate("alastupdate", "last_update", "updated_at", "updated"),
             Raw = JsonToPsObject(item)
         };
 
@@ -281,11 +322,14 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         public void Dispose() => Json.Dispose();
     }
 
-    private sealed record PageRequest(string Parameter, int Value, bool ZeroBased)
+    private sealed record PageRequest(string SizeParameter, string? PageParameter, int? Value, bool ZeroBased, OffsetRequest? Offset)
     {
         public PageRequest WithPageNumber(int pageNumber)
         {
+            if (Offset != null) return this with { Offset = Offset with { Value = (pageNumber - 1) * DefaultPageSize } };
             return this with { Value = ZeroBased ? pageNumber - 1 : pageNumber };
         }
     }
+
+    private sealed record OffsetRequest(string Parameter, int Value);
 }
