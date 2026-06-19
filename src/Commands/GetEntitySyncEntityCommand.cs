@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Concurrent;
 using System.Management.Automation;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Core;
@@ -51,8 +52,18 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             var query = new EntityQuery { EntityType = entityType, Search = Search, IncludeInactive = IncludeInactive, FullObjects = FullObjects };
             if (Count > 0) query.Count = Count;
             var adapter = ConnectionRegistry.Get(Vendor);
-            if (adapter is HaloEntityAdapter haloAdapter) haloAdapter.Trace = WriteVerbose;
-            var entities = adapter.GetEntitiesAsync(query, CancellationToken.None).GetAwaiter().GetResult();
+            var traces = new ConcurrentQueue<string>();
+            if (adapter is HaloEntityAdapter haloAdapter) haloAdapter.Trace = traces.Enqueue;
+            IReadOnlyList<ExternalEntity> entities;
+            try
+            {
+                entities = adapter.GetEntitiesAsync(query, CancellationToken.None).GetAwaiter().GetResult();
+            }
+            finally
+            {
+                if (adapter is HaloEntityAdapter completedHaloAdapter) completedHaloAdapter.Trace = null;
+            }
+            while (traces.TryDequeue(out var trace)) WriteVerbose(trace);
             foreach (var entity in entities) WriteObject(entity);
         }
         catch (Exception ex)
