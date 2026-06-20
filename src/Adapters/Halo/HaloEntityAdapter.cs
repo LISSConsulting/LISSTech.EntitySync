@@ -192,14 +192,21 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             return sites[0].Clone();
         }
 
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("site", out var site) && site.ValueKind == JsonValueKind.Object)
+        {
+            return site.Clone();
+        }
+
         return root.Clone();
     }
 
     private static void ApplySiteDetails(ExternalEntity entity, JsonElement site)
     {
         if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
+        entity.PrimarySiteId ??= site.GetString("id", "site_id", "key");
+        entity.PrimarySiteName ??= site.GetString("name", "site_name");
         if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("emailaddress", "email_address", "email", "mainemail", "main_email");
-        if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone");
+        if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone", "mainphone", "main_phone", "tel");
         if (string.IsNullOrWhiteSpace(entity.Website)) entity.Website = site.GetString("website", "web_site", "url");
         entity.Domain = EntityNormalizer.NormalizeDomain(entity.Website, entity.Email);
     }
@@ -212,10 +219,12 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             EntityType = "Client",
             Id = item.GetString("id", "client_id") ?? string.Empty,
             Name = item.GetString("name", "client_name") ?? string.Empty,
-            Email = item.GetString("emailaddress", "email_address", "email", "mainemail", "main_email"),
-            Phone = item.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone"),
+            Email = item.GetString("accountsemailaddress", "accounts_email_address", "emailaddress", "email_address", "email", "mainemail", "main_email"),
+            Phone = item.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone", "mainphone", "main_phone", "tel"),
             Website = item.GetString("website", "web_site", "url"),
-            Domain = EntityNormalizer.NormalizeDomain(item.GetString("website", "web_site", "url"), item.GetString("emailaddress", "email_address", "email", "mainemail", "main_email")),
+            Domain = EntityNormalizer.NormalizeDomain(item.GetString("website", "web_site", "url"), item.GetString("accountsemailaddress", "accounts_email_address", "emailaddress", "email_address", "email", "mainemail", "main_email")),
+            PrimarySiteId = item.GetString("main_site_id"),
+            PrimarySiteName = item.GetString("main_site_name"),
             IsActive = item.GetBool("active", "isactive") ?? (item.GetBool("inactive", "isinactive") is bool inactive ? !inactive : null),
             BillingAddress = MapAddress(item),
             CreatedAt = item.GetDate("datecreated", "created_at", "created"),
