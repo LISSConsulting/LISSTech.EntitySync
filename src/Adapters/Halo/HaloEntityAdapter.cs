@@ -82,7 +82,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         {
             Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Enriching client {ordinal}: {client.Name}" });
             var enriched = await GetFullClientAsync(client.Id, cancellationToken).ConfigureAwait(false);
-            if (IsAddressEmpty(enriched.BillingAddress)) enriched.BillingAddress = await GetMainSiteAddressAsync(enriched.Raw, cancellationToken).ConfigureAwait(false) ?? enriched.BillingAddress;
+            var site = await GetMainSiteAsync(enriched.Raw, cancellationToken).ConfigureAwait(false);
+            if (site != null) ApplySiteDetails(enriched, site.Value);
             return enriched;
         }
         finally
@@ -176,7 +177,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return MapClient(root);
     }
 
-    private async Task<EntityAddress?> GetMainSiteAddressAsync(PSObject? raw, CancellationToken cancellationToken)
+    private async Task<JsonElement?> GetMainSiteAsync(PSObject? raw, CancellationToken cancellationToken)
     {
         var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
         if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
@@ -188,10 +189,19 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var root = document.RootElement;
         if (root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("sites", out var sites) && sites.ValueKind == JsonValueKind.Array && sites.GetArrayLength() > 0)
         {
-            return MapAddress(sites[0]);
+            return sites[0].Clone();
         }
 
-        return MapAddress(root);
+        return root.Clone();
+    }
+
+    private static void ApplySiteDetails(ExternalEntity entity, JsonElement site)
+    {
+        if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
+        if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("emailaddress", "email_address", "email", "mainemail", "main_email");
+        if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone");
+        if (string.IsNullOrWhiteSpace(entity.Website)) entity.Website = site.GetString("website", "web_site", "url");
+        entity.Domain = EntityNormalizer.NormalizeDomain(entity.Website, entity.Email);
     }
 
     private ExternalEntity MapClient(JsonElement item)
@@ -235,13 +245,13 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     {
         return new EntityAddress
         {
-            Line1 = ReadAddressString(item, "line1", "address1", "addr1", "address_1", "addressline1", "address_line1", "invoice_address_line1", "invoiceaddress1"),
-            Line2 = ReadAddressString(item, "line2", "address2", "addr2", "address_2", "addressline2", "address_line2", "invoice_address_line2", "invoiceaddress2"),
-            Line3 = ReadAddressString(item, "line3", "address3", "addr3", "address_3", "addressline3", "address_line3", "invoice_address_line3", "invoiceaddress3"),
-            City = ReadAddressString(item, "city", "town", "line4", "address4", "addr4", "address_4", "addressline4", "address_line4", "invoice_address_line4", "invoiceaddress4"),
-            State = ReadAddressString(item, "state", "county", "province", "region", "line5", "address5", "addr5", "address_5", "invoice_address_line5", "invoiceaddress5"),
-            PostalCode = ReadAddressString(item, "postcode", "postalcode", "postal_code", "zip", "zipcode", "zip_code", "invoice_address_postcode", "invoiceaddresspostcode"),
-            Country = ReadAddressString(item, "country", "country_name", "invoice_address_country", "invoiceaddresscountry")
+            Line1 = ReadAddressString(item, "line1", "address1", "addr1", "address_1", "addressline1", "address_line1", "delivery_address_line1", "deliveryaddress1", "invoice_address_line1", "invoiceaddress1"),
+            Line2 = ReadAddressString(item, "line2", "address2", "addr2", "address_2", "addressline2", "address_line2", "delivery_address_line2", "deliveryaddress2", "invoice_address_line2", "invoiceaddress2"),
+            Line3 = ReadAddressString(item, "line3", "address3", "addr3", "address_3", "addressline3", "address_line3", "delivery_address_line3", "deliveryaddress3", "invoice_address_line3", "invoiceaddress3"),
+            City = ReadAddressString(item, "city", "town", "line4", "address4", "addr4", "address_4", "addressline4", "address_line4", "delivery_address_line4", "deliveryaddress4", "invoice_address_line4", "invoiceaddress4"),
+            State = ReadAddressString(item, "state", "county", "province", "region", "line5", "address5", "addr5", "address_5", "delivery_address_line5", "deliveryaddress5", "invoice_address_line5", "invoiceaddress5"),
+            PostalCode = ReadAddressString(item, "postcode", "postalcode", "postal_code", "zip", "zipcode", "zip_code", "delivery_address_postcode", "deliveryaddresspostcode", "invoice_address_postcode", "invoiceaddresspostcode"),
+            Country = ReadAddressString(item, "country", "country_name", "delivery_address_country", "deliveryaddresscountry", "invoice_address_country", "invoiceaddresscountry")
         };
     }
 
@@ -270,7 +280,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private static string? ReadNestedString(JsonElement item, string propertyName)
     {
-        foreach (var objectName in new[] { "invoice_address", "invoiceaddress", "invoiceAddress", "address", "addresses", "sites" })
+        foreach (var objectName in new[] { "delivery_address", "deliveryaddress", "deliveryAddress", "invoice_address", "invoiceaddress", "invoiceAddress", "address", "addresses", "sites" })
         {
             if (!item.TryGetPropertyIgnoreCase(objectName, out var nested)) continue;
             if (nested.ValueKind == JsonValueKind.Object)

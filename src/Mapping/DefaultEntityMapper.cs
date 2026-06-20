@@ -28,7 +28,7 @@ public sealed class DefaultEntityMapper : IEntityMapper
         if (!string.IsNullOrWhiteSpace(source.Phone)) request.Fields["phonenumber"] = source.Phone;
         if (source.BillingAddress != null)
         {
-            request.Fields["invoice_address"] = new Dictionary<string, object?>
+            request.Fields["delivery_address"] = new Dictionary<string, object?>
             {
                 ["line1"] = source.BillingAddress.Line1,
                 ["line2"] = source.BillingAddress.Line2,
