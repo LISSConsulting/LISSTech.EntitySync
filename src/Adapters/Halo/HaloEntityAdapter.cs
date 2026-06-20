@@ -182,7 +182,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
         if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
 
-        using var response = await httpClient.GetAsync("api/site/" + Uri.EscapeDataString(siteId), cancellationToken).ConfigureAwait(false);
+        using var response = await httpClient.GetAsync("api/Site/" + Uri.EscapeDataString(siteId) + "?includedetails=true", cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) return null;
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -205,7 +205,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
         entity.PrimarySiteId ??= site.GetString("id", "site_id", "key");
         entity.PrimarySiteName ??= site.GetString("name", "site_name");
-        if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("emailaddress", "email_address", "email", "mainemail", "main_email");
+        if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("accountsemailaddress", "accounts_email_address", "emailaddress", "email_address", "email", "mainemail", "main_email");
         if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone", "mainphone", "main_phone", "tel");
         if (string.IsNullOrWhiteSpace(entity.Website)) entity.Website = site.GetString("website", "web_site", "url");
         entity.Domain = EntityNormalizer.NormalizeDomain(entity.Website, entity.Email);
