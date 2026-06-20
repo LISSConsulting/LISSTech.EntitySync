@@ -180,12 +180,18 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     private async Task<JsonElement?> GetMainSiteAsync(PSObject? raw, CancellationToken cancellationToken)
     {
         var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
+        var clientId = raw?.Properties["id"]?.Value?.ToString();
         if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
 
         var url = "api/Site/" + Uri.EscapeDataString(siteId) + "?includedetails=true";
+        if (!string.IsNullOrWhiteSpace(clientId)) url += "&client_override=" + Uri.EscapeDataString(clientId);
         Trace?.Invoke("HaloPSA GET " + url);
         using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) return null;
+        if (!response.IsSuccessStatusCode)
+        {
+            Trace?.Invoke($"HaloPSA site lookup for site {siteId} failed with HTTP {(int)response.StatusCode}");
+            return null;
+        }
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         var root = document.RootElement;
