@@ -105,7 +105,8 @@ graph LR
 | `Connect-EntitySyncVendor` | Configure and register a NetSuite or HaloPSA adapter; vendor-specific parameters appear after `-Vendor`. |
 | `Get-EntitySyncConnection` | Inspect registered vendor connection objects. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
-| `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor; `-Type` validates/autocompletes only entity types supported by the selected vendor. |
+| `Get-EntitySyncTopLevel` | Discover HaloPSA top-level IDs for `-HaloTopLevelId`. |
+| `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor; `-Type` defaults to the selected vendor's supported entity type. |
 | `New-EntitySyncPlan` | Compare source entities to target entities and emit a plan. |
 | `Export-EntitySyncPlan` | Persist a plan to JSON. |
 | `Import-EntitySyncPlan` | Reload a previously reviewed plan. |
@@ -177,7 +178,15 @@ The module requests a bearer token using HaloPSA client credentials. It tries `a
 
 Optional Halo controls: `-HaloTopLevelId`, `-HaloDefaultColour`, `-HaloNetSuiteCustomerIdField`.
 
-Halo client retrieval automatically pages through `api/client` with `page_no` and `count`. If the count is lower than the Halo UI, check `-IncludeInactive` and `-HaloTopLevelId`; both affect which clients are returned.
+Halo client retrieval automatically pages through `api/client` with `pageinate`, `page_size`, and `page_no`. If the count is lower than the Halo UI, check `-IncludeInactive` and `-HaloTopLevelId`; both affect which clients are returned.
+
+`Get-EntitySyncEntity` is fast by default and returns the Halo list payload. Use `-FullObjects` only when you need per-client detail/site address enrichment; that mode is intentionally slower and shows standard PowerShell progress.
+
+Discover top-level IDs with:
+
+```powershell
+Get-EntitySyncTopLevel -Vendor HaloPSA
+```
 
 Mapped Halo entities include the source payload in `Raw` for troubleshooting vendor field names, for example: `Get-EntitySyncEntity -Vendor HaloPSA -Type Client -Count 1 | Select-Object -ExpandProperty Raw`.
 

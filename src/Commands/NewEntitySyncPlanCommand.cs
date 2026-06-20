@@ -61,7 +61,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet
             var sources = pipelineSources.Count > 0
                 ? pipelineSources
                 : sourceAdapter.GetEntitiesAsync(new EntityQuery { EntityType = SourceEntityType, IncludeInactive = IncludeInactive }, CancellationToken.None).GetAwaiter().GetResult().ToList();
-            var targets = targetAdapter.GetEntitiesAsync(new EntityQuery { EntityType = TargetEntityType, IncludeInactive = true, FullObjects = true }, CancellationToken.None).GetAwaiter().GetResult();
+            var targets = targetAdapter.GetEntitiesAsync(new EntityQuery { EntityType = TargetEntityType, IncludeInactive = true }, CancellationToken.None).GetAwaiter().GetResult();
             var options = new MatchOptions
             {
                 SourceExternalIdName = SourceExternalIdName,

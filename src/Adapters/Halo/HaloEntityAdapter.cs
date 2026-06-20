@@ -26,6 +26,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     public string Vendor => "HaloPSA";
 
     public Action<string>? Trace { get; set; }
+    public Action<EntitySyncProgress>? Progress { get; set; }
 
     public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
@@ -38,6 +39,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
         while (!requestedTotal.HasValue || entities.Count < requestedTotal.Value)
         {
+            Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Reading page {pageNumber}" });
             using var document = await FetchClientListPageAsync(BuildClientListUrl(query, pageSize, pageNumber), cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
             var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
@@ -48,8 +50,12 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             {
                 var entity = MapClient(item);
                 if (!string.IsNullOrWhiteSpace(entity.Id) && !seenIds.Add(entity.Id)) continue;
-                if (!string.IsNullOrWhiteSpace(entity.Id) && (query.FullObjects || IsAddressEmpty(entity.BillingAddress))) entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
-                if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = await GetMainSiteAddressAsync(entity.Raw, cancellationToken).ConfigureAwait(false) ?? entity.BillingAddress;
+                if (!string.IsNullOrWhiteSpace(entity.Id) && query.FullObjects)
+                {
+                    Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Enriching client {entities.Count + 1}: {entity.Name}" });
+                    entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
+                    if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = await GetMainSiteAddressAsync(entity.Raw, cancellationToken).ConfigureAwait(false) ?? entity.BillingAddress;
+                }
                 entities.Add(entity);
                 addedFromPage++;
                 if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) break;
@@ -61,6 +67,32 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         }
 
         return entities;
+    }
+
+    public async Task<IReadOnlyList<EntitySyncTopLevel>> GetTopLevelsAsync(CancellationToken cancellationToken)
+    {
+        Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA top levels", Status = "Reading top-level records" });
+        using var response = await httpClient.GetAsync("api/toplevel", cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var root = document.RootElement;
+        var rows = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("toplevels", out var array) ? array : root;
+        if (rows.ValueKind != JsonValueKind.Array) return Array.Empty<EntitySyncTopLevel>();
+
+        var topLevels = new List<EntitySyncTopLevel>();
+        foreach (var row in rows.EnumerateArray())
+        {
+            topLevels.Add(new EntitySyncTopLevel
+            {
+                Vendor = Vendor,
+                Id = row.GetInt("id", "toplevel_id", "key") ?? 0,
+                Name = row.GetString("name", "toplevel_name") ?? string.Empty,
+                Raw = JsonToPsObject(row)
+            });
+        }
+
+        return topLevels;
     }
 
     private async Task<JsonDocument> FetchClientListPageAsync(string url, CancellationToken cancellationToken)

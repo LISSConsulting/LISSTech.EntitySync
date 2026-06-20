@@ -22,6 +22,7 @@ Describe 'LISSTech.EntitySync' {
     $commands | Should -Contain 'Connect-EntitySyncVendor'
     $commands | Should -Contain 'Get-EntitySyncConnection'
     $commands | Should -Contain 'Test-EntitySyncConnection'
+    $commands | Should -Contain 'Get-EntitySyncTopLevel'
     $commands | Should -Contain 'Get-EntitySyncEntity'
     $commands | Should -Contain 'New-EntitySyncPlan'
     $commands | Should -Contain 'Invoke-EntitySyncPlan'

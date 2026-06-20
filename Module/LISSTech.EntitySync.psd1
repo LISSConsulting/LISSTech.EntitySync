@@ -13,6 +13,7 @@
     'Connect-EntitySyncVendor'
     'Get-EntitySyncConnection'
     'Test-EntitySyncConnection'
+    'Get-EntitySyncTopLevel'
     'Get-EntitySyncEntity'
     'New-EntitySyncPlan'
     'Invoke-EntitySyncPlan'

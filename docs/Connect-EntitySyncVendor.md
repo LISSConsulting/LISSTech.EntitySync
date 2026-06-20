@@ -31,3 +31,5 @@ Connect-EntitySyncVendor -Vendor NetSuite
 ```
 
 Connects both adapters using environment variables.
+
+Use `Get-EntitySyncTopLevel -Vendor HaloPSA` to discover values for `-HaloTopLevelId`.

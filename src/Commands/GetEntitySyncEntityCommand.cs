@@ -53,17 +53,31 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             if (Count > 0) query.Count = Count;
             var adapter = ConnectionRegistry.Get(Vendor);
             var traces = new ConcurrentQueue<string>();
+            var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter) haloAdapter.Trace = traces.Enqueue;
+            if (adapter is HaloEntityAdapter haloProgressAdapter) haloProgressAdapter.Progress = progress.Enqueue;
             IReadOnlyList<ExternalEntity> entities;
             try
             {
-                entities = adapter.GetEntitiesAsync(query, CancellationToken.None).GetAwaiter().GetResult();
+                var task = Task.Run(() => adapter.GetEntitiesAsync(query, CancellationToken.None));
+                while (!task.IsCompleted)
+                {
+                    DrainMessages(traces, progress);
+                    Thread.Sleep(100);
+                }
+
+                entities = task.GetAwaiter().GetResult();
             }
             finally
             {
-                if (adapter is HaloEntityAdapter completedHaloAdapter) completedHaloAdapter.Trace = null;
+                if (adapter is HaloEntityAdapter completedHaloAdapter)
+                {
+                    completedHaloAdapter.Trace = null;
+                    completedHaloAdapter.Progress = null;
+                }
             }
-            while (traces.TryDequeue(out var trace)) WriteVerbose(trace);
+            DrainMessages(traces, progress);
+            WriteProgress(new ProgressRecord(1, "Get EntitySync entities", "Complete") { RecordType = ProgressRecordType.Completed });
             foreach (var entity in entities) WriteObject(entity);
         }
         catch (Exception ex)
@@ -72,16 +86,25 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         }
     }
 
+    private void DrainMessages(ConcurrentQueue<string> traces, ConcurrentQueue<EntitySyncProgress> progress)
+    {
+        while (traces.TryDequeue(out var trace)) WriteVerbose(trace);
+        while (progress.TryDequeue(out var update))
+        {
+            WriteProgress(new ProgressRecord(1, update.Activity, update.Status) { PercentComplete = update.PercentComplete });
+        }
+    }
+
     private void AddEntityTypeParameter(params string[] validValues)
     {
         if (dynamicParameters == null) return;
         var attributes = new Collection<Attribute>
         {
-            new ParameterAttribute { Mandatory = true, Position = 1 },
+            new ParameterAttribute { Position = 1 },
             new AliasAttribute("Type"),
             new ValidateSetAttribute(validValues)
         };
-        dynamicParameters.Add("EntityType", new RuntimeDefinedParameter("EntityType", typeof(string), attributes));
+        dynamicParameters.Add("EntityType", new RuntimeDefinedParameter("EntityType", typeof(string), attributes) { Value = validValues[0] });
     }
 
     private T DynamicValue<T>(string name, T defaultValue)
