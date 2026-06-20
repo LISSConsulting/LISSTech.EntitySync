@@ -182,7 +182,9 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
         if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
 
-        using var response = await httpClient.GetAsync("api/Site/" + Uri.EscapeDataString(siteId) + "?includedetails=true", cancellationToken).ConfigureAwait(false);
+        var url = "api/Site/" + Uri.EscapeDataString(siteId) + "?includedetails=true";
+        Trace?.Invoke("HaloPSA GET " + url);
+        using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) return null;
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -202,9 +204,10 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private static void ApplySiteDetails(ExternalEntity entity, JsonElement site)
     {
-        if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
+        entity.PrimarySiteRaw = JsonToPsObject(site);
         entity.PrimarySiteId ??= site.GetString("id", "site_id", "key");
         entity.PrimarySiteName ??= site.GetString("name", "site_name");
+        if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
         if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("accountsemailaddress", "accounts_email_address", "emailaddress", "email_address", "email", "mainemail", "main_email");
         if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone", "mainphone", "main_phone", "tel");
         if (string.IsNullOrWhiteSpace(entity.Website)) entity.Website = site.GetString("website", "web_site", "url");
@@ -252,6 +255,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private static EntityAddress MapAddress(JsonElement item)
     {
+        if (TryGetAddressObject(item, out var address)) item = address;
         return new EntityAddress
         {
             Line1 = ReadAddressString(item, "line1", "address1", "addr1", "address_1", "addressline1", "address_line1", "delivery_address_line1", "deliveryaddress1", "invoice_address_line1", "invoiceaddress1"),
@@ -262,6 +266,21 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             PostalCode = ReadAddressString(item, "postcode", "postalcode", "postal_code", "zip", "zipcode", "zip_code", "delivery_address_postcode", "deliveryaddresspostcode", "invoice_address_postcode", "invoiceaddresspostcode"),
             Country = ReadAddressString(item, "country", "country_name", "delivery_address_country", "deliveryaddresscountry", "invoice_address_country", "invoiceaddresscountry")
         };
+    }
+
+    private static bool TryGetAddressObject(JsonElement item, out JsonElement address)
+    {
+        foreach (var objectName in new[] { "delivery_address", "deliveryaddress", "deliveryAddress", "invoice_address", "invoiceaddress", "invoiceAddress", "address" })
+        {
+            if (item.TryGetPropertyIgnoreCase(objectName, out var nested) && nested.ValueKind == JsonValueKind.Object)
+            {
+                address = nested;
+                return true;
+            }
+        }
+
+        address = default;
+        return false;
     }
 
     private static bool IsAddressEmpty(EntityAddress? address)

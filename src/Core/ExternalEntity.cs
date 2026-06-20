@@ -16,6 +16,7 @@ public sealed class ExternalEntity
     public string? Domain { get; set; }
     public string? PrimarySiteId { get; set; }
     public string? PrimarySiteName { get; set; }
+    public PSObject? PrimarySiteRaw { get; set; }
     public EntityAddress? BillingAddress { get; set; }
     public EntityAddress? ShippingAddress { get; set; }
     public bool? IsActive { get; set; }
