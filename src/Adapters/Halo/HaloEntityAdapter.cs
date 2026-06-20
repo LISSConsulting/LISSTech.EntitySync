@@ -82,7 +82,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         {
             Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Enriching client {ordinal}: {client.Name}" });
             var enriched = await GetFullClientAsync(client.Id, cancellationToken).ConfigureAwait(false);
-            var site = await GetMainSiteAsync(enriched.Raw, cancellationToken).ConfigureAwait(false);
+            var site = await GetMainSiteAsync(enriched.PrimarySiteId, enriched.Id, cancellationToken).ConfigureAwait(false);
             if (site != null) ApplySiteDetails(enriched, site.Value);
             return enriched;
         }
@@ -177,10 +177,8 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return MapClient(root);
     }
 
-    private async Task<JsonElement?> GetMainSiteAsync(PSObject? raw, CancellationToken cancellationToken)
+    private async Task<JsonElement?> GetMainSiteAsync(string? siteId, string? clientId, CancellationToken cancellationToken)
     {
-        var siteId = raw?.Properties["main_site_id"]?.Value?.ToString();
-        var clientId = raw?.Properties["id"]?.Value?.ToString();
         if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
 
         var url = "api/Site/" + Uri.EscapeDataString(siteId) + "?includedetails=true";
