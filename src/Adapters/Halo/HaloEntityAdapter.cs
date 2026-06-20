@@ -11,6 +11,7 @@ namespace LISSTech.EntitySync.Adapters.Halo;
 public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
+    private const int DefaultEnrichmentConcurrency = 8;
 
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
@@ -45,28 +46,49 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             var clients = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("clients", out var array) ? array : root;
             if (clients.ValueKind != JsonValueKind.Array || clients.GetArrayLength() == 0) break;
 
-            var addedFromPage = 0;
+            var pageEntities = new List<ExternalEntity>();
             foreach (var item in clients.EnumerateArray())
             {
                 var entity = MapClient(item);
                 if (!string.IsNullOrWhiteSpace(entity.Id) && !seenIds.Add(entity.Id)) continue;
-                if (!string.IsNullOrWhiteSpace(entity.Id) && query.FullObjects)
-                {
-                    Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Enriching client {entities.Count + 1}: {entity.Name}" });
-                    entity = await GetFullClientAsync(entity.Id, cancellationToken).ConfigureAwait(false);
-                    if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = await GetMainSiteAddressAsync(entity.Raw, cancellationToken).ConfigureAwait(false) ?? entity.BillingAddress;
-                }
-                entities.Add(entity);
-                addedFromPage++;
-                if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) break;
+                pageEntities.Add(entity);
+                if (requestedTotal.HasValue && entities.Count + pageEntities.Count >= requestedTotal.Value) break;
             }
 
-            if (addedFromPage == 0) break;
+            if (query.FullObjects) pageEntities = await EnrichClientsAsync(pageEntities, entities.Count, cancellationToken).ConfigureAwait(false);
+            entities.AddRange(pageEntities);
+
+            if (pageEntities.Count == 0) break;
             if (clients.GetArrayLength() < pageSize) break;
             pageNumber++;
         }
 
         return entities;
+    }
+
+    private async Task<List<ExternalEntity>> EnrichClientsAsync(List<ExternalEntity> clients, int existingCount, CancellationToken cancellationToken)
+    {
+        using var throttle = new SemaphoreSlim(DefaultEnrichmentConcurrency);
+        var tasks = clients.Select((client, index) => EnrichClientAsync(client, existingCount + index + 1, throttle, cancellationToken)).ToArray();
+        var enriched = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return enriched.ToList();
+    }
+
+    private async Task<ExternalEntity> EnrichClientAsync(ExternalEntity client, int ordinal, SemaphoreSlim throttle, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(client.Id)) return client;
+        await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Progress?.Invoke(new EntitySyncProgress { Activity = "Get HaloPSA clients", Status = $"Enriching client {ordinal}: {client.Name}" });
+            var enriched = await GetFullClientAsync(client.Id, cancellationToken).ConfigureAwait(false);
+            if (IsAddressEmpty(enriched.BillingAddress)) enriched.BillingAddress = await GetMainSiteAddressAsync(enriched.Raw, cancellationToken).ConfigureAwait(false) ?? enriched.BillingAddress;
+            return enriched;
+        }
+        finally
+        {
+            throttle.Release();
+        }
     }
 
     public async Task<IReadOnlyList<EntitySyncTopLevel>> GetTopLevelsAsync(CancellationToken cancellationToken)
