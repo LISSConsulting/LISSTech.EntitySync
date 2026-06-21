@@ -188,8 +188,6 @@ Discover top-level IDs with:
 Get-EntitySyncTopLevel -Vendor HaloPSA
 ```
 
-Mapped Halo entities include the source payload in `Raw` for troubleshooting vendor field names, for example: `Get-EntitySyncEntity -Vendor HaloPSA -Type Client -Count 1 | Select-Object -ExpandProperty Raw`.
-
 ### NetSuite
 
 | Variable | Parameter |

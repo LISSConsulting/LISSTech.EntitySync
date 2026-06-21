@@ -1,5 +1,3 @@
-using System.Management.Automation;
-
 namespace LISSTech.EntitySync.Core;
 
 public sealed class ExternalEntity
@@ -16,14 +14,11 @@ public sealed class ExternalEntity
     public string? Domain { get; set; }
     public string? PrimarySiteId { get; set; }
     public string? PrimarySiteName { get; set; }
-    public PSObject? PrimarySiteRaw { get; set; }
-    public EntityAddress? BillingAddress { get; set; }
-    public EntityAddress? ShippingAddress { get; set; }
+    public EntityAddress? PrimaryAddress { get; set; }
     public bool? IsActive { get; set; }
     public DateTimeOffset? CreatedAt { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
     public Dictionary<string, string?> CustomFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public PSObject? Raw { get; set; }
 
     public string? GetExternalId(string name)
     {

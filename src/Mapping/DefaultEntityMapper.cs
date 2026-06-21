@@ -26,15 +26,15 @@ public sealed class DefaultEntityMapper : IEntityMapper
     {
         request.Fields["clientsite_name"] = "Primary Address";
         if (!string.IsNullOrWhiteSpace(source.Phone)) request.Fields["phonenumber"] = source.Phone;
-        if (source.BillingAddress != null)
+        if (source.PrimaryAddress != null)
         {
             request.Fields["delivery_address"] = new Dictionary<string, object?>
             {
-                ["line1"] = source.BillingAddress.Line1,
-                ["line2"] = source.BillingAddress.Line2,
-                ["line3"] = source.BillingAddress.City,
-                ["line4"] = source.BillingAddress.State,
-                ["postcode"] = source.BillingAddress.PostalCode
+                ["line1"] = source.PrimaryAddress.Line1,
+                ["line2"] = source.PrimaryAddress.Line2,
+                ["line3"] = source.PrimaryAddress.City,
+                ["line4"] = source.PrimaryAddress.State,
+                ["postcode"] = source.PrimaryAddress.PostalCode
             };
         }
     }

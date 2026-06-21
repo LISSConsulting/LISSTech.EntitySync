@@ -90,7 +90,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
             IsActive = !(item.GetBool("isInactive") ?? false),
             CreatedAt = item.GetDate("createDate", "dateCreated"),
             UpdatedAt = item.GetDate("modifyDate", "lastModifiedDate"),
-            BillingAddress = new EntityAddress
+            PrimaryAddress = new EntityAddress
             {
                 Line1 = item.GetString("address1", "addr1"),
                 Line2 = item.GetString("address2", "addr2"),

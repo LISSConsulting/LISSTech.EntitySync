@@ -56,8 +56,8 @@ public sealed class WeightedEntityMatcher : IEntityMatcher
             reasons.Add("Phone match");
         }
 
-        var sourcePostal = EntityNormalizer.NormalizePostalCode(source.BillingAddress?.PostalCode);
-        var targetPostal = EntityNormalizer.NormalizePostalCode(target.BillingAddress?.PostalCode);
+        var sourcePostal = EntityNormalizer.NormalizePostalCode(source.PrimaryAddress?.PostalCode);
+        var targetPostal = EntityNormalizer.NormalizePostalCode(target.PrimaryAddress?.PostalCode);
         if (!string.IsNullOrWhiteSpace(sourcePostal) && sourcePostal == targetPostal)
         {
             score += 10;

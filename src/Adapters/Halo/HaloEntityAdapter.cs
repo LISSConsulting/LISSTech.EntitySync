@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Management.Automation;
 using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
@@ -110,8 +109,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             {
                 Vendor = Vendor,
                 Id = row.GetInt("id", "toplevel_id", "key") ?? 0,
-                Name = row.GetString("name", "toplevel_name") ?? string.Empty,
-                Raw = JsonToPsObject(row)
+                Name = row.GetString("name", "toplevel_name") ?? string.Empty
             });
         }
 
@@ -208,10 +206,9 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private static void ApplySiteDetails(ExternalEntity entity, JsonElement site)
     {
-        entity.PrimarySiteRaw = JsonToPsObject(site);
         entity.PrimarySiteId ??= site.GetString("id", "site_id", "key");
         entity.PrimarySiteName ??= site.GetString("name", "site_name");
-        if (IsAddressEmpty(entity.BillingAddress)) entity.BillingAddress = MapAddress(site);
+        if (IsAddressEmpty(entity.PrimaryAddress)) entity.PrimaryAddress = MapAddress(site);
         if (string.IsNullOrWhiteSpace(entity.Email)) entity.Email = site.GetString("accountsemailaddress", "accounts_email_address", "emailaddress", "email_address", "email", "mainemail", "main_email");
         if (string.IsNullOrWhiteSpace(entity.Phone)) entity.Phone = site.GetString("phonenumber", "phone_number", "telephone", "telephone_number", "phone", "mainphone", "main_phone", "tel");
         if (string.IsNullOrWhiteSpace(entity.Website)) entity.Website = site.GetString("website", "web_site", "url");
@@ -233,10 +230,9 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             PrimarySiteId = item.GetString("main_site_id"),
             PrimarySiteName = item.GetString("main_site_name"),
             IsActive = item.GetBool("active", "isactive") ?? (item.GetBool("inactive", "isinactive") is bool inactive ? !inactive : null),
-            BillingAddress = MapAddress(item),
+            PrimaryAddress = MapAddress(item),
             CreatedAt = item.GetDate("datecreated", "created_at", "created"),
-            UpdatedAt = item.GetDate("alastupdate", "last_update", "updated_at", "updated"),
-            Raw = JsonToPsObject(item)
+            UpdatedAt = item.GetDate("alastupdate", "last_update", "updated_at", "updated")
         };
 
         if (item.TryGetPropertyIgnoreCase("customfields", out var customFields) && customFields.ValueKind == JsonValueKind.Array)
@@ -290,11 +286,6 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     private static bool IsAddressEmpty(EntityAddress? address)
     {
         return address == null || string.IsNullOrWhiteSpace(address.Compact());
-    }
-
-    private static PSObject JsonToPsObject(JsonElement item)
-    {
-        return PSObject.AsPSObject(JsonSerializer.Deserialize<Dictionary<string, object?>>(item.GetRawText()) ?? new Dictionary<string, object?>());
     }
 
     private static string? ReadAddressString(JsonElement item, params string[] propertyNames)
