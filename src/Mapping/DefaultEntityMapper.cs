@@ -16,7 +16,8 @@ public sealed class DefaultEntityMapper : IEntityMapper
 
     public EntityWriteRequest MapUpdate(ExternalEntity source, ExternalEntity target, MatchOptions options)
     {
-        var request = new EntityWriteRequest { Vendor = target.Vendor, EntityType = target.EntityType, Id = target.Id, Name = target.Name };
+        var request = new EntityWriteRequest { Vendor = target.Vendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = target.Name };
+        AddCommonHaloFields(request, source);
         var id = source.GetExternalId(options.SourceExternalIdName) ?? source.Id;
         request.CustomFields[options.TargetCustomFieldName] = id;
         return request;
@@ -34,7 +35,8 @@ public sealed class DefaultEntityMapper : IEntityMapper
                 ["line2"] = source.PrimaryAddress.Line2,
                 ["line3"] = source.PrimaryAddress.City,
                 ["line4"] = source.PrimaryAddress.State,
-                ["postcode"] = source.PrimaryAddress.PostalCode
+                ["postcode"] = source.PrimaryAddress.PostalCode,
+                ["country"] = source.PrimaryAddress.Country
             };
         }
     }

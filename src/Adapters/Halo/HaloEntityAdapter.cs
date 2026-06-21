@@ -11,9 +11,13 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private const int DefaultEnrichmentConcurrency = 8;
+    private const int CountryLookupId = 74;
+    private const int RegionLookupId = 77;
 
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
+    private IReadOnlyList<LookupOption>? countryLookupCache;
+    private readonly Dictionary<string, IReadOnlyList<LookupOption>> regionLookupCache = new(StringComparer.OrdinalIgnoreCase);
 
     public HaloEntityAdapter(HaloOptions options)
     {
@@ -150,7 +154,27 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var body = JsonSerializer.Serialize(new[] { ToHaloClientPayload(request, true) });
         using var response = await httpClient.PostAsync("api/client", new StringContent(body, Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false);
         var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        return new EntityWriteResult { Vendor = Vendor, EntityType = request.EntityType, Id = request.Id, Action = "Update", Success = response.IsSuccessStatusCode, Message = response.IsSuccessStatusCode ? null : text, Raw = text };
+        if (!response.IsSuccessStatusCode)
+        {
+            return new EntityWriteResult { Vendor = Vendor, EntityType = request.EntityType, Id = request.Id, Action = "Update", Success = false, Message = text, Raw = text };
+        }
+
+        var siteResult = await UpdatePrimarySiteAsync(request, cancellationToken).ConfigureAwait(false);
+        if (siteResult != null)
+        {
+            return new EntityWriteResult
+            {
+                Vendor = Vendor,
+                EntityType = request.EntityType,
+                Id = request.Id,
+                Action = "Update",
+                Success = siteResult.Success,
+                Message = siteResult.Success ? "Client and primary site updated." : siteResult.Message,
+                Raw = new { Client = text, PrimarySite = siteResult.Raw }
+            };
+        }
+
+        return new EntityWriteResult { Vendor = Vendor, EntityType = request.EntityType, Id = request.Id, Action = "Update", Success = true, Raw = text };
     }
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
@@ -333,13 +357,270 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         payload["name"] = request.Name;
         payload["toplevel_id"] = options.TopLevelId;
         payload["colour"] = options.DefaultColour;
-        foreach (var field in request.Fields) payload[field.Key] = field.Value;
+        foreach (var field in request.Fields)
+        {
+            if (includeId && IsPrimarySiteField(field.Key)) continue;
+            payload[field.Key] = field.Value;
+        }
         if (request.CustomFields.Count > 0)
         {
             payload["customfields"] = request.CustomFields.Select(field => new Dictionary<string, object?> { ["name"] = field.Key, ["value"] = field.Value }).ToArray();
         }
         return payload;
     }
+
+    private static bool IsPrimarySiteField(string fieldName)
+    {
+        return fieldName.Equals("clientsite_name", StringComparison.OrdinalIgnoreCase)
+            || fieldName.Equals("phonenumber", StringComparison.OrdinalIgnoreCase)
+            || fieldName.Equals("delivery_address", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<EntityWriteResult?> UpdatePrimarySiteAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+    {
+        var siteId = request.PrimarySiteId;
+        if (string.IsNullOrWhiteSpace(siteId) || siteId == "0")
+        {
+            var client = !string.IsNullOrWhiteSpace(request.Id) ? await GetFullClientAsync(request.Id, cancellationToken).ConfigureAwait(false) : null;
+            siteId = client?.PrimarySiteId;
+        }
+
+        if (string.IsNullOrWhiteSpace(siteId) || siteId == "0") return null;
+
+        var sitePayload = await ToHaloPrimarySitePayloadAsync(request, siteId, cancellationToken).ConfigureAwait(false);
+        if (sitePayload.Count <= 2) return null;
+
+        var body = JsonSerializer.Serialize(new[] { sitePayload });
+        Trace?.Invoke("HaloPSA POST api/Site");
+        using var response = await httpClient.PostAsync("api/Site", new StringContent(body, Encoding.UTF8, "application/json"), cancellationToken).ConfigureAwait(false);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return new EntityWriteResult
+        {
+            Vendor = Vendor,
+            EntityType = request.EntityType,
+            Id = request.Id,
+            Action = "UpdatePrimarySite",
+            Success = response.IsSuccessStatusCode,
+            Message = response.IsSuccessStatusCode ? null : text,
+            Raw = text
+        };
+    }
+
+    private async Task<Dictionary<string, object?>> ToHaloPrimarySitePayloadAsync(EntityWriteRequest request, string siteId, CancellationToken cancellationToken)
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = ToHaloIdValue(siteId),
+            ["client_id"] = ToHaloIdValue(request.Id)
+        };
+
+        if (request.Fields.TryGetValue("phonenumber", out var phone) && phone != null) payload["phonenumber"] = phone;
+        if (!request.Fields.TryGetValue("delivery_address", out var addressValue) || addressValue is not Dictionary<string, object?> address) return payload;
+
+        payload["delivery_address"] = address;
+
+        var siteAddress = new EntityAddress
+        {
+            Line1 = address.TryGetValue("line1", out var line1) ? line1?.ToString() : null,
+            Line2 = address.TryGetValue("line2", out var line2) ? line2?.ToString() : null,
+            City = address.TryGetValue("line3", out var city) ? city?.ToString() : null,
+            State = address.TryGetValue("line4", out var state) ? state?.ToString() : null,
+            PostalCode = address.TryGetValue("postcode", out var postcode) ? postcode?.ToString() : null,
+            Country = address.TryGetValue("country", out var countryValue) ? countryValue?.ToString() : null
+        };
+
+        var countryLookup = await ResolveCountryAsync(siteAddress, cancellationToken).ConfigureAwait(false);
+        if (countryLookup != null)
+        {
+            payload["country_code"] = countryLookup.Id.ToString();
+            var region = await ResolveRegionAsync(siteAddress, countryLookup.Id, cancellationToken).ConfigureAwait(false);
+            if (region != null) payload["region_code"] = region.Id;
+        }
+
+        var timezone = InferWindowsTimeZone(siteAddress);
+        if (!string.IsNullOrWhiteSpace(timezone)) payload["timezone"] = timezone;
+
+        return payload;
+    }
+
+    private async Task<LookupOption?> ResolveCountryAsync(EntityAddress address, CancellationToken cancellationToken)
+    {
+        var terms = CountryTerms(address).ToArray();
+        if (terms.Length == 0) return null;
+        var countries = countryLookupCache ??= await GetLookupAsync(CountryLookupId, null, cancellationToken).ConfigureAwait(false);
+        return FindLookup(countries, terms);
+    }
+
+    private async Task<LookupOption?> ResolveRegionAsync(EntityAddress address, int countryId, CancellationToken cancellationToken)
+    {
+        var terms = RegionTerms(address).ToArray();
+        if (terms.Length == 0) return null;
+        if (!regionLookupCache.TryGetValue(countryId.ToString(), out var regions))
+        {
+            regions = await GetLookupAsync(RegionLookupId, countryId, cancellationToken).ConfigureAwait(false);
+            regionLookupCache[countryId.ToString()] = regions;
+        }
+
+        return FindLookup(regions, terms);
+    }
+
+    private async Task<IReadOnlyList<LookupOption>> GetLookupAsync(int lookupId, int? countryCodeId, CancellationToken cancellationToken)
+    {
+        var url = "api/Lookup?lookupid=" + lookupId;
+        if (countryCodeId.HasValue) url += "&country_code_id=" + countryCodeId.Value;
+        Trace?.Invoke("HaloPSA GET " + url);
+        using var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ParseLookupOptions(document.RootElement).ToArray();
+    }
+
+    private static IEnumerable<LookupOption> ParseLookupOptions(JsonElement root)
+    {
+        var rows = root.ValueKind == JsonValueKind.Object && root.TryGetPropertyIgnoreCase("lookup", out var lookup) ? lookup : root;
+        if (rows.ValueKind == JsonValueKind.Object && rows.TryGetPropertyIgnoreCase("lookups", out var lookups)) rows = lookups;
+        if (rows.ValueKind != JsonValueKind.Array) yield break;
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            var id = row.GetInt("id") ?? 0;
+            if (id == 0) continue;
+            var values = new List<string?> { row.GetString("name"), row.GetString("originalvalue"), row.GetString("value"), row.GetString("value2"), row.GetString("value3"), row.GetString("value4"), row.GetString("value5"), row.GetString("value6"), row.GetString("value7"), row.GetString("value8"), row.GetString("value9"), row.GetString("value10"), id.ToString() };
+            yield return new LookupOption(id, values.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value!).ToArray());
+        }
+    }
+
+    private static LookupOption? FindLookup(IEnumerable<LookupOption> options, IEnumerable<string> terms)
+    {
+        var normalizedTerms = terms.Select(NormalizeLookupValue).Where(term => term.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var option in options)
+        {
+            if (option.Values.Select(NormalizeLookupValue).Any(normalizedTerms.Contains)) return option;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> CountryTerms(EntityAddress address)
+    {
+        var country = address.Country?.Trim();
+        if (!string.IsNullOrWhiteSpace(country))
+        {
+            yield return country;
+            if (country.Equals("US", StringComparison.OrdinalIgnoreCase) || country.Equals("USA", StringComparison.OrdinalIgnoreCase)) yield return "United States";
+            if (country.Equals("CA", StringComparison.OrdinalIgnoreCase)) yield return "Canada";
+        }
+
+        if (LooksCanadian(address))
+        {
+            yield return "Canada";
+            yield return "CA";
+        }
+        else if (LooksUnitedStates(address))
+        {
+            yield return "United States";
+            yield return "United States of America";
+            yield return "USA";
+            yield return "US";
+        }
+    }
+
+    private static IEnumerable<string> RegionTerms(EntityAddress address)
+    {
+        if (string.IsNullOrWhiteSpace(address.State)) yield break;
+        var state = address.State.Trim();
+        yield return state;
+        if (StateNames.TryGetValue(state, out var stateName)) yield return stateName;
+        if (StateCodes.TryGetValue(state, out var stateCode)) yield return stateCode;
+    }
+
+    private static string? InferWindowsTimeZone(EntityAddress address)
+    {
+        if (LooksCanadian(address)) return InferCanadianTimeZone(address.State);
+        if (LooksUnitedStates(address)) return InferUnitedStatesTimeZone(address.State);
+        return null;
+    }
+
+    private static string? InferUnitedStatesTimeZone(string? state)
+    {
+        var code = NormalizeRegionCode(state);
+        return code switch
+        {
+            "ME" or "NH" or "VT" or "MA" or "RI" or "CT" or "NY" or "NJ" or "PA" or "DE" or "MD" or "DC" or "VA" or "WV" or "NC" or "SC" or "GA" or "FL" or "OH" or "MI" or "IN" or "KY" => "Eastern Standard Time",
+            "AL" or "AR" or "IL" or "IA" or "LA" or "MN" or "MS" or "MO" or "OK" or "WI" or "TX" or "TN" or "KS" or "NE" or "ND" or "SD" => "Central Standard Time",
+            "AZ" or "CO" or "ID" or "MT" or "NM" or "UT" or "WY" => "Mountain Standard Time",
+            "CA" or "NV" or "OR" or "WA" => "Pacific Standard Time",
+            "AK" => "Alaskan Standard Time",
+            "HI" => "Hawaiian Standard Time",
+            _ => null
+        };
+    }
+
+    private static string? InferCanadianTimeZone(string? province)
+    {
+        var code = NormalizeRegionCode(province);
+        return code switch
+        {
+            "NL" => "Newfoundland Standard Time",
+            "NB" or "NS" or "PE" => "Atlantic Standard Time",
+            "ON" or "QC" => "Eastern Standard Time",
+            "MB" or "SK" => "Central Standard Time",
+            "AB" or "NT" or "NU" or "YT" => "Mountain Standard Time",
+            "BC" => "Pacific Standard Time",
+            _ => null
+        };
+    }
+
+    private static bool LooksUnitedStates(EntityAddress address)
+    {
+        var country = address.Country?.Trim();
+        if (!string.IsNullOrWhiteSpace(country)) return IsUnitedStates(country);
+        if (!string.IsNullOrWhiteSpace(address.State) && NormalizeRegionCode(address.State) is string code && UnitedStatesCodes.Contains(code)) return true;
+        return !string.IsNullOrWhiteSpace(address.PostalCode) && address.PostalCode.Trim().Take(5).All(char.IsDigit);
+    }
+
+    private static bool LooksCanadian(EntityAddress address)
+    {
+        var country = address.Country?.Trim();
+        if (!string.IsNullOrWhiteSpace(country)) return IsCanada(country);
+        if (!string.IsNullOrWhiteSpace(address.State) && NormalizeRegionCode(address.State) is string code && CanadianCodes.Contains(code)) return true;
+        return !string.IsNullOrWhiteSpace(address.PostalCode) && address.PostalCode.Any(char.IsLetter);
+    }
+
+    private static bool IsUnitedStates(string country) => country.Equals("US", StringComparison.OrdinalIgnoreCase) || country.Equals("USA", StringComparison.OrdinalIgnoreCase) || country.Equals("United States", StringComparison.OrdinalIgnoreCase) || country.Equals("United States of America", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCanada(string country) => country.Equals("CA", StringComparison.OrdinalIgnoreCase) || country.Equals("Canada", StringComparison.OrdinalIgnoreCase);
+
+    private static object? ToHaloIdValue(string? value)
+    {
+        return int.TryParse(value, out var id) ? id : value;
+    }
+
+    private static string NormalizeRegionCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var trimmed = value.Trim();
+        if (StateCodes.TryGetValue(trimmed, out var code)) return code;
+        return trimmed.ToUpperInvariant();
+    }
+
+    private static string NormalizeLookupValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return new string(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+    }
+
+    private sealed record LookupOption(int Id, IReadOnlyList<string> Values);
+
+    private static readonly Dictionary<string, string> StateNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["AL"] = "Alabama", ["AK"] = "Alaska", ["AZ"] = "Arizona", ["AR"] = "Arkansas", ["CA"] = "California", ["CO"] = "Colorado", ["CT"] = "Connecticut", ["DE"] = "Delaware", ["DC"] = "District of Columbia", ["FL"] = "Florida", ["GA"] = "Georgia", ["HI"] = "Hawaii", ["ID"] = "Idaho", ["IL"] = "Illinois", ["IN"] = "Indiana", ["IA"] = "Iowa", ["KS"] = "Kansas", ["KY"] = "Kentucky", ["LA"] = "Louisiana", ["ME"] = "Maine", ["MD"] = "Maryland", ["MA"] = "Massachusetts", ["MI"] = "Michigan", ["MN"] = "Minnesota", ["MS"] = "Mississippi", ["MO"] = "Missouri", ["MT"] = "Montana", ["NE"] = "Nebraska", ["NV"] = "Nevada", ["NH"] = "New Hampshire", ["NJ"] = "New Jersey", ["NM"] = "New Mexico", ["NY"] = "New York", ["NC"] = "North Carolina", ["ND"] = "North Dakota", ["OH"] = "Ohio", ["OK"] = "Oklahoma", ["OR"] = "Oregon", ["PA"] = "Pennsylvania", ["RI"] = "Rhode Island", ["SC"] = "South Carolina", ["SD"] = "South Dakota", ["TN"] = "Tennessee", ["TX"] = "Texas", ["UT"] = "Utah", ["VT"] = "Vermont", ["VA"] = "Virginia", ["WA"] = "Washington", ["WV"] = "West Virginia", ["WI"] = "Wisconsin", ["WY"] = "Wyoming", ["AB"] = "Alberta", ["BC"] = "British Columbia", ["MB"] = "Manitoba", ["NB"] = "New Brunswick", ["NL"] = "Newfoundland and Labrador", ["NS"] = "Nova Scotia", ["NT"] = "Northwest Territories", ["NU"] = "Nunavut", ["ON"] = "Ontario", ["PE"] = "Prince Edward Island", ["QC"] = "Quebec", ["SK"] = "Saskatchewan", ["YT"] = "Yukon"
+    };
+
+    private static readonly HashSet<string> CanadianCodes = new(StringComparer.OrdinalIgnoreCase) { "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT" };
+    private static readonly Dictionary<string, string> StateCodes = StateNames.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> UnitedStatesCodes = StateNames.Keys.Where(code => code.Length == 2 && !CanadianCodes.Contains(code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 
