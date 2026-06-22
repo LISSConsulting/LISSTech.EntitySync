@@ -22,6 +22,8 @@ Connects a vendor adapter for later discovery, planning, and sync operations. Co
 
 HaloPSA connections use client credentials. The cmdlet posts `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope` to `auth/token`, falls back to `token` if needed, then uses the returned `access_token` for API calls.
 
+NetSuite connections require the RESTlet external URL, not the SuiteTalk account host root. Use a URL shaped like `https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>`.
+
 ## EXAMPLES
 
 ### Example 1

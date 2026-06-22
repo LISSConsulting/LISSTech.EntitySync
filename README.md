@@ -199,6 +199,12 @@ Get-EntitySyncTopLevel -Vendor HaloPSA
 | `NETSUITE_TOKEN_ID` | `-NetSuiteTokenId` |
 | `NETSUITE_TOKEN_SECRET` | `-NetSuiteTokenSecret` |
 
+`NETSUITE_RESTLET_URL` must be the RESTlet external URL, not the SuiteTalk account host root. Expected format:
+
+```text
+https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>
+```
+
 ---
 
 ## 🧨 Safety Model

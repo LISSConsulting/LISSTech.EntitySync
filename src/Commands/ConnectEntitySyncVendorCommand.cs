@@ -73,7 +73,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
             var nsOptions = new NetSuiteOptions
             {
-                RestletUrl = Require(DynamicValue<string?>("NetSuiteRestletUrl", null), "NETSUITE_RESTLET_URL", "NetSuiteRestletUrl"),
+                RestletUrl = ValidateNetSuiteRestletUrl(Require(DynamicValue<string?>("NetSuiteRestletUrl", null), "NETSUITE_RESTLET_URL", "NetSuiteRestletUrl")),
                 AccountId = Require(DynamicValue<string?>("NetSuiteAccountId", null), "NETSUITE_ACCOUNT_ID", "NetSuiteAccountId"),
                 ConsumerKey = Require(DynamicValue<string?>("NetSuiteConsumerKey", null), "NETSUITE_CONSUMER_KEY", "NetSuiteConsumerKey"),
                 ConsumerSecret = Require(DynamicValue<string?>("NetSuiteConsumerSecret", null), "NETSUITE_CONSUMER_SECRET", "NetSuiteConsumerSecret"),
@@ -114,6 +114,36 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         if (string.IsNullOrWhiteSpace(value)) value = Environment.GetEnvironmentVariable(environmentVariable);
         if (string.IsNullOrWhiteSpace(value)) throw new InvalidOperationException($"{parameterName} is required. Pass -{parameterName} or set {environmentVariable}.");
         return value;
+    }
+
+    private static string ValidateNetSuiteRestletUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) throw new InvalidOperationException("NetSuiteRestletUrl must be an absolute HTTPS RESTlet URL.");
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("NetSuiteRestletUrl must use HTTPS.");
+        if (!uri.AbsolutePath.EndsWith("/app/site/hosting/restlet.nl", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("NetSuiteRestletUrl must be the RESTlet external URL, not the SuiteTalk account host root. Expected format: https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>.");
+        }
+
+        var query = ParseQuery(uri.Query);
+        if (!query.TryGetValue("script", out var script) || string.IsNullOrWhiteSpace(script) || !query.TryGetValue("deploy", out var deploy) || string.IsNullOrWhiteSpace(deploy))
+        {
+            throw new InvalidOperationException("NetSuiteRestletUrl must include script and deploy query parameters, for example: https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>.");
+        }
+
+        return value;
+    }
+
+    private static Dictionary<string, string> ParseQuery(string query)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2);
+            values[Uri.UnescapeDataString(pair[0])] = pair.Length == 2 ? Uri.UnescapeDataString(pair[1]) : string.Empty;
+        }
+
+        return values;
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)
