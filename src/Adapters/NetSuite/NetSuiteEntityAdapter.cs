@@ -28,11 +28,10 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Authorization = new AuthenticationHeaderValue("OAuth", BuildOAuthHeader("GET", uri));
         using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var document = await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
         var root = document.RootElement;
         var array = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items) ? items : root;
+        if (array.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"NetSuite RESTlet returned JSON, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
         var entities = new List<ExternalEntity>();
         foreach (var item in array.EnumerateArray()) entities.Add(MapCustomer(item));
         return entities;
@@ -58,6 +57,51 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
     }
 
     public void Dispose() => httpClient.Dispose();
+
+    private static async Task<JsonDocument> ReadJsonResponseAsync(HttpResponseMessage response, Uri uri, CancellationToken cancellationToken)
+    {
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"NetSuite RESTlet GET failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. URI: {SanitizeUri(uri)}. Response preview: {Preview(text)}");
+        }
+
+        if (LooksLikeHtml(text))
+        {
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "<none>";
+            throw new InvalidOperationException($"NetSuite RESTlet returned HTML instead of JSON. This usually means the RESTlet URL points to a login/error page, the deployment is unavailable, or OAuth/role permissions are wrong. Content-Type: {contentType}. URI: {SanitizeUri(uri)}. Response preview: {Preview(text)}");
+        }
+
+        try
+        {
+            return JsonDocument.Parse(text);
+        }
+        catch (JsonException ex)
+        {
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "<none>";
+            throw new InvalidOperationException($"NetSuite RESTlet returned non-JSON content. Content-Type: {contentType}. URI: {SanitizeUri(uri)}. Response preview: {Preview(text)}", ex);
+        }
+    }
+
+    private static bool LooksLikeHtml(string text)
+    {
+        var trimmed = text.TrimStart();
+        return trimmed.StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("<", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Preview(string text)
+    {
+        var oneLine = string.Join(" ", text.Replace("\r", " ").Replace("\n", " ").Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        return oneLine.Length <= 500 ? oneLine : oneLine[..500] + "...";
+    }
+
+    private static string SanitizeUri(Uri uri)
+    {
+        var builder = new UriBuilder(uri) { Query = string.Empty };
+        return builder.Uri.ToString();
+    }
 
     private Uri BuildUri(EntityQuery query)
     {
