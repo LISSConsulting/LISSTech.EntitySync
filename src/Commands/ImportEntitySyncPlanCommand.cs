@@ -14,6 +14,12 @@ public sealed class ImportEntitySyncPlanCommand : PSCmdlet
     protected override void EndProcessing()
     {
         var resolved = GetUnresolvedProviderPathFromPSPath(Path);
+        if (resolved.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            WriteObject(EntitySyncPlanWorkbook.Read(resolved));
+            return;
+        }
+
         var json = File.ReadAllText(resolved);
         WriteObject(JsonSerializer.Deserialize<EntitySyncPlan>(json) ?? throw new InvalidOperationException("Plan file did not contain a valid EntitySync plan."));
     }

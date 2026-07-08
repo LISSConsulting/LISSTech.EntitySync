@@ -7,64 +7,144 @@ public sealed class WeightedEntityMatcher : IEntityMatcher
 {
     public IReadOnlyList<EntityMatchCandidate> FindMatches(ExternalEntity source, IReadOnlyList<ExternalEntity> targets, MatchOptions options)
     {
-        return targets.Select(target => Score(source, target, options))
-            .Where(candidate => candidate.Score > 0)
-            .OrderByDescending(candidate => candidate.Score)
-            .ThenBy(candidate => candidate.Target.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(10)
-            .ToArray();
+        return CreateIndex(targets, options).FindMatches(source);
     }
 
-    private static EntityMatchCandidate Score(ExternalEntity source, ExternalEntity target, MatchOptions options)
+    public EntityMatchIndex CreateIndex(IReadOnlyList<ExternalEntity> targets, MatchOptions options) => new(targets, options);
+
+    public sealed class EntityMatchIndex
+    {
+        private readonly MatchOptions options;
+        private readonly TargetInfo[] targets;
+        private readonly Dictionary<string, List<TargetInfo>> targetsByExternalId = new(StringComparer.OrdinalIgnoreCase);
+
+        internal EntityMatchIndex(IReadOnlyList<ExternalEntity> targets, MatchOptions options)
+        {
+            this.options = options;
+            this.targets = targets.Select(target => new TargetInfo(target, options)).ToArray();
+            foreach (var target in this.targets)
+            {
+                if (string.IsNullOrWhiteSpace(target.ExternalId)) continue;
+                if (!targetsByExternalId.TryGetValue(target.ExternalId, out var bucket))
+                {
+                    bucket = new List<TargetInfo>();
+                    targetsByExternalId[target.ExternalId] = bucket;
+                }
+
+                bucket.Add(target);
+            }
+        }
+
+        public IReadOnlyList<EntityMatchCandidate> FindMatches(ExternalEntity source)
+        {
+            var sourceInfo = new SourceInfo(source, options);
+            if (!string.IsNullOrWhiteSpace(sourceInfo.ExternalId) && targetsByExternalId.TryGetValue(sourceInfo.ExternalId, out var linkedTargets))
+            {
+                return linkedTargets
+                    .Select(target => Linked(source, target.Entity, target.ExternalIdName, sourceInfo.ExternalId))
+                    .OrderBy(candidate => candidate.Target.Name, StringComparer.OrdinalIgnoreCase)
+                    .Take(10)
+                    .ToArray();
+            }
+
+            return targets.Select(target => Score(sourceInfo, target, options))
+                .Where(candidate => candidate.Score > 0)
+                .OrderByDescending(candidate => candidate.Score)
+                .ThenBy(candidate => candidate.Target.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToArray();
+        }
+    }
+
+    private sealed class SourceInfo
+    {
+        public SourceInfo(ExternalEntity entity, MatchOptions options)
+        {
+            Entity = entity;
+            ExternalId = entity.GetExternalId(options.SourceExternalIdName);
+            NormalizedName = EntityNormalizer.NormalizeName(entity.Name);
+            Domain = string.IsNullOrWhiteSpace(entity.Domain) ? EntityNormalizer.NormalizeDomain(entity.Website, entity.Email) : entity.Domain;
+            Phone = EntityNormalizer.NormalizePhone(entity.Phone);
+            Postal = EntityNormalizer.NormalizePostalCode(entity.PrimaryAddress?.PostalCode);
+        }
+
+        public ExternalEntity Entity { get; }
+        public string? ExternalId { get; }
+        public string NormalizedName { get; }
+        public string? Domain { get; }
+        public string Phone { get; }
+        public string Postal { get; }
+    }
+
+    private sealed class TargetInfo
+    {
+        public TargetInfo(ExternalEntity entity, MatchOptions options)
+        {
+            Entity = entity;
+            ExternalId = entity.GetExternalId(options.TargetExternalIdName);
+            ExternalIdName = options.TargetExternalIdName;
+            if (string.IsNullOrWhiteSpace(ExternalId))
+            {
+                ExternalId = entity.GetCustomField(options.TargetCustomFieldName);
+                ExternalIdName = options.TargetCustomFieldName;
+            }
+            NormalizedName = EntityNormalizer.NormalizeName(entity.Name);
+            Domain = string.IsNullOrWhiteSpace(entity.Domain) ? EntityNormalizer.NormalizeDomain(entity.Website, entity.Email) : entity.Domain;
+            Phone = EntityNormalizer.NormalizePhone(entity.Phone);
+            Postal = EntityNormalizer.NormalizePostalCode(entity.PrimaryAddress?.PostalCode);
+        }
+
+        public ExternalEntity Entity { get; }
+        public string? ExternalId { get; }
+        public string ExternalIdName { get; }
+        public string NormalizedName { get; }
+        public string? Domain { get; }
+        public string Phone { get; }
+        public string Postal { get; }
+    }
+
+    private static EntityMatchCandidate Linked(ExternalEntity source, ExternalEntity target, string externalIdName, string sourceExternalId)
+    {
+        return new EntityMatchCandidate
+        {
+            Source = source,
+            Target = target,
+            Score = 100,
+            MatchType = "Linked",
+            Reasons = { $"External ID match: {externalIdName}={sourceExternalId}" }
+        };
+    }
+
+    private static EntityMatchCandidate Score(SourceInfo source, TargetInfo target, MatchOptions options)
     {
         var reasons = new List<string>();
         var score = 0;
-        var sourceExternalId = source.GetExternalId(options.SourceExternalIdName);
-        var targetExternalId = target.GetExternalId(options.TargetExternalIdName) ?? target.GetCustomField(options.TargetCustomFieldName);
-
-        if (!string.IsNullOrWhiteSpace(sourceExternalId) && string.Equals(sourceExternalId, targetExternalId, StringComparison.OrdinalIgnoreCase))
-        {
-            return new EntityMatchCandidate
-            {
-                Source = source,
-                Target = target,
-                Score = 100,
-                MatchType = "Linked",
-                Reasons = { $"External ID match: {options.TargetCustomFieldName}={sourceExternalId}" }
-            };
-        }
 
         var nameScore = Similarity(source.NormalizedName, target.NormalizedName);
-        if (nameScore >= 98) { score += 55; reasons.Add("Exact normalized name"); }
+        if (nameScore >= 98) { score += 70; reasons.Add("Exact normalized name"); }
         else if (nameScore >= 90) { score += 45; reasons.Add($"Strong name similarity: {nameScore}"); }
         else if (nameScore >= 75) { score += 30; reasons.Add($"Name similarity: {nameScore}"); }
         else if (nameScore >= 60) { score += 15; reasons.Add($"Weak name similarity: {nameScore}"); }
 
-        var sourceDomain = string.IsNullOrWhiteSpace(source.Domain) ? EntityNormalizer.NormalizeDomain(source.Website, source.Email) : source.Domain;
-        var targetDomain = string.IsNullOrWhiteSpace(target.Domain) ? EntityNormalizer.NormalizeDomain(target.Website, target.Email) : target.Domain;
-        if (!string.IsNullOrWhiteSpace(sourceDomain) && sourceDomain == targetDomain)
+        if (!string.IsNullOrWhiteSpace(source.Domain) && source.Domain == target.Domain)
         {
             score += 25;
-            reasons.Add("Domain match: " + sourceDomain);
+            reasons.Add("Domain match: " + source.Domain);
         }
 
-        var sourcePhone = EntityNormalizer.NormalizePhone(source.Phone);
-        var targetPhone = EntityNormalizer.NormalizePhone(target.Phone);
-        if (sourcePhone.Length >= 7 && sourcePhone == targetPhone)
+        if (source.Phone.Length >= 7 && source.Phone == target.Phone)
         {
             score += 15;
             reasons.Add("Phone match");
         }
 
-        var sourcePostal = EntityNormalizer.NormalizePostalCode(source.PrimaryAddress?.PostalCode);
-        var targetPostal = EntityNormalizer.NormalizePostalCode(target.PrimaryAddress?.PostalCode);
-        if (!string.IsNullOrWhiteSpace(sourcePostal) && sourcePostal == targetPostal)
+        if (!string.IsNullOrWhiteSpace(source.Postal) && source.Postal == target.Postal)
         {
             score += 10;
             reasons.Add("Postal code match");
         }
 
-        if (target.IsActive == false)
+        if (target.Entity.IsActive == false)
         {
             score = Math.Max(0, score - 10);
             reasons.Add("Inactive target penalty");
@@ -72,12 +152,36 @@ public sealed class WeightedEntityMatcher : IEntityMatcher
 
         return new EntityMatchCandidate
         {
-            Source = source,
-            Target = target,
+            Source = source.Entity,
+            Target = target.Entity,
             Score = Math.Min(99, score),
             MatchType = score >= options.AutoLinkScore ? "HighConfidence" : score >= options.ReviewScore ? "NeedsReview" : "LowConfidence",
             Reasons = reasons
         };
+    }
+
+    private static EntityMatchCandidate Score(ExternalEntity source, ExternalEntity target, MatchOptions options)
+    {
+        var sourceExternalId = source.GetExternalId(options.SourceExternalIdName);
+        var targetExternalId = target.GetExternalId(options.TargetExternalIdName) ?? target.GetCustomField(options.TargetCustomFieldName);
+
+        if (!string.IsNullOrWhiteSpace(sourceExternalId) && string.Equals(sourceExternalId, targetExternalId, StringComparison.OrdinalIgnoreCase))
+        {
+            var externalIdName = !string.IsNullOrWhiteSpace(target.GetExternalId(options.TargetExternalIdName)) ? options.TargetExternalIdName : options.TargetCustomFieldName;
+            return Linked(source, target, externalIdName, sourceExternalId);
+        }
+
+        return Score(new SourceInfo(source, options), new TargetInfo(target, options), options);
+    }
+
+    private static IReadOnlyList<EntityMatchCandidate> LegacyFindMatches(ExternalEntity source, IReadOnlyList<ExternalEntity> targets, MatchOptions options)
+    {
+        return targets.Select(target => Score(source, target, options))
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Target.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToArray();
     }
 
     private static int Similarity(string left, string right)

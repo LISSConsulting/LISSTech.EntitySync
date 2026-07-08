@@ -8,4 +8,5 @@ public sealed class EntitySyncPlan
     public string TargetEntityType { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<EntitySyncPlanItem> Items { get; set; } = new();
+    public List<ExternalEntity> TargetCandidates { get; set; } = new();
 }

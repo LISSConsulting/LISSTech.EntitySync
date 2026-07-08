@@ -3,6 +3,7 @@ using System.Management.Automation;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
+using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
@@ -13,7 +14,8 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 {
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
-    [ValidateSet("HaloPSA", "NetSuite")]
+    [Parameter(Mandatory = true, ParameterSetName = "NCentral")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
@@ -30,15 +32,36 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             AddDynamicParameter<int>("HaloTopLevelId", 1);
             AddDynamicParameter<string>("HaloDefaultColour", "#E83C4A");
             AddDynamicParameter<string>("HaloNetSuiteCustomerIdField", "CFNetSuiteCustomerID");
+            AddDynamicParameter<string>("HaloNetSuiteCustomerIdFieldId");
+            AddDynamicParameter<string>("HaloNetSuiteCustomerNameField", "CFNetSuiteCustomerName");
+            AddDynamicParameter<int>("HaloCustomerRelationshipId", 0);
+            AddDynamicParameter<string>("HaloCustomerRelationshipName");
+            AddDynamicParameter<int>("HaloCustomerTypeId", 0);
+            AddDynamicParameter<string>("HaloCustomerTypeName");
+            AddDynamicParameter<string>("HaloAccountManagerEmail");
+            AddDynamicParameter<string>("HaloAccountManagerField", "CFassignedtam");
+            AddDynamicParameter<int>("HaloNCentralIntegrationId", 0);
         }
         else if (Vendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
         {
-            AddDynamicParameter<string>("NetSuiteRestletUrl");
             AddDynamicParameter<string>("NetSuiteAccountId");
             AddDynamicParameter<string>("NetSuiteConsumerKey");
             AddDynamicParameter<string>("NetSuiteConsumerSecret");
             AddDynamicParameter<string>("NetSuiteTokenId");
             AddDynamicParameter<string>("NetSuiteTokenSecret");
+        }
+        else if (Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDynamicParameter<string>("NCentralBaseUrl");
+            AddDynamicParameter<string>("NCentralUserApiToken");
+            AddDynamicParameter<string>("NCentralServiceOrgId");
+            AddDynamicParameter<string>("NCentralSoapUsername");
+            AddDynamicParameter<string>("NCentralSoapPassword");
+            AddDynamicParameter<string>("NCentralSoapEndpointPath", "dms2/services2/ServerEI2");
+            AddDynamicParameter<string>("NCentralSoapNamespace", "http://ei2.nobj.nable.com/");
+            AddDynamicParameter<string>("NCentralHaloPsaIdPropertyLabel", "HaloPSA Client ID");
+            AddDynamicParameter<string>("NCentralNetSuiteIdPropertyLabel", "NetSuite Customer ID");
+            AddDynamicParameter<string>("NCentralNetSuiteNamePropertyLabel", "NetSuite Customer Name");
         }
 
         return dynamicParameters;
@@ -54,6 +77,16 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 var haloTopLevelId = DynamicValue("HaloTopLevelId", 1);
                 var haloDefaultColour = DynamicValue("HaloDefaultColour", "#E83C4A");
                 var haloNetSuiteCustomerIdField = DynamicValue("HaloNetSuiteCustomerIdField", "CFNetSuiteCustomerID");
+                var haloNetSuiteCustomerIdFieldId = DynamicValue<string?>("HaloNetSuiteCustomerIdFieldId", null) ?? Environment.GetEnvironmentVariable("HALO_NETSUITE_CUSTOMER_ID_FIELD_ID") ?? string.Empty;
+                var haloNetSuiteCustomerNameField = DynamicValue<string?>("HaloNetSuiteCustomerNameField", null) ?? Environment.GetEnvironmentVariable("HALO_NETSUITE_CUSTOMER_NAME_FIELD") ?? "CFNetSuiteCustomerName";
+                var haloCustomerRelationshipId = DynamicValue("HaloCustomerRelationshipId", 0);
+                var haloCustomerRelationshipName = DynamicValue("HaloCustomerRelationshipName", string.Empty);
+                var haloCustomerTypeId = DynamicValue("HaloCustomerTypeId", 0);
+                var haloCustomerTypeName = DynamicValue("HaloCustomerTypeName", string.Empty);
+                var haloAccountManagerEmail = DynamicValue<string?>("HaloAccountManagerEmail", null) ?? Environment.GetEnvironmentVariable("HALO_ACCOUNT_MANAGER_EMAIL");
+                var haloAccountManagerField = DynamicValue("HaloAccountManagerField", "CFassignedtam");
+                var haloNCentralIntegrationId = DynamicValue("HaloNCentralIntegrationId", 0);
+                if (haloNCentralIntegrationId <= 0 && int.TryParse(Environment.GetEnvironmentVariable("HALO_NCENTRAL_INTEGRATION_ID"), out var envIntegrationId)) haloNCentralIntegrationId = envIntegrationId;
                 var haloBaseUrl = Require(DynamicValue<string?>("HaloBaseUrl", null), "HALO_BASE_URL", "HaloBaseUrl");
                 var haloClientId = Require(DynamicValue<string?>("HaloClientId", null), "HALO_CLIENT_ID", "HaloClientId");
                 var haloClientSecret = Require(DynamicValue<string?>("HaloClientSecret", null), "HALO_CLIENT_SECRET", "HaloClientSecret");
@@ -63,7 +96,16 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                     AccessToken = GetHaloAccessToken(haloBaseUrl, haloClientId, haloClientSecret, haloScope),
                     TopLevelId = haloTopLevelId,
                     DefaultColour = haloDefaultColour,
-                    NetSuiteCustomerIdField = haloNetSuiteCustomerIdField
+                    NetSuiteCustomerIdField = haloNetSuiteCustomerIdField,
+                    NetSuiteCustomerIdFieldId = haloNetSuiteCustomerIdFieldId,
+                    NetSuiteCustomerNameField = haloNetSuiteCustomerNameField,
+                    CustomerRelationshipId = haloCustomerRelationshipId,
+                    CustomerRelationshipName = haloCustomerRelationshipName,
+                    CustomerTypeId = haloCustomerTypeId,
+                    CustomerTypeName = haloCustomerTypeName,
+                    AccountManagerEmail = haloAccountManagerEmail,
+                    AccountManagerField = haloAccountManagerField,
+                    NCentralIntegrationId = haloNCentralIntegrationId
                 };
                 var adapter = new HaloEntityAdapter(options);
                 ConnectionRegistry.Set(adapter);
@@ -71,18 +113,38 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 return;
             }
 
-            var nsOptions = new NetSuiteOptions
+            if (Vendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
             {
-                RestletUrl = ValidateNetSuiteRestletUrl(Require(DynamicValue<string?>("NetSuiteRestletUrl", null), "NETSUITE_RESTLET_URL", "NetSuiteRestletUrl")),
-                AccountId = Require(DynamicValue<string?>("NetSuiteAccountId", null), "NETSUITE_ACCOUNT_ID", "NetSuiteAccountId"),
-                ConsumerKey = Require(DynamicValue<string?>("NetSuiteConsumerKey", null), "NETSUITE_CONSUMER_KEY", "NetSuiteConsumerKey"),
-                ConsumerSecret = Require(DynamicValue<string?>("NetSuiteConsumerSecret", null), "NETSUITE_CONSUMER_SECRET", "NetSuiteConsumerSecret"),
-                TokenId = Require(DynamicValue<string?>("NetSuiteTokenId", null), "NETSUITE_TOKEN_ID", "NetSuiteTokenId"),
-                TokenSecret = Require(DynamicValue<string?>("NetSuiteTokenSecret", null), "NETSUITE_TOKEN_SECRET", "NetSuiteTokenSecret")
+                var nsOptions = new NetSuiteOptions
+                {
+                    AccountId = ValidateNetSuiteAccountId(Require(DynamicValue<string?>("NetSuiteAccountId", null), "NETSUITE_ACCOUNT_ID", "NetSuiteAccountId")),
+                    ConsumerKey = Require(DynamicValue<string?>("NetSuiteConsumerKey", null), "NETSUITE_CONSUMER_KEY", "NetSuiteConsumerKey"),
+                    ConsumerSecret = Require(DynamicValue<string?>("NetSuiteConsumerSecret", null), "NETSUITE_CONSUMER_SECRET", "NetSuiteConsumerSecret"),
+                    TokenId = Require(DynamicValue<string?>("NetSuiteTokenId", null), "NETSUITE_TOKEN_ID", "NetSuiteTokenId"),
+                    TokenSecret = Require(DynamicValue<string?>("NetSuiteTokenSecret", null), "NETSUITE_TOKEN_SECRET", "NetSuiteTokenSecret")
+                };
+                var nsAdapter = new NetSuiteEntityAdapter(nsOptions);
+                ConnectionRegistry.Set(nsAdapter);
+                WriteObject(new EntitySyncConnection { Vendor = nsAdapter.Vendor, Adapter = nsAdapter });
+                return;
+            }
+
+            var ncOptions = new NCentralOptions
+            {
+                BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("NCentralBaseUrl", null), "NCENTRAL_BASE_URL", "NCentralBaseUrl"), "NCentralBaseUrl"),
+                UserApiToken = Require(DynamicValue<string?>("NCentralUserApiToken", null), "NCENTRAL_USER_API_TOKEN", "NCentralUserApiToken"),
+                ServiceOrgId = Require(DynamicValue<string?>("NCentralServiceOrgId", null), "NCENTRAL_SERVICE_ORG_ID", "NCentralServiceOrgId"),
+                SoapUsername = DynamicValue<string?>("NCentralSoapUsername", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_SOAP_USERNAME") ?? string.Empty,
+                SoapPassword = DynamicValue<string?>("NCentralSoapPassword", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_SOAP_PASSWORD") ?? string.Empty,
+                SoapEndpointPath = DynamicValue<string?>("NCentralSoapEndpointPath", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_SOAP_ENDPOINT_PATH") ?? "dms2/services2/ServerEI2",
+                SoapNamespace = DynamicValue<string?>("NCentralSoapNamespace", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_SOAP_NAMESPACE") ?? "http://ei2.nobj.nable.com/",
+                HaloPsaIdPropertyLabel = DynamicValue<string?>("NCentralHaloPsaIdPropertyLabel", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_HALOPSA_ID_PROPERTY_LABEL") ?? "HaloPSA Client ID",
+                NetSuiteIdPropertyLabel = DynamicValue<string?>("NCentralNetSuiteIdPropertyLabel", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_NETSUITE_ID_PROPERTY_LABEL") ?? "NetSuite Customer ID",
+                NetSuiteNamePropertyLabel = DynamicValue<string?>("NCentralNetSuiteNamePropertyLabel", null) ?? Environment.GetEnvironmentVariable("NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL") ?? "NetSuite Customer Name"
             };
-            var nsAdapter = new NetSuiteEntityAdapter(nsOptions);
-            ConnectionRegistry.Set(nsAdapter);
-            WriteObject(new EntitySyncConnection { Vendor = nsAdapter.Vendor, Adapter = nsAdapter });
+            var ncAdapter = new NCentralEntityAdapter(ncOptions);
+            ConnectionRegistry.Set(ncAdapter);
+            WriteObject(new EntitySyncConnection { Vendor = ncAdapter.Vendor, Adapter = ncAdapter });
         }
         catch (Exception ex)
         {
@@ -116,34 +178,18 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         return value;
     }
 
-    private static string ValidateNetSuiteRestletUrl(string value)
+    private static string ValidateNetSuiteAccountId(string value)
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) throw new InvalidOperationException("NetSuiteRestletUrl must be an absolute HTTPS RESTlet URL.");
-        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("NetSuiteRestletUrl must use HTTPS.");
-        if (!uri.AbsolutePath.EndsWith("/app/site/hosting/restlet.nl", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("NetSuiteRestletUrl must be the RESTlet external URL, not the SuiteTalk account host root. Expected format: https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>.");
-        }
-
-        var query = ParseQuery(uri.Query);
-        if (!query.TryGetValue("script", out var script) || string.IsNullOrWhiteSpace(script) || !query.TryGetValue("deploy", out var deploy) || string.IsNullOrWhiteSpace(deploy))
-        {
-            throw new InvalidOperationException("NetSuiteRestletUrl must include script and deploy query parameters, for example: https://<account>.restlets.api.netsuite.com/app/site/hosting/restlet.nl?script=<script>&deploy=<deploy>.");
-        }
-
-        return value;
+        if (string.IsNullOrWhiteSpace(value)) throw new InvalidOperationException("NetSuiteAccountId is required.");
+        if (value.Contains("/", StringComparison.Ordinal) || value.Contains(":", StringComparison.Ordinal)) throw new InvalidOperationException("NetSuiteAccountId must be the account ID only, not a URL. Example: 1234567 or 1234567_SB1.");
+        return value.Trim();
     }
 
-    private static Dictionary<string, string> ParseQuery(string query)
+    private static string ValidateAbsoluteHttpsUrl(string value, string parameterName)
     {
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var pair = part.Split('=', 2);
-            values[Uri.UnescapeDataString(pair[0])] = pair.Length == 2 ? Uri.UnescapeDataString(pair[1]) : string.Empty;
-        }
-
-        return values;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) throw new InvalidOperationException($"{parameterName} must be an absolute HTTPS URL.");
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException($"{parameterName} must use HTTPS.");
+        return value.TrimEnd('/');
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)

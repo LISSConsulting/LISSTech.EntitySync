@@ -8,7 +8,7 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class TestEntitySyncConnectionCommand : PSCmdlet
 {
     [Parameter(Mandatory = true, Position = 0)]
-    [ValidateSet("HaloPSA", "NetSuite")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
     public string Vendor { get; set; } = string.Empty;
 
     protected override void EndProcessing()

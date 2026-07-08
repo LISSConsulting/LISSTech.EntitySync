@@ -22,10 +22,13 @@ Describe 'LISSTech.EntitySync' {
     $commands | Should -Contain 'Connect-EntitySyncVendor'
     $commands | Should -Contain 'Get-EntitySyncConnection'
     $commands | Should -Contain 'Test-EntitySyncConnection'
-    $commands | Should -Contain 'Get-EntitySyncTopLevel'
+    $commands | Should -Contain 'Get-EntitySyncLookup'
     $commands | Should -Contain 'Get-EntitySyncEntity'
+    $commands | Should -Contain 'Invoke-EntitySyncNetSuiteSuiteQL'
     $commands | Should -Contain 'New-EntitySyncPlan'
     $commands | Should -Contain 'Invoke-EntitySyncPlan'
+    $commands | Should -Contain 'Invoke-EntitySyncChain'
+    $commands | Should -Contain 'Set-EntitySyncCustomProperty'
     $commands | Should -Contain 'Export-EntitySyncPlan'
     $commands | Should -Contain 'Import-EntitySyncPlan'
   }
@@ -39,12 +42,65 @@ Describe 'LISSTech.EntitySync' {
     $haloInput = 'Get-EntitySyncEntity -Vendor HaloPSA -Type '
     $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
     $haloTypes | Should -Contain 'Client'
+    $haloTypes | Should -Contain 'Site'
     $haloTypes | Should -Not -Contain 'Customer'
 
     $netSuiteInput = 'Get-EntitySyncEntity -Vendor NetSuite -Type '
     $netSuiteTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($netSuiteInput, $netSuiteInput.Length, $null).CompletionMatches.CompletionText
     $netSuiteTypes | Should -Contain 'Customer'
     $netSuiteTypes | Should -Not -Contain 'Client'
+
+    $nCentralInput = 'Get-EntitySyncEntity -Vendor NCentral -Type '
+    $nCentralTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralInput, $nCentralInput.Length, $null).CompletionMatches.CompletionText
+    $nCentralTypes | Should -Contain 'Customer'
+    $nCentralTypes | Should -Contain 'Site'
+    $nCentralTypes | Should -Not -Contain 'Client'
+  }
+
+  It 'Completes vendors for New-EntitySyncPlan' {
+    $sourceInput = 'New-EntitySyncPlan -SourceVendor '
+    $sourceVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($sourceInput, $sourceInput.Length, $null).CompletionMatches.CompletionText
+    $sourceVendors | Should -Contain 'HaloPSA'
+    $sourceVendors | Should -Contain 'NetSuite'
+    $sourceVendors | Should -Contain 'NCentral'
+
+    $targetInput = 'New-EntitySyncPlan -TargetVendor '
+    $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
+    $targetVendors | Should -Contain 'HaloPSA'
+    $targetVendors | Should -Contain 'NetSuite'
+    $targetVendors | Should -Contain 'NCentral'
+  }
+
+  It 'Completes vendor-specific entity types for New-EntitySyncPlan' {
+    $sourceInput = 'New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType '
+    $sourceTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sourceInput, $sourceInput.Length, $null).CompletionMatches.CompletionText
+    $sourceTypes | Should -Contain 'Customer'
+
+    $targetInput = 'New-EntitySyncPlan -TargetVendor HaloPSA -TargetEntityType '
+    $targetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
+    $targetTypes | Should -Contain 'Client'
+    $targetTypes | Should -Contain 'Site'
+
+    $nCentralTargetInput = 'New-EntitySyncPlan -TargetVendor NCentral -TargetEntityType '
+    $nCentralTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralTargetInput, $nCentralTargetInput.Length, $null).CompletionMatches.CompletionText
+    $nCentralTargetTypes | Should -Contain 'Customer'
+    $nCentralTargetTypes | Should -Contain 'Site'
+  }
+
+  It 'Completes vendor-specific lookup types for Get-EntitySyncLookup' {
+    $haloInput = 'Get-EntitySyncLookup -Vendor HaloPSA -Type '
+    $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
+    $haloTypes | Should -Contain 'TopLevel'
+    $haloTypes | Should -Contain 'CustomerRelationship'
+    $haloTypes | Should -Contain 'CustomerType'
+    $haloTypes | Should -Contain 'NCentralIntegration'
+    $haloTypes | Should -Contain 'NCentralIntegrationLink'
+    $haloTypes | Should -Not -Contain 'ServiceOrganization'
+
+    $nCentralInput = 'Get-EntitySyncLookup -Vendor NCentral -Type '
+    $nCentralTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralInput, $nCentralInput.Length, $null).CompletionMatches.CompletionText
+    $nCentralTypes | Should -Contain 'ServiceOrganization'
+    $nCentralTypes | Should -Not -Contain 'TopLevel'
   }
 
   It 'Completes only vendor-specific Connect-EntitySyncVendor parameters' {
@@ -52,17 +108,884 @@ Describe 'LISSTech.EntitySync' {
     $halo = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
     $halo | Should -Contain '-HaloBaseUrl'
     $halo | Should -Contain '-HaloClientId'
-    $halo | Should -Not -Contain '-NetSuiteRestletUrl'
+    $halo | Should -Contain '-HaloNetSuiteCustomerIdFieldId'
+    $halo | Should -Contain '-HaloAccountManagerEmail'
+    $halo | Should -Contain '-HaloCustomerTypeName'
+    $halo | Should -Not -Contain '-NetSuiteAccountId'
+    $halo | Should -Contain '-HaloNCentralIntegrationId'
 
     $netSuiteInput = 'Connect-EntitySyncVendor -Vendor NetSuite -'
     $netSuite = [System.Management.Automation.CommandCompletion]::CompleteInput($netSuiteInput, $netSuiteInput.Length, $null).CompletionMatches.CompletionText
-    $netSuite | Should -Contain '-NetSuiteRestletUrl'
     $netSuite | Should -Contain '-NetSuiteAccountId'
+    $netSuite | Should -Contain '-NetSuiteConsumerKey'
     $netSuite | Should -Not -Contain '-HaloBaseUrl'
+
+    $nCentralInput = 'Connect-EntitySyncVendor -Vendor NCentral -'
+    $nCentral = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralInput, $nCentralInput.Length, $null).CompletionMatches.CompletionText
+    $nCentral | Should -Contain '-NCentralBaseUrl'
+    $nCentral | Should -Contain '-NCentralUserApiToken'
+    $nCentral | Should -Contain '-NCentralServiceOrgId'
+    $nCentral | Should -Contain '-NCentralSoapUsername'
+    $nCentral | Should -Contain '-NCentralSoapPassword'
+    $nCentral | Should -Contain '-NCentralSoapEndpointPath'
+    $nCentral | Should -Contain '-NCentralSoapNamespace'
+    $nCentral | Should -Contain '-NCentralHaloPsaIdPropertyLabel'
+    $nCentral | Should -Contain '-NCentralNetSuiteIdPropertyLabel'
+    $nCentral | Should -Contain '-NCentralNetSuiteNamePropertyLabel'
+    $nCentral | Should -Not -Contain '-HaloBaseUrl'
+    $nCentral | Should -Not -Contain '-NetSuiteAccountId'
   }
 
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
+  }
+
+  It 'Exposes ThrottleLimit on parallel read and plan commands' {
+    (Get-Command Get-EntitySyncEntity).Parameters.Keys | Should -Contain 'ThrottleLimit'
+    (Get-Command New-EntitySyncPlan).Parameters.Keys | Should -Contain 'ThrottleLimit'
+  }
+
+  It 'Exposes a gated chain sync command' {
+    $command = Get-Command Invoke-EntitySyncChain
+    $command.Parameters.Keys | Should -Contain 'RootVendor'
+    $command.Parameters.Keys | Should -Contain 'HubVendor'
+    $command.Parameters.Keys | Should -Contain 'LeafVendors'
+    $command.Parameters.Keys | Should -Contain 'ReviewedPlanPath'
+    $command.Parameters.Keys | Should -Contain 'Apply'
+    $command.Parameters.Keys | Should -Contain 'WhatIf'
+  }
+
+  It 'Exposes a gated custom property setter' {
+    $command = Get-Command Set-EntitySyncCustomProperty
+    $command.Parameters.Keys | Should -Contain 'Vendor'
+    $command.Parameters.Keys | Should -Contain 'EntityType'
+    $command.Parameters.Keys | Should -Contain 'Id'
+    $command.Parameters.Keys | Should -Contain 'Name'
+    $command.Parameters.Keys | Should -Contain 'Value'
+    $command.Parameters.Keys | Should -Contain 'Apply'
+    $command.Parameters.Keys | Should -Contain 'WhatIf'
+    $command.OutputType.Type.Name | Should -Contain 'EntityWriteResult'
+  }
+
+  It 'Sanitizes N-central names that contain ampersands' {
+    [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::SanitizeNCentralName('S.P. Cooper & Co. LLP') | Should -Be 'S.P. Cooper and Co. LLP'
+  }
+
+  It 'Normalizes N-central countries to ISO alpha-2 codes' -ForEach @(
+    @{ Country = 'us'; Expected = 'US' }
+    @{ Country = 'USA'; Expected = 'US' }
+    @{ Country = 'U.S.A.'; Expected = 'US' }
+    @{ Country = 'United States'; Expected = 'US' }
+    @{ Country = 'United States of America'; Expected = 'US' }
+  ) {
+    [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::NormalizeNCentralCountryCode($Country) | Should -Be $Expected
+  }
+
+  It 'Maps HaloPSA client ID into N-central externalId' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '684'
+    $source.Name = 'GOAT USA Inc.'
+    $source.ExternalIds['NetSuiteInternalId'] = '12345'
+    $source.CustomFields['NetSuiteCustomerName'] = 'GOAT USA Inc. - NetSuite'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'NCentral', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.CustomFields['externalId'] | Should -Be '684'
+    $request.CustomFields['HaloPsaId'] | Should -Be '684'
+    $request.CustomFields['NetSuiteId'] | Should -Be '12345'
+    $request.CustomFields['NetSuiteCustomerName'] | Should -Be 'GOAT USA Inc. - NetSuite'
+  }
+
+  It 'Does not fall back N-central NetSuite ID to HaloPSA client ID' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '13'
+    $source.Name = 'Arista Air Conditioning Corp.'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'NCentral', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.CustomFields['externalId'] | Should -Be '13'
+    $request.CustomFields['HaloPsaId'] | Should -Be '13'
+    $request.CustomFields.ContainsKey('NetSuiteId') | Should -BeFalse
+    $request.CustomFields.ContainsKey('CFNetSuiteCustomerID') | Should -BeFalse
+  }
+
+  It 'Maps HaloPSA client primary site address and communications into N-central customer fields' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '13'
+    $source.Name = 'Arista Air Conditioning Corp.'
+    $source.Email = 'service@arista.example'
+    $source.Phone = '555-0100'
+    $source.PrimaryAddress = [LISSTech.EntitySync.Core.EntityAddress]::new()
+    $source.PrimaryAddress.Line1 = '123 Main St'
+    $source.PrimaryAddress.Line2 = 'Suite 200'
+    $source.PrimaryAddress.City = 'New York'
+    $source.PrimaryAddress.State = 'NY'
+    $source.PrimaryAddress.PostalCode = '10001'
+    $source.PrimaryAddress.Country = 'US'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'NCentral', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Fields['contactEmail'] | Should -Be 'service@arista.example'
+    $request.Fields['phone'] | Should -Be '555-0100'
+    $request.Fields['contactPhone'] | Should -Be '555-0100'
+    $request.Fields.ContainsKey('contactFirstName') | Should -BeFalse
+    $request.Fields.ContainsKey('contactLastName') | Should -BeFalse
+    $request.Fields['address']['street1'] | Should -Be '123 Main St'
+    $request.Fields['address']['street2'] | Should -Be 'Suite 200'
+    $request.Fields['address']['city'] | Should -Be 'New York'
+    $request.Fields['address']['stateProv'] | Should -Be 'NY'
+    $request.Fields['address']['postalCode'] | Should -Be '10001'
+    $request.Fields['address']['country'] | Should -Be 'US'
+  }
+
+  It 'Maps HaloPSA address line3 to city and line4 to state' {
+    $json = '{"line1":"3116 Expressway Drive South","line3":"Bohemia","line4":"NY","postcode":"11749","country":"US"}'
+    $document = [System.Text.Json.JsonDocument]::Parse($json)
+    try {
+      $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod('MapAddress', [System.Reflection.BindingFlags]'NonPublic, Static')
+      $address = $method.Invoke($null, @($document.RootElement))
+
+      $address.Line1 | Should -Be '3116 Expressway Drive South'
+      $address.City | Should -Be 'Bohemia'
+      $address.State | Should -Be 'NY'
+      $address.PostalCode | Should -Be '11749'
+      $address.Country | Should -Be 'US'
+    }
+    finally {
+      $document.Dispose()
+    }
+  }
+
+  It 'Leaves N-central contact fields empty when HaloPSA has no real contact data' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '13'
+    $source.Name = 'Arista Air Conditioning Corp.'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'NCentral', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Fields.ContainsKey('contactFirstName') | Should -BeFalse
+    $request.Fields.ContainsKey('contactLastName') | Should -BeFalse
+    $request.Fields.ContainsKey('contactEmail') | Should -BeFalse
+    $request.Fields.ContainsKey('phone') | Should -BeFalse
+  }
+
+  It 'Maps NetSuite customer name into HaloPSA custom fields' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NetSuite'
+    $source.EntityType = 'Customer'
+    $source.Id = '12345'
+    $source.Name = 'GOAT USA Inc. - NetSuite'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'HaloPSA', 'Client', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.CustomFields['CFNetSuiteCustomerName'] | Should -Be 'GOAT USA Inc. - NetSuite'
+  }
+
+  It 'Does not treat ordinary NetSuite external IDs as missing N-central integration targets' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NetSuite'
+    $source.EntityType = 'Customer'
+    $source.Id = '1658'
+    $source.Name = 'Advanced Orthopedics and Joint Preservation'
+    $source.ExternalIds['NetSuiteInternalId'] = '1658'
+
+    $matcher = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new()
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $options.SourceExternalIdName = 'NetSuiteInternalId'
+    $index = $matcher.CreateIndex($targets, $options)
+    $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false))
+
+    $item.MatchType | Should -Be 'NoMatch'
+    $item.Reasons -join '; ' | Should -Not -Match 'N-central integration'
+  }
+
+  It 'Flags missing authoritative targets only for N-central integration link plans' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '684'
+    $source.Name = 'GOAT USA Inc.'
+    $source.ExternalIds['NCentralCustomerId'] = '390'
+
+    $matcher = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new()
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $options.SourceExternalIdName = 'NCentralCustomerId'
+    $index = $matcher.CreateIndex($targets, $options)
+    $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true))
+
+    $item.MatchType | Should -Be 'IntegrationLinkTargetMissing'
+    $item.Reasons -join '; ' | Should -Match 'N-central target 390'
+  }
+
+  It 'Labels linked external ID matches with the actual target external ID name' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Site'
+    $source.Id = '810'
+    $source.Name = 'Chicago Shop'
+    $source.ExternalIds['NCentralSiteId'] = '353'
+
+    $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $target.Vendor = 'NCentral'
+    $target.EntityType = 'Site'
+    $target.Id = '353'
+    $target.Name = 'Chicago Shop'
+    $target.ExternalIds['NCentralSiteId'] = '353'
+
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $options.SourceExternalIdName = 'NCentralSiteId'
+    $options.TargetExternalIdName = 'NCentralSiteId'
+    $matcher = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new()
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $targets.Add($target)
+
+    $matches = $matcher.FindMatches($source, $targets, $options)
+
+    $matches[0].MatchType | Should -Be 'Linked'
+    $matches[0].Reasons[0] | Should -Be 'External ID match: NCentralSiteId=353'
+  }
+
+  It 'Leaves low-confidence targets blank instead of preselecting weak suggestions' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NetSuite'
+    $source.EntityType = 'Customer'
+    $source.Id = '2851'
+    $source.Name = 'Alex Apparel Group Inc.'
+
+    $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $target.Vendor = 'HaloPSA'
+    $target.EntityType = 'Client'
+    $target.Id = '432'
+    $target.Name = 'PPI Apparel Group Inc.'
+
+    $matcher = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new()
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $targets.Add($target)
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $index = $matcher.CreateIndex($targets, $options)
+    $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false))
+
+    $item.Action | Should -Be 'Review'
+    $item.MatchType | Should -Be 'LowConfidence'
+    $item.Score | Should -BeLessThan 70
+    $item.Target | Should -BeNullOrEmpty
+    $item.Reasons -join '; ' | Should -Match 'target left blank'
+  }
+
+  It 'Maps HaloPSA site parent customer into N-central site create metadata' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Site'
+    $source.Id = '810'
+    $source.Name = 'Main Office'
+    $source.ExternalIds['NCentralCustomerId'] = '390'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'NCentral', 'Site', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.CustomFields['externalId'] | Should -Be '810'
+    $request.CustomFields['HaloPsaSiteId'] | Should -Be '810'
+    $request.CustomFields['NCentralCustomerId'] | Should -Be '390'
+  }
+
+  It 'Requires SOAP credentials before creating N-central customers with custom properties' {
+    $options = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $options.BaseUrl = 'https://ncentral.example.test/'
+    $options.UserApiToken = 'token'
+    $options.ServiceOrgId = '50'
+    $adapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($options)
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.EntityType = 'Customer'
+      $request.Name = 'GOAT USA Inc.'
+      $request.CustomFields['HaloPsaId'] = '684'
+
+      { $adapter.CreateEntityAsync($request, [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*organization custom properties require SOAP credentials*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
+  It 'Requires SOAP credentials before updating N-central customers' {
+    $options = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $options.BaseUrl = 'https://ncentral.example.test/'
+    $options.UserApiToken = 'token'
+    $options.ServiceOrgId = '50'
+    $adapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($options)
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.EntityType = 'Customer'
+      $request.Id = '390'
+      $request.Name = 'GOAT USA Inc.'
+
+      { $adapter.UpdateEntityAsync($request, [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*customer update requires SOAP credentials*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
+  It 'Requires IDs before writing HaloPSA N-central client links' {
+    $options = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
+    $options.BaseUrl = 'https://halo.example.test/'
+    $options.AccessToken = 'token'
+    $options.NCentralIntegrationId = 3
+    $adapter = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($options)
+    try {
+      { $adapter.UpsertNCentralClientLinkAsync('', 'Source Co', '390', 'Target Co', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires a HaloPSA client ID*'
+      { $adapter.UpsertNCentralClientLinkAsync('684', 'Source Co', '', 'Target Co', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires an N-central customer ID*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
+  It 'Requires IDs before writing HaloPSA N-central site links' {
+    $options = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
+    $options.BaseUrl = 'https://halo.example.test/'
+    $options.AccessToken = 'token'
+    $options.NCentralIntegrationId = 3
+    $adapter = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($options)
+    try {
+      { $adapter.UpsertNCentralSiteLinkAsync('', 'Main Office', 'Source Co', '402', 'Target Site', '390', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires a HaloPSA site ID*'
+      { $adapter.UpsertNCentralSiteLinkAsync('810', 'Main Office', 'Source Co', '', 'Target Site', '390', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires an N-central site ID*'
+      { $adapter.UpsertNCentralSiteLinkAsync('810', 'Main Office', 'Source Co', '402', 'Target Site', '', [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires an N-central customer ID*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
+  It 'Requires a parent customer link before creating N-central sites' {
+    $options = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $options.BaseUrl = 'https://ncentral.example.test/'
+    $options.UserApiToken = 'token'
+    $adapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($options)
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.EntityType = 'Site'
+      $request.Name = 'Main Office'
+
+      { $adapter.CreateEntityAsync($request, [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires NCentralCustomerId*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
+  It 'Round-trips reviewed Excel plan decisions' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-review-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NetSuite'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'NCentral'
+      $plan.TargetEntityType = 'Customer'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Create'
+      $item.Source.Name = 'Acme Inc'
+      $item.Source.Id = '123'
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+      try {
+        $entry = $zip.GetEntry('xl/worksheets/sheet1.xml')
+        $reader = [System.IO.StreamReader]::new($entry.Open())
+        $xml = $reader.ReadToEnd()
+        $reader.Dispose()
+        $entry.Delete()
+
+        $document = [xml]$xml
+        $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+        $namespace.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $cell = $document.SelectSingleNode('//x:c[@r=''B2'']', $namespace)
+        $cell.RemoveAll()
+        [void]$cell.SetAttribute('r', 'B2')
+        [void]$cell.SetAttribute('t', 'inlineStr')
+        $is = $document.CreateElement('is', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text = $document.CreateElement('t', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text.InnerText = 'Reject'
+        [void]$is.AppendChild($text)
+        [void]$cell.AppendChild($is)
+
+        $newEntry = $zip.CreateEntry('xl/worksheets/sheet1.xml')
+        $writer = [System.IO.StreamWriter]::new($newEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+        $document.Save($writer)
+        $writer.Dispose()
+      }
+      finally {
+        $zip.Dispose()
+      }
+
+      $reviewed = Import-EntitySyncPlan $path
+      $reviewed.Items[0].Action | Should -Be 'None'
+      $reviewed.Items[0].Status | Should -Be 'Rejected'
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Imports Excel workbooks rewritten with shared strings' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-shared-strings-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'HaloPSA'
+      $plan.SourceEntityType = 'Client'
+      $plan.TargetVendor = 'NCentral'
+      $plan.TargetEntityType = 'Customer'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Source.Name = 'Acme Inc'
+      $item.Source.Id = '123'
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+      try {
+        $strings = [System.Collections.Generic.List[string]]::new()
+        foreach ($entryName in @('xl/worksheets/sheet1.xml', 'xl/worksheets/sheet2.xml')) {
+          $entry = $zip.GetEntry($entryName)
+          $reader = [System.IO.StreamReader]::new($entry.Open())
+          $xml = $reader.ReadToEnd()
+          $reader.Dispose()
+          $entry.Delete()
+
+          $document = [xml]$xml
+          $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+          $namespace.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+          foreach ($cell in $document.SelectNodes('//x:c[@t=''inlineStr'']', $namespace)) {
+            $reference = $cell.GetAttribute('r')
+            $text = $cell.InnerText
+            $index = $strings.Count
+            [void]$strings.Add($text)
+            $cell.RemoveAll()
+            [void]$cell.SetAttribute('r', $reference)
+            [void]$cell.SetAttribute('t', 's')
+            $value = $document.CreateElement('v', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+            $value.InnerText = [string]$index
+            [void]$cell.AppendChild($value)
+          }
+
+          $newEntry = $zip.CreateEntry($entryName)
+          $writer = [System.IO.StreamWriter]::new($newEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+          $document.Save($writer)
+          $writer.Dispose()
+        }
+
+        $existingSharedStrings = $zip.GetEntry('xl/sharedStrings.xml')
+        if ($existingSharedStrings) { $existingSharedStrings.Delete() }
+        $sharedStringsEntry = $zip.CreateEntry('xl/sharedStrings.xml')
+        $sharedStrings = '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{0}" uniqueCount="{0}">{1}</sst>' -f $strings.Count, (($strings | ForEach-Object { '<si><t>{0}</t></si>' -f [System.Security.SecurityElement]::Escape($_) }) -join '')
+        $writer = [System.IO.StreamWriter]::new($sharedStringsEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+        $writer.Write($sharedStrings)
+        $writer.Dispose()
+      }
+      finally {
+        $zip.Dispose()
+      }
+
+      $reviewed = Import-EntitySyncPlan $path
+      $reviewed.SourceVendor | Should -Be 'HaloPSA'
+      $reviewed.Items[0].Source.Name | Should -Be 'Acme Inc'
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Generates an Excel plan filename when exporting to a directory' {
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NetSuite'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'HaloPSA'
+    $plan.TargetEntityType = 'Client'
+    $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $item.Action = 'Review'
+    $item.Source.Name = 'Acme Inc'
+    [void]$plan.Items.Add($item)
+
+    $file = $plan | Export-EntitySyncPlan -Path ([System.IO.Path]::GetTempPath()) -PassThru
+    try {
+      $file.Name | Should -Match '^EntitySync-NetSuite-Customer-to-HaloPSA-Client-\d{8}-\d{6}\.xlsx$'
+      $file.Exists | Should -BeTrue
+    }
+    finally {
+      Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Uses context-specific Excel headers without site-only columns for NetSuite to HaloPSA' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-context-headers-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NetSuite'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'HaloPSA'
+      $plan.TargetEntityType = 'Client'
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Id = 'S1'
+      $source.Name = 'Source Co'
+      $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $target.Id = 'T1'
+      $target.Name = 'Target Co'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Source = $source
+      $item.Target = $target
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+      try {
+        $sheetReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/worksheets/sheet1.xml').Open())
+        $tableReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/tables/table1.xml').Open())
+        try {
+          [xml]$sheet = $sheetReader.ReadToEnd()
+          [xml]$table = $tableReader.ReadToEnd()
+        }
+        finally {
+          $sheetReader.Dispose()
+          $tableReader.Dispose()
+        }
+
+        $ns = [System.Xml.XmlNamespaceManager]::new($sheet.NameTable)
+        $ns.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $sheet.SelectSingleNode('//x:c[@r=''E1'']/x:is/x:t[text()=''NetSuiteCustomerName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''F1'']/x:is/x:t[text()=''HaloClientName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''G1'']/x:is/x:t[text()=''Score'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''G1'']/x:is/x:t[text()=''SourceClientName'']', $ns) | Should -BeNullOrEmpty
+
+        $tableNs = [System.Xml.XmlNamespaceManager]::new($table.NameTable)
+        $tableNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $table.SelectSingleNode('//x:table[@ref=''A1:N2'']', $tableNs) | Should -Not -BeNullOrEmpty
+      }
+      finally {
+        $zip.Dispose()
+      }
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Adds conditional formatting for source and target name mismatches' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-conditional-formatting-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'HaloPSA'
+      $plan.SourceEntityType = 'Client'
+      $plan.TargetVendor = 'NCentral'
+      $plan.TargetEntityType = 'Customer'
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Id = 'S1'
+      $source.Name = 'Source Co'
+      $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $target.Id = 'T1'
+      $target.Name = 'Different Target Co'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Source = $source
+      $item.Target = $target
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+      try {
+        $sheetReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/worksheets/sheet1.xml').Open())
+        $styleReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/styles.xml').Open())
+        $tableReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/tables/table1.xml').Open())
+        $relationshipReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/worksheets/_rels/sheet1.xml.rels').Open())
+        $workbookReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/workbook.xml').Open())
+        $themeReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/theme/theme1.xml').Open())
+        $legendReader = [System.IO.StreamReader]::new($zip.GetEntry('xl/worksheets/sheet5.xml').Open())
+        try {
+          [xml]$sheet = $sheetReader.ReadToEnd()
+          [xml]$styles = $styleReader.ReadToEnd()
+          [xml]$table = $tableReader.ReadToEnd()
+          [xml]$relationships = $relationshipReader.ReadToEnd()
+          [xml]$workbook = $workbookReader.ReadToEnd()
+          [xml]$theme = $themeReader.ReadToEnd()
+          [xml]$legend = $legendReader.ReadToEnd()
+        }
+        finally {
+          $sheetReader.Dispose()
+          $styleReader.Dispose()
+          $tableReader.Dispose()
+          $relationshipReader.Dispose()
+          $workbookReader.Dispose()
+          $themeReader.Dispose()
+          $legendReader.Dispose()
+        }
+
+        $sheetNs = [System.Xml.XmlNamespaceManager]::new($sheet.NameTable)
+        $sheetNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $rule = $sheet.SelectSingleNode('//x:conditionalFormatting[@sqref=''A2:N1048576'']/x:cfRule[@type=''expression'' and @dxfId=''0'']', $sheetNs)
+        $rule | Should -Not -BeNullOrEmpty
+        $rule.formula | Should -Be 'AND($F2<>"",$E2<>$F2)'
+        $sheet.SelectSingleNode('//x:sheetFormatPr[@defaultRowHeight=''17'' and @customHeight=''1'']', $sheetNs) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:row[@r=''1'' and @ht=''17'' and @customHeight=''1'']', $sheetNs) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''A1'' and @s=''1'']', $sheetNs) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''A2'' and @s=''0'']', $sheetNs) | Should -Not -BeNullOrEmpty
+
+        $styleNs = [System.Xml.XmlNamespaceManager]::new($styles.NameTable)
+        $styleNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $styles.SelectSingleNode('//x:fonts[@count=''2'']/x:font[x:name[@val=''Aptos Narrow''] and x:sz[@val=''11'']]', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:fonts[@count=''2'']/x:font[x:name[@val=''Aptos Display''] and x:sz[@val=''11''] and x:b]', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:cellXfs[@count=''2'']/x:xf[@fontId=''0'']/x:alignment[@vertical=''center'' and @indent=''1'']', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:cellXfs[@count=''2'']/x:xf[@fontId=''1'']/x:alignment[@vertical=''center'' and @indent=''1'']', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:dxfs[@count=''1'']/x:dxf/x:font/x:color[@rgb=''FF9C5700'']', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:dxfs[@count=''1'']/x:dxf/x:fill/x:patternFill[@patternType=''solid'']/x:fgColor[@rgb=''FFFFEB9C'']', $styleNs) | Should -Not -BeNullOrEmpty
+        $styles.SelectSingleNode('//x:dxfs[@count=''1'']/x:dxf/x:fill/x:patternFill[@patternType=''solid'']/x:bgColor[@rgb=''FFFFEB9C'']', $styleNs) | Should -Not -BeNullOrEmpty
+
+        $tableNs = [System.Xml.XmlNamespaceManager]::new($table.NameTable)
+        $tableNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $table.SelectSingleNode('//x:tableStyleInfo[@name=''TableStyleMedium12'']', $tableNs) | Should -Not -BeNullOrEmpty
+        $table.SelectSingleNode('//x:table[@ref=''A1:N2'']', $tableNs) | Should -Not -BeNullOrEmpty
+
+        $relationshipNs = [System.Xml.XmlNamespaceManager]::new($relationships.NameTable)
+        $relationshipNs.AddNamespace('r', 'http://schemas.openxmlformats.org/package/2006/relationships')
+        $relationships.SelectSingleNode('//r:Relationship[@Type=''http://schemas.openxmlformats.org/officeDocument/2006/relationships/table'' and @Target=''../tables/table1.xml'']', $relationshipNs) | Should -Not -BeNullOrEmpty
+
+        $workbookNs = [System.Xml.XmlNamespaceManager]::new($workbook.NameTable)
+        $workbookNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $workbookNs.AddNamespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+        $workbook.SelectSingleNode('//x:sheet[@name=''Legend'' and @r:id=''rId5'']', $workbookNs) | Should -Not -BeNullOrEmpty
+
+        $themeNs = [System.Xml.XmlNamespaceManager]::new($theme.NameTable)
+        $themeNs.AddNamespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main')
+        $theme.SelectSingleNode('/a:theme[@name=''Integral'']/a:themeElements/a:fontScheme[@name=''Integral'']', $themeNs) | Should -Not -BeNullOrEmpty
+
+        $legendNs = [System.Xml.XmlNamespaceManager]::new($legend.NameTable)
+        $legendNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $legend.SelectSingleNode('//x:c[@r=''A1'' and @s=''1'']/x:is/x:t[text()=''Term'']', $legendNs) | Should -Not -BeNullOrEmpty
+        $legend.SelectSingleNode('//x:c[@r=''A2'']/x:is/x:t[text()=''Score'']', $legendNs) | Should -Not -BeNullOrEmpty
+      }
+      finally {
+        $zip.Dispose()
+      }
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Includes site parent client context in Excel review workbooks' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-site-context-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'HaloPSA'
+      $plan.SourceEntityType = 'Site'
+      $plan.TargetVendor = 'NCentral'
+      $plan.TargetEntityType = 'Site'
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Id = '810'
+      $source.Name = 'Main Office'
+      $source.ExternalIds['HaloPsaClientId'] = '684'
+      $source.CustomFields['HaloPsaClientName'] = 'GOAT USA Inc.'
+      $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $target.Id = '402'
+      $target.Name = 'Main Office'
+      $target.ExternalIds['NCentralCustomerId'] = '390'
+      $target.CustomFields['NCentralCustomerName'] = 'GOAT USA N-central'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Update'
+      $item.Source = $source
+      $item.Target = $target
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::OpenRead($path)
+      try {
+        $reader = [System.IO.StreamReader]::new($zip.GetEntry('xl/worksheets/sheet1.xml').Open())
+        try { [xml]$sheet = $reader.ReadToEnd() }
+        finally { $reader.Dispose() }
+
+        $ns = [System.Xml.XmlNamespaceManager]::new($sheet.NameTable)
+        $ns.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $sheet.SelectSingleNode('//x:c[@r=''E1'']/x:is/x:t[text()=''HaloSiteName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''F1'']/x:is/x:t[text()=''NCentralSiteName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''G1'']/x:is/x:t[text()=''HaloClientName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''H1'']/x:is/x:t[text()=''NCentralCustomerName'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''I1'']/x:is/x:t[text()=''HaloClientId'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''J1'']/x:is/x:t[text()=''NCentralCustomerId'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''G2'']/x:is/x:t[text()=''GOAT USA Inc.'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''H2'']/x:is/x:t[text()=''GOAT USA N-central'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''I2'']/x:is/x:t[text()=''684'']', $ns) | Should -Not -BeNullOrEmpty
+        $sheet.SelectSingleNode('//x:c[@r=''J2'']/x:is/x:t[text()=''390'']', $ns) | Should -Not -BeNullOrEmpty
+      }
+      finally {
+        $zip.Dispose()
+      }
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Imports Excel override target selections' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-override-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NetSuite'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'HaloPSA'
+      $plan.TargetEntityType = 'Client'
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Id = 'S1'
+      $source.Name = 'Source Co'
+      $wrongTarget = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $wrongTarget.Id = 'T1'
+      $wrongTarget.Name = 'Wrong Target'
+      $rightTarget = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $rightTarget.Id = 'T2'
+      $rightTarget.Name = 'Right Target'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Source = $source
+      $item.Target = $wrongTarget
+      [void]$plan.Items.Add($item)
+      [void]$plan.TargetCandidates.Add($wrongTarget)
+      [void]$plan.TargetCandidates.Add($rightTarget)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+      try {
+        $entry = $zip.GetEntry('xl/worksheets/sheet1.xml')
+        $reader = [System.IO.StreamReader]::new($entry.Open())
+        $xml = $reader.ReadToEnd()
+        $reader.Dispose()
+        $entry.Delete()
+
+        $document = [xml]$xml
+        $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+        $namespace.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $row = $document.SelectSingleNode('//x:row[@r=''2'']', $namespace)
+        $cell = $document.CreateElement('c', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        [void]$cell.SetAttribute('r', 'F2')
+        [void]$cell.SetAttribute('t', 'inlineStr')
+        $is = $document.CreateElement('is', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text = $document.CreateElement('t', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text.InnerText = 'Right Target'
+        [void]$is.AppendChild($text)
+        [void]$cell.AppendChild($is)
+        [void]$row.AppendChild($cell)
+
+        $newEntry = $zip.CreateEntry('xl/worksheets/sheet1.xml')
+        $writer = [System.IO.StreamWriter]::new($newEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+        $document.Save($writer)
+        $writer.Dispose()
+      }
+      finally {
+        $zip.Dispose()
+      }
+
+      $reviewed = Import-EntitySyncPlan $path
+      $reviewed.Items[0].Target.Id | Should -Be 'T2'
+      $reviewed.Items[0].Action | Should -Be 'Link'
+      $reviewed.Items[0].MatchType | Should -Be 'ReviewerOverride'
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Lets Create decisions ignore stale target cells' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-create-stale-target-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'HaloPSA'
+      $plan.SourceEntityType = 'Client'
+      $plan.TargetVendor = 'NCentral'
+      $plan.TargetEntityType = 'Customer'
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Id = 'S1'
+      $source.Name = 'Source Co'
+      $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $target.Id = 'T1'
+      $target.Name = 'Existing Target'
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Source = $source
+      $item.Target = $target
+      [void]$plan.Items.Add($item)
+      [void]$plan.TargetCandidates.Add($target)
+
+      $plan | Export-EntitySyncPlan -FilePath $path
+
+      $zip = [System.IO.Compression.ZipFile]::Open($path, [System.IO.Compression.ZipArchiveMode]::Update)
+      try {
+        $entry = $zip.GetEntry('xl/worksheets/sheet1.xml')
+        $reader = [System.IO.StreamReader]::new($entry.Open())
+        $xml = $reader.ReadToEnd()
+        $reader.Dispose()
+        $entry.Delete()
+
+        $document = [xml]$xml
+        $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+        $namespace.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $cell = $document.SelectSingleNode('//x:c[@r=''B2'']', $namespace)
+        $cell.RemoveAll()
+        [void]$cell.SetAttribute('r', 'B2')
+        [void]$cell.SetAttribute('t', 'inlineStr')
+        $is = $document.CreateElement('is', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text = $document.CreateElement('t', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        $text.InnerText = 'Create'
+        [void]$is.AppendChild($text)
+        [void]$cell.AppendChild($is)
+
+        $newEntry = $zip.CreateEntry('xl/worksheets/sheet1.xml')
+        $writer = [System.IO.StreamWriter]::new($newEntry.Open(), [System.Text.UTF8Encoding]::new($false))
+        $document.Save($writer)
+        $writer.Dispose()
+      }
+      finally {
+        $zip.Dispose()
+      }
+
+      $reviewed = Import-EntitySyncPlan $path
+      $reviewed.Items[0].Action | Should -Be 'Create'
+      $reviewed.Items[0].Target | Should -BeNullOrEmpty
+    }
+    finally {
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
   }
 
   It 'Normalizes legal suffixes from entity names' -ForEach @(

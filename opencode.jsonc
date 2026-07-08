@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "context7": {
+      "type": "local",
+      "command": ["npx", "-y", "@upstash/context7-mcp"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "lsp": true,
+  "permission": {
+    "lsp": "allow"
+  },
+  "experimental": {
+    "mcp_timeout": 30000
+  }
+}

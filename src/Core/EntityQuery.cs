@@ -7,4 +7,7 @@ public sealed class EntityQuery
     public bool IncludeInactive { get; set; }
     public int? Count { get; set; }
     public bool FullObjects { get; set; }
+    public bool IncludeSiteDetails { get; set; }
+    public string? RequiredCustomFieldName { get; set; }
+    public int ThrottleLimit { get; set; }
 }

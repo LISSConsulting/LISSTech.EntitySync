@@ -15,6 +15,8 @@ public sealed class ExternalEntity
     public string? PrimarySiteId { get; set; }
     public string? PrimarySiteName { get; set; }
     public EntityAddress? PrimaryAddress { get; set; }
+    public EntityAddress? BillingAddress { get; set; }
+    public EntityAddress? ShippingAddress { get; set; }
     public bool? IsActive { get; set; }
     public DateTimeOffset? CreatedAt { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
