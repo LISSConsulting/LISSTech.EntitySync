@@ -7,37 +7,36 @@ Describe 'LISSTech.EntitySync' {
       throw "Module not found at $script:ModulePath. Run 'just build' first."
     }
     Import-Module $script:ModulePath -Force
+
+    # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T045):
+    # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
+    # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
+    # These helpers build valid LCAT options/adapters so each story's tests can override only the
+    # fields they're exercising instead of repeating adapter setup. Defined in BeforeAll (not
+    # directly in the Describe body) so they are still in scope when Pester v5 invokes It blocks
+    # during the run phase rather than only during discovery.
+    function New-TestLCATOptions {
+      param(
+        [string]$BaseUrl = 'https://lcat.example.test/',
+        [string]$BearerToken = 'token'
+      )
+      $options = [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]::new()
+      $options.BaseUrl = $BaseUrl
+      $options.BearerToken = $BearerToken
+      return $options
+    }
+
+    function New-TestLCATAdapter {
+      param(
+        [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]$Options = (New-TestLCATOptions)
+      )
+      return [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter]::new($Options)
+    }
   }
 
   AfterAll {
     Remove-Module LISSTech.EntitySync -Force -ErrorAction SilentlyContinue
   }
-
-  #region LCAT test scaffolding (specs/001-lcat-sync-adapter)
-  # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T045):
-  # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
-  # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
-  # These helpers build valid LCAT options/adapters so each story's tests can override only the
-  # fields they're exercising instead of repeating adapter setup.
-
-  function New-TestLCATOptions {
-    param(
-      [string]$BaseUrl = 'https://lcat.example.test/',
-      [string]$BearerToken = 'token'
-    )
-    $options = [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]::new()
-    $options.BaseUrl = $BaseUrl
-    $options.BearerToken = $BearerToken
-    return $options
-  }
-
-  function New-TestLCATAdapter {
-    param(
-      [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]$Options = (New-TestLCATOptions)
-    )
-    return [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter]::new($Options)
-  }
-  #endregion
 
   It 'Imports successfully' {
     Get-Module LISSTech.EntitySync | Should -Not -BeNullOrEmpty
@@ -337,6 +336,84 @@ Describe 'LISSTech.EntitySync' {
     $result.RetiredCount | Should -Be 0
     $result.ActiveCount | Should -Be 0
     $result.AuditEventId | Should -BeNullOrEmpty
+  }
+
+  It 'Creates an NCentral Customer to LCAT plan from pipeline sources without any LCAT vendor write (T016, US1)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $sourceOne.Vendor = 'NCentral'
+      $sourceOne.EntityType = 'Customer'
+      $sourceOne.Id = '111'
+      $sourceOne.Name = 'Arista Air Conditioning Corp.'
+      $sourceOne.ExternalIds['NCentralCustomerId'] = '111'
+
+      $sourceTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $sourceTwo.Vendor = 'NCentral'
+      $sourceTwo.EntityType = 'Customer'
+      $sourceTwo.Id = '222'
+      $sourceTwo.Name = 'Fallback Metals LLC'
+      $sourceTwo.ExternalIds['NCentralCustomerId'] = '222'
+
+      $plan = @($sourceOne, $sourceTwo) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+
+      $plan.SourceVendor | Should -Be 'NCentral'
+      $plan.SourceEntityType | Should -Be 'Customer'
+      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetEntityType | Should -Be 'Customer'
+      $plan.TargetCandidates.Count | Should -Be 0
+      $plan.Items.Count | Should -Be 2
+      foreach ($item in $plan.Items) {
+        $item.Action | Should -Be 'Create'
+        $item.MatchType | Should -Be 'NoMatch'
+        $item.Target | Should -BeNullOrEmpty
+        $item.Reasons -join '; ' | Should -Match 'No target candidate found'
+      }
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Normalizes the LTAC target alias to LCAT throughout a plan created from NCentral Customer sources (T016, US1)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Vendor = 'NCentral'
+      $source.EntityType = 'Customer'
+      $source.Id = '333'
+      $source.Name = 'Beacon Hill Facilities LLC'
+      $source.ExternalIds['NCentralCustomerId'] = '333'
+
+      $plan = @($source) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
+
+      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.Items.Count | Should -Be 1
+      $plan.Items[0].Action | Should -Be 'Create'
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
   }
 
   It 'Declares object output for Get-EntitySyncConnection' {

@@ -225,8 +225,43 @@
   needed (T011 already matched the contract shape), unlike T014 which is
   still red pending T022. `just build` succeeds; `just test` reports 56
   passed / 4 failed (the same pre-existing T014 failures, now joined by 3
-  new passing T015 tests). Next incomplete task: T016 (Pester tests for
-  NCentral Customer to LCAT plan creation without vendor writes).
+  new passing T015 tests).
+- T016 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1`
+  (after the T015 adapter tests, before `Declares object output for
+  Get-EntitySyncConnection`) that invoke the real `New-EntitySyncPlan` cmdlet
+  end-to-end for an NCentral Customer -> LCAT Customer plan, registering
+  `NCentralEntityAdapter`/`LCATEntityAdapter` test instances directly into
+  `LISSTech.EntitySync.Runtime.ConnectionRegistry` (bypassing
+  `Connect-EntitySyncVendor`, which still throws `NotImplementedException`
+  for LCAT per T005) and piping `ExternalEntity` sources so no NCentral read
+  is needed either. One test asserts a two-source plan comes back with
+  `TargetVendor 'LCAT'`, zero `TargetCandidates`, and both items `Action
+  'Create'`/`MatchType 'NoMatch'` with a "No target candidate found" reason;
+  the other confirms `-TargetVendor LTAC` still produces `TargetVendor
+  'LCAT'` in the resulting plan. Chose zero `TargetCandidates` deliberately:
+  `LCATEntityAdapter.GetEntitiesAsync` is still a T019 stub, and this repo's
+  established convention (T003 note) is no HTTP-mocking infra, so a
+  LCAT-target plan must not depend on a live read to stay network-free in
+  Pester — this locks in that constraint for whoever implements T023
+  ("Preserve LCAT target candidates ... during NCentral Customer planning"),
+  same as `LCATEntityAdapter.CreateEntityAsync`/`UpdateEntityAsync` always
+  throwing `NotSupportedException` proves no per-item vendor write can occur
+  during planning by construction. While wiring these tests up, found and
+  fixed a real bug in the T003 scaffolding: `New-TestLCATOptions`/
+  `New-TestLCATAdapter` were defined directly in the `Describe` body, which
+  in Pester v5 only runs during the discovery pass, so both functions were
+  `CommandNotFoundException` inside any `It` block (never previously
+  exercised, since T013-T015 built LCAT options/entities inline instead of
+  calling these helpers) — moved both function definitions into the existing
+  top-level `BeforeAll` so they're in scope during the run phase. Both new
+  tests fail today with `NotImplementedException: LCAT sync plan targets are
+  implemented in a later EntitySync task.` (the T007 guard in
+  `NewEntitySyncPlanCommand.EndProcessing`), the same expected-red state as
+  T014's still-pending mapping tests. `just build`, `just test-load`, and
+  `just test` all succeed/pass; `just test` reports 56 passed / 6 failed (4
+  pre-existing T014 failures plus the 2 new expected T016 failures). Next
+  incomplete task: T017 (Pester tests for `Invoke-EntitySyncPlan` sending one
+  approved customer batch to LCAT).
 
 ## Open Blockers
 
