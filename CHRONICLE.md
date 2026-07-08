@@ -259,9 +259,45 @@
   `NewEntitySyncPlanCommand.EndProcessing`), the same expected-red state as
   T014's still-pending mapping tests. `just build`, `just test-load`, and
   `just test` all succeed/pass; `just test` reports 56 passed / 6 failed (4
-  pre-existing T014 failures plus the 2 new expected T016 failures). Next
-  incomplete task: T017 (Pester tests for `Invoke-EntitySyncPlan` sending one
-  approved customer batch to LCAT).
+  pre-existing T014 failures plus the 2 new expected T016 failures).
+- T017 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1`
+  (after the T016 plan-creation tests, before `Declares object output for
+  Get-EntitySyncConnection`) that build an `EntitySyncPlan`/`EntitySyncPlanItem`
+  graph directly (bypassing `New-EntitySyncPlan`, which still throws for
+  `-TargetVendor LCAT` per T007/T016) and call the real `Invoke-EntitySyncPlan`
+  cmdlet with `-Apply -WhatIf -PassThru` against a registered test
+  `LCATEntityAdapter`. Since neither `*>&1` redirection nor swapping
+  `[Console]::Out` captures a compiled cmdlet's `ShouldProcess`/`-WhatIf`
+  confirmation text in-process (verified manually both ways: `*>&1` yields
+  zero captured objects, and swapping `[Console]::Out` silently breaks all
+  further host output for the rest of the process), both tests wrap the call
+  in `Start-Transcript`/`Stop-Transcript` to a per-test GUID-named temp file
+  and count lines matching `What if:` — this reliably captured the
+  confirmation text with no flakiness across a full `just test` run. One test
+  asserts a two-item approved Create plan produces exactly one `What if:`
+  confirmation mentioning `LCAT` (proving the whole batch is confirmed once,
+  per `contracts/lcat-sync-rpc.md`'s "must not use one request per normal plan
+  item" and plan.md's "LCAT-specific batch branch... over per-item adapter
+  writes"), not one per item; the other adds a third `Review`-action item and
+  asserts the confirmation count is still 1 (the Review item must not join
+  the batch or need its own confirmation) while the `-PassThru` output still
+  reports exactly one `Review` result for it (pre-existing generic behavior,
+  a sanity check). Deliberately did not attempt to assert on real batch send
+  success/counts (T020) or non-success-response redaction (T039) — both
+  require an actual HTTP round trip, and this repo's established convention
+  (T003 note) is no HTTP-mocking infra; `-WhatIf` keeps both new tests
+  network-free by construction, matching how the rest of the suite validates
+  before any network call. Also deliberately did not test Status-based
+  approval filtering (Accepted/Rejected/NoUpdate from the review workbook) —
+  `InvokeEntitySyncPlanCommand.ProcessRecord` only branches on `item.Action`
+  today, not `item.Status`; filtering by Status is T042 (US3), not this task.
+  Both new tests fail today with `Expected 1, but got 2` (current per-item
+  `ShouldProcess` calls one confirmation per Create item, since no
+  LCAT-specific batch branch exists in `InvokeEntitySyncPlanCommand` yet —
+  that's T024). `just build` succeeds; `just test` reports 56 passed / 8
+  failed (the same 6 pre-existing T014/T016 failures, now joined by 2 new
+  expected T017 failures). Next incomplete task: T018 (LCAT connection
+  options with base URL and bearer credential).
 
 ## Open Blockers
 

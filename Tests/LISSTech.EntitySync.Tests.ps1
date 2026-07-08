@@ -416,6 +416,140 @@ Describe 'LISSTech.EntitySync' {
     }
   }
 
+  It 'Sends approved NCentral Customer to LCAT create items as one authoritative batch confirmation rather than one per item (T017, US1)' {
+    $lcatAdapter = New-TestLCATAdapter
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $sourceOne.Vendor = 'NCentral'
+    $sourceOne.EntityType = 'Customer'
+    $sourceOne.Id = '111'
+    $sourceOne.Name = 'Arista Air Conditioning Corp.'
+    $sourceOne.ExternalIds['NCentralCustomerId'] = '111'
+
+    $sourceTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $sourceTwo.Vendor = 'NCentral'
+    $sourceTwo.EntityType = 'Customer'
+    $sourceTwo.Id = '222'
+    $sourceTwo.Name = 'Fallback Metals LLC'
+    $sourceTwo.ExternalIds['NCentralCustomerId'] = '222'
+
+    $itemOne = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $itemOne.Action = 'Create'
+    $itemOne.Source = $sourceOne
+    $itemOne.MatchType = 'NoMatch'
+    [void]$itemOne.Reasons.Add('No target candidate found')
+
+    $itemTwo = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $itemTwo.Action = 'Create'
+    $itemTwo.Source = $sourceTwo
+    $itemTwo.MatchType = 'NoMatch'
+    [void]$itemTwo.Reasons.Add('No target candidate found')
+
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NCentral'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'LCAT'
+    $plan.TargetEntityType = 'Customer'
+    [void]$plan.Items.Add($itemOne)
+    [void]$plan.Items.Add($itemTwo)
+
+    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-batch-whatif-{0}.txt" -f [guid]::NewGuid())
+    try {
+      Start-Transcript -Path $transcriptPath -Force | Out-Null
+      try {
+        Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru | Out-Null
+      }
+      finally {
+        Stop-Transcript | Out-Null
+      }
+
+      $confirmations = Get-Content -LiteralPath $transcriptPath | Where-Object { $_ -match 'What if:' }
+      $confirmations.Count | Should -Be 1
+      $confirmations | Should -Match 'LCAT'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      Remove-Item -LiteralPath $transcriptPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'Excludes a Review item from the LCAT batch confirmation while still reporting it separately (T017, US1)' {
+    $lcatAdapter = New-TestLCATAdapter
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $sourceOne.Vendor = 'NCentral'
+    $sourceOne.EntityType = 'Customer'
+    $sourceOne.Id = '111'
+    $sourceOne.Name = 'Arista Air Conditioning Corp.'
+    $sourceOne.ExternalIds['NCentralCustomerId'] = '111'
+
+    $sourceTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $sourceTwo.Vendor = 'NCentral'
+    $sourceTwo.EntityType = 'Customer'
+    $sourceTwo.Id = '222'
+    $sourceTwo.Name = 'Fallback Metals LLC'
+    $sourceTwo.ExternalIds['NCentralCustomerId'] = '222'
+
+    $sourceReview = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $sourceReview.Vendor = 'NCentral'
+    $sourceReview.EntityType = 'Customer'
+    $sourceReview.Id = '333'
+    $sourceReview.Name = 'Ambiguous Match Co.'
+    $sourceReview.ExternalIds['NCentralCustomerId'] = '333'
+
+    $itemOne = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $itemOne.Action = 'Create'
+    $itemOne.Source = $sourceOne
+    $itemOne.MatchType = 'NoMatch'
+    [void]$itemOne.Reasons.Add('No target candidate found')
+
+    $itemTwo = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $itemTwo.Action = 'Create'
+    $itemTwo.Source = $sourceTwo
+    $itemTwo.MatchType = 'NoMatch'
+    [void]$itemTwo.Reasons.Add('No target candidate found')
+
+    $itemReview = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $itemReview.Action = 'Review'
+    $itemReview.Source = $sourceReview
+    $itemReview.MatchType = 'Fuzzy'
+    [void]$itemReview.Reasons.Add('Multiple possible target candidates')
+
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NCentral'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'LCAT'
+    $plan.TargetEntityType = 'Customer'
+    [void]$plan.Items.Add($itemOne)
+    [void]$plan.Items.Add($itemTwo)
+    [void]$plan.Items.Add($itemReview)
+
+    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-batch-review-{0}.txt" -f [guid]::NewGuid())
+    try {
+      Start-Transcript -Path $transcriptPath -Force | Out-Null
+      $results = $null
+      try {
+        $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru
+      }
+      finally {
+        Stop-Transcript | Out-Null
+      }
+
+      $confirmations = Get-Content -LiteralPath $transcriptPath | Where-Object { $_ -match 'What if:' }
+      $confirmations.Count | Should -Be 1
+
+      $reviewResults = @($results | Where-Object { $_.Action -eq 'Review' })
+      $reviewResults.Count | Should -Be 1
+      $reviewResults[0].Success | Should -BeFalse
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      Remove-Item -LiteralPath $transcriptPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
