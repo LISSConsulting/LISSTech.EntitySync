@@ -47,8 +47,23 @@
   T021 (US1), not this task. Verified manually: `-Vendor LCAT` and
   `-Vendor LTAC` both throw the same clear not-yet-implemented message, and
   tab completion after `-Vendor ` lists `LCAT`/`LTAC` alongside the existing
-  vendors. `just build` and `just test` both pass (51/51). Next incomplete
-  task: T006 (Get-EntitySyncEntity LCAT vendor validation).
+  vendors. `just build` and `just test` both pass (51/51).
+- T006 done: added `LCAT`/`LTAC` to the `Vendor` `ValidateSet` in
+  `GetEntitySyncEntityCommand.cs`, plus the same `NormalizeVendorAlias`
+  helper pattern as T005 (called from `GetDynamicParameters` and
+  `EndProcessing`) so `LTAC` reads still report as `LCAT`. Added a
+  Customer-only `EntityType` completion branch (matching NetSuite's
+  single-type pattern) and an explicit `LCAT` branch in `EndProcessing` that
+  throws `NotImplementedException` before reaching `ConnectionRegistry.Get` —
+  without it, `-Vendor LCAT` would fail with a confusing "not connected"
+  error instead of a clear not-yet-implemented message, since
+  `Connect-EntitySyncVendor -Vendor LCAT` still throws (T005) and can never
+  register an adapter. Real LCAT reads are T019/T020 (US1), not this task.
+  Verified manually: tab completion after `-Vendor LCAT -Type ` and
+  `-Vendor LTAC -Type ` both offer only `Customer`, and invoking the command
+  throws the clear not-yet-implemented message. `just build` and `just test`
+  both pass (51/51). Next incomplete task: T007 (New-EntitySyncPlan LCAT
+  target vendor validation).
 
 ## Open Blockers
 

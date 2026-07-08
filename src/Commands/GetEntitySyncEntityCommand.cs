@@ -14,13 +14,21 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, Position = 0)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
+    /// <summary>
+    /// LCAT reads may be requested with the `LTAC` alias, but every downstream result and error
+    /// must still identify the vendor as `LCAT` (spec FR-002).
+    /// </summary>
+    private static string NormalizeVendorAlias(string vendor) =>
+        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+
     public object? GetDynamicParameters()
     {
+        Vendor = NormalizeVendorAlias(Vendor);
         dynamicParameters = new RuntimeDefinedParameterDictionary();
         if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
         {
@@ -33,6 +41,10 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         else if (Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
         {
             AddEntityTypeParameter("Customer", "Site");
+        }
+        else if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+        {
+            AddEntityTypeParameter("Customer");
         }
 
         return dynamicParameters;
@@ -58,6 +70,12 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
     {
         try
         {
+            Vendor = NormalizeVendorAlias(Vendor);
+            if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotImplementedException("LCAT Customer reads are implemented in a later EntitySync task.");
+            }
+
             var entityType = DynamicValue<string?>("EntityType", null) ?? throw new InvalidOperationException("EntityType is required.");
             var query = new EntityQuery { EntityType = entityType, Search = Search, IncludeInactive = IncludeInactive, FullObjects = FullObjects, IncludeSiteDetails = FullObjects, ThrottleLimit = ThrottleLimit };
             if (Count > 0) query.Count = Count;
