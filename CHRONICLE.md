@@ -81,6 +81,19 @@
   both throw the same clear not-yet-implemented message. `just build` and
   `just test` both pass (51/51). Next incomplete task: T008
   (Test-EntitySyncConnection LCAT support).
+- T008 done: added `LCAT`/`LTAC` to the `Vendor` `ValidateSet` in
+  `TestEntitySyncConnectionCommand.cs`, plus the same `NormalizeVendorAlias`
+  helper pattern as T005/T006/T007 (called from `EndProcessing`, since this
+  command has no dynamic parameters) so `LTAC` reports as `LCAT`. Added an
+  explicit `LCAT` branch in `EndProcessing` that throws
+  `NotImplementedException` before `ConnectionRegistry.Get` — same rationale
+  as T005/T006/T007: without it, `-Vendor LCAT` would fail with a confusing
+  "not connected" error instead of a clear not-yet-implemented message. Real
+  LCAT connection testing lands with T019 (US1). Verified manually:
+  `-Vendor LCAT` and `-Vendor LTAC` both throw the same clear
+  not-yet-implemented message. `just build` and `just test` both pass
+  (51/51). Next incomplete task: T009 (LCAT empty lookup set in
+  `EntitySyncLookupTypes.cs`).
 
 ## Open Blockers
 
