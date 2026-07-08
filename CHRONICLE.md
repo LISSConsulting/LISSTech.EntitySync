@@ -106,8 +106,19 @@
   associated test task in `tasks.md` (unlike the US1-3 phases), and
   T005-T008 established manual verification as sufficient for this kind of
   Foundational-phase task. `just build` and `just test` both pass (51/51).
-  Next incomplete task: T010 (LCAT command export and tag metadata in
-  `Module/LISSTech.EntitySync.psd1`).
+- T010 done: added `lcat` to the `Tags` array in
+  `Module/LISSTech.EntitySync.psd1` `PrivateData.PSData`. No
+  `CmdletsToExport` change was needed — LCAT adds no new cmdlets of its own;
+  it only extends existing commands (`Connect-EntitySyncVendor`,
+  `Get-EntitySyncEntity`, `Test-EntitySyncConnection`, `New-EntitySyncPlan`,
+  `Invoke-EntitySyncPlan`) that are already exported, confirmed by
+  `just test-load` listing the same 12 commands as before with no gaps.
+  Left `ReleaseNotes` and the pre-existing `ncentral` tag gap untouched —
+  that drift predates this feature (the N-central adapter commit never
+  touched Tags either) and is out of this task's scope. `just build`,
+  `just test-load`, and `just test` all pass (51/51). Next incomplete task:
+  T011 (shared LCAT request/response model support in
+  `src/Adapters/LCAT/LCATEntityAdapter.cs`).
 
 ## Open Blockers
 

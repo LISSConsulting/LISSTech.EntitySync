@@ -31,7 +31,7 @@
   )
   PrivateData          = @{
     PSData = @{
-      Tags         = @('lisstech', 'sync', 'netsuite', 'halopsa', 'matching', 'integration')
+      Tags         = @('lisstech', 'sync', 'netsuite', 'halopsa', 'lcat', 'matching', 'integration')
       ProjectUri   = 'https://github.com/LISSConsulting/LISSTech.EntitySync'
       ReleaseNotes = 'Initial PowerShell 7 entity sync module with NetSuite and HaloPSA adapters.'
     }
