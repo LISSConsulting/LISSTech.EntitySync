@@ -15,13 +15,22 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
     [Parameter(Mandatory = true, ParameterSetName = "NCentral")]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
+    [Parameter(Mandatory = true, ParameterSetName = "LCAT")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
+    /// <summary>
+    /// LCAT connections may be registered with the `LTAC` alias, but every plan and artifact
+    /// produced afterwards must still identify the vendor as `LCAT` (spec FR-002).
+    /// </summary>
+    private static string NormalizeVendorAlias(string vendor) =>
+        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+
     public object? GetDynamicParameters()
     {
+        Vendor = NormalizeVendorAlias(Vendor);
         dynamicParameters = new RuntimeDefinedParameterDictionary();
         if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
         {
@@ -71,6 +80,13 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     {
         try
         {
+            Vendor = NormalizeVendorAlias(Vendor);
+
+            if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotImplementedException("LCAT connection support is implemented in a later EntitySync task.");
+            }
+
             if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             {
                 var haloScope = DynamicValue("HaloScope", "all");

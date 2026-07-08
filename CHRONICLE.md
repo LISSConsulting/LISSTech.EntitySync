@@ -35,6 +35,20 @@
   tracked only via CHRONICLE.md and commit messages (specs are read-only per
   AGENTS workflow). `just build` and `just test` both pass (51/51).
   Phase 1 (Setup) is now complete. Next incomplete task: T005 (Phase 2 Foundational).
+- T005 done: added `LCAT` and `LTAC` to the `Vendor` `ValidateSet` in
+  `ConnectEntitySyncVendorCommand.cs`, plus a `NormalizeVendorAlias` helper
+  (called from both `GetDynamicParameters` and `EndProcessing`) that maps
+  `LTAC` -> `LCAT` per spec FR-002/contract (LTAC alias, plans always say
+  LCAT). Added an explicit `LCAT` branch in `EndProcessing` that throws
+  `NotImplementedException` — without it, `-Vendor LCAT` would silently fall
+  through into the unconditional NCentral branch at the end of the method
+  (that branch has no `if` guard of its own; it's the effective default).
+  Real LCAT dynamic parameters (BaseUrl/BearerToken) and connection logic are
+  T021 (US1), not this task. Verified manually: `-Vendor LCAT` and
+  `-Vendor LTAC` both throw the same clear not-yet-implemented message, and
+  tab completion after `-Vendor ` lists `LCAT`/`LTAC` alongside the existing
+  vendors. `just build` and `just test` both pass (51/51). Next incomplete
+  task: T006 (Get-EntitySyncEntity LCAT vendor validation).
 
 ## Open Blockers
 
