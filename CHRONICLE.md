@@ -177,6 +177,34 @@
   LCAT connection/mapping/apply behavior. `just build` and `just test` both
   pass (53/53). Next incomplete task: T014 (Pester tests for NCentral
   Customer to LCAT slug/display/id mapping).
+- T014 done: added four Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1`
+  (after the T013 completion tests, before `Declares object output for
+  Get-EntitySyncConnection`) calling `DefaultEntityMapper.MapCreate`/
+  `MapUpdate` with source vendor `NCentral`/`Customer` and target vendor
+  `LCAT`/`Customer`, asserting `request.Fields['display_name']`,
+  `request.Fields['ncentral_customer_id']` (including fallback from
+  `ExternalIds['NCentralCustomerId']` to `source.Id` per data-model.md),
+  and `request.Fields['slug']` (validated against the contract regex
+  `^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$` rather than pinning an exact
+  slug algorithm, since slug derivation is T022/T030's job, and asserting
+  determinism by mapping the same source twice and comparing slugs) using
+  snake_case field keys (`display_name`, `ncentral_customer_id`, `slug`,
+  `ncentral_parent_customer_id`) matching `contracts/lcat-sync-rpc.md`
+  exactly, chosen so a future T022 can build `LCATCustomerScopeRequest`
+  straight from `EntityWriteRequest.Fields` with no key translation. Also
+  asserts `ncentral_parent_customer_id` is absent/null for customer-derived
+  scopes (no parent) and that `MapUpdate` preserves `target.Id` as
+  `request.Id`. Did not add tests for site-derived mapping (T026), missing
+  parent safe-failure (T027), or registration-token exclusion (T036) — those
+  are separate tasks with their own test entries. As expected for a
+  test-first US1 task, all four tests currently fail since `MapCreate`/
+  `MapUpdate` in `src/Mapping/DefaultEntityMapper.cs` has no LCAT branch yet
+  (T022 implements it); this reproduces the T013 precedent in reverse — that
+  task's tests passed immediately because the behavior pre-existed, this
+  task's tests fail because the behavior doesn't yet. `just build` succeeds;
+  `just test` reports 53 passed / 4 failed (expected failures, all in the
+  new T014 tests). Next incomplete task: T015 (Pester tests for LCAT adapter
+  customer batch request and count response parsing).
 
 ## Open Blockers
 
