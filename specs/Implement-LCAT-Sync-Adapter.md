@@ -104,7 +104,7 @@ Request body:
 
 ```json
 {
-  "p_customers": [
+  "customers": [
     {
       "slug": "Arista-Air-Conditioning",
       "display_name": "Arista Air Conditioning Corp.",
@@ -118,8 +118,8 @@ Request body:
       "ncentral_parent_customer_id": "111"
     }
   ],
-  "p_reason": "EntitySync N-central to LCAT sync",
-  "p_ticket": null
+  "reason": "EntitySync N-central to LCAT sync",
+  "ticket": null
 }
 ```
 
