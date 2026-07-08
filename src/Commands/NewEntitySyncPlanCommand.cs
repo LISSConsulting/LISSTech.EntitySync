@@ -27,11 +27,19 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public string SourceVendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
     public string TargetVendor { get; set; } = string.Empty;
+
+    /// <summary>
+    /// LCAT is a sync target only; plans may be requested with the `LTAC` alias, but every plan
+    /// and artifact produced afterwards must still identify the vendor as `LCAT` (spec FR-002).
+    /// </summary>
+    private static string NormalizeVendorAlias(string vendor) =>
+        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
 
     public object? GetDynamicParameters()
     {
+        TargetVendor = NormalizeVendorAlias(TargetVendor);
         dynamicParameters = new RuntimeDefinedParameterDictionary();
         if (!string.IsNullOrWhiteSpace(SourceVendor)) AddEntityTypeParameter("SourceEntityType", EntityTypesForVendor(SourceVendor));
         if (!string.IsNullOrWhiteSpace(TargetVendor)) AddEntityTypeParameter("TargetEntityType", EntityTypesForVendor(TargetVendor));
@@ -72,6 +80,12 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     {
         try
         {
+            TargetVendor = NormalizeVendorAlias(TargetVendor);
+            if (TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotImplementedException("LCAT sync plan targets are implemented in a later EntitySync task.");
+            }
+
             var sourceAdapter = ConnectionRegistry.Get(SourceVendor);
             var targetAdapter = ConnectionRegistry.Get(TargetVendor);
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
