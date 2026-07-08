@@ -47,4 +47,4 @@ coverage.*
 Thumbs.db
 Desktop.ini
 .DS_Store
-.ralph/regent-state.json
+.ralph/
