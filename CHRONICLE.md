@@ -92,8 +92,22 @@
   LCAT connection testing lands with T019 (US1). Verified manually:
   `-Vendor LCAT` and `-Vendor LTAC` both throw the same clear
   not-yet-implemented message. `just build` and `just test` both pass
-  (51/51). Next incomplete task: T009 (LCAT empty lookup set in
-  `EntitySyncLookupTypes.cs`).
+  (51/51).
+- T009 done: added an explicit `LCAT` branch to
+  `EntitySyncLookupTypes.ForVendor` in `src/Core/EntitySyncLookupTypes.cs`
+  returning `Array.Empty<string>()`. The unconditional fallback already
+  returned empty for any unrecognized vendor (this is how NetSuite gets its
+  empty lookup set today, with no explicit branch), so LCAT's `LookupTypes`
+  was already empty before this change — verified manually via
+  `[LCATEntityAdapter]::new(...).LookupTypes.Count` (0, before and after).
+  Added the explicit branch anyway to document intent rather than rely on
+  incidental fallthrough, matching the explicit-branch precedent set by
+  T005-T008 for other command surfaces. No Pester test added: T009 has no
+  associated test task in `tasks.md` (unlike the US1-3 phases), and
+  T005-T008 established manual verification as sufficient for this kind of
+  Foundational-phase task. `just build` and `just test` both pass (51/51).
+  Next incomplete task: T010 (LCAT command export and tag metadata in
+  `Module/LISSTech.EntitySync.psd1`).
 
 ## Open Blockers
 

@@ -13,6 +13,7 @@ public static class EntitySyncLookupTypes
     {
         if (vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) return new[] { TopLevel, CustomerRelationship, CustomerType, NCentralIntegration, NCentralIntegrationLink };
         if (vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return new[] { ServiceOrganization };
+        if (vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase)) return Array.Empty<string>();
         return Array.Empty<string>();
     }
 }
