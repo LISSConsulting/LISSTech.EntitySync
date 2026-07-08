@@ -55,4 +55,8 @@ Confirmed N-central behavior:
 
 Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.
 
+## NCentral to LCAT (planned)
+
+`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT` plans will apply as one batch request per reviewed plan instead of one write per item. Approved N-central customer and site items will be sent together to `POST /rpc/sync_ncentral_customers`; review, reject, no-update, none, invalid, and incomplete items are skipped. `-WhatIf` will report the planned batch without writing. Pass-through output will report inserted/updated/retired/active counts and an audit event ID; non-success responses will include status and endpoint path without authorization headers or credentials. See `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`.
+
 Applies the plan and returns EntityWriteResult objects.

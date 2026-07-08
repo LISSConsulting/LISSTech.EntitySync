@@ -38,3 +38,11 @@ $plan = New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Site -TargetV
 ```
 
 Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` are authoritative when present. If a Halo site has no existing site link, the parent Halo client must be linked to an N-central customer so new N-central sites can be created under the correct customer.
+
+### Example 4 (planned)
+```powershell
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LCAT -TargetEntityType Customer
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LCAT -TargetEntityType Customer
+```
+
+Will create N-central Customer/Site to LCAT Customer scope plans. `LCAT` will be a valid `-TargetVendor`, and `Customer` will be the only `-TargetEntityType` LCAT supports. Site-derived items will carry parent N-central customer evidence. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.

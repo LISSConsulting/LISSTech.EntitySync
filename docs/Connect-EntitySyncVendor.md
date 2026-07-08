@@ -29,6 +29,8 @@ N-central connections use a User-API token for REST discovery and creation. The 
 
 N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.
 
+LCAT (planned): `Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl <String> -LCATBearerToken <String>` will connect an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `LCATBearerToken` will never appear in the returned connection object. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+
 ## EXAMPLES
 
 ### Example 1
