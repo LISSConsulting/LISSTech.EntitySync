@@ -162,6 +162,51 @@ Describe 'LISSTech.EntitySync' {
     $nCentral | Should -Not -Contain '-NetSuiteAccountId'
   }
 
+  It 'Completes LCAT and LTAC as vendors on command surfaces that support LCAT (T013, US1)' {
+    $getEntityInput = 'Get-EntitySyncEntity -Vendor '
+    $getEntityVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityInput, $getEntityInput.Length, $null).CompletionMatches.CompletionText
+    $getEntityVendors | Should -Contain 'LCAT'
+    $getEntityVendors | Should -Contain 'LTAC'
+
+    $connectInput = 'Connect-EntitySyncVendor -Vendor '
+    $connectVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($connectInput, $connectInput.Length, $null).CompletionMatches.CompletionText
+    $connectVendors | Should -Contain 'LCAT'
+    $connectVendors | Should -Contain 'LTAC'
+
+    $testConnectionInput = 'Test-EntitySyncConnection -Vendor '
+    $testConnectionVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($testConnectionInput, $testConnectionInput.Length, $null).CompletionMatches.CompletionText
+    $testConnectionVendors | Should -Contain 'LCAT'
+    $testConnectionVendors | Should -Contain 'LTAC'
+
+    $targetInput = 'New-EntitySyncPlan -TargetVendor '
+    $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
+    $targetVendors | Should -Contain 'LCAT'
+    $targetVendors | Should -Contain 'LTAC'
+
+    $sourceInput = 'New-EntitySyncPlan -SourceVendor '
+    $sourceVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($sourceInput, $sourceInput.Length, $null).CompletionMatches.CompletionText
+    $sourceVendors | Should -Not -Contain 'LCAT'
+    $sourceVendors | Should -Not -Contain 'LTAC'
+  }
+
+  It 'Completes only Customer as the LCAT/LTAC entity type (T013, US1)' {
+    $getEntityInput = 'Get-EntitySyncEntity -Vendor LCAT -Type '
+    $getEntityTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityInput, $getEntityInput.Length, $null).CompletionMatches.CompletionText
+    $getEntityTypes | Should -Be @('Customer')
+
+    $getEntityLtacInput = 'Get-EntitySyncEntity -Vendor LTAC -Type '
+    $getEntityLtacTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityLtacInput, $getEntityLtacInput.Length, $null).CompletionMatches.CompletionText
+    $getEntityLtacTypes | Should -Be @('Customer')
+
+    $targetInput = 'New-EntitySyncPlan -TargetVendor LCAT -TargetEntityType '
+    $targetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
+    $targetTypes | Should -Be @('Customer')
+
+    $targetLtacInput = 'New-EntitySyncPlan -TargetVendor LTAC -TargetEntityType '
+    $targetLtacTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($targetLtacInput, $targetLtacInput.Length, $null).CompletionMatches.CompletionText
+    $targetLtacTypes | Should -Be @('Customer')
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

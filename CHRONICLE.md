@@ -161,8 +161,22 @@
   examples, boundary lengths (64 chars valid, 65 invalid), leading/trailing
   dash rejection, embedded spaces, and underscore acceptance. `just build`
   and `just test` both pass (51/51). Phase 2 (Foundational) is now complete.
-  Next incomplete task: T013 (Phase 3 / US1 Pester tests for LCAT vendor
-  completion).
+- T013 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1`
+  (after the existing `Connect-EntitySyncVendor` parameter-completion test,
+  before `Declares object output for Get-EntitySyncConnection`): one
+  confirming `LCAT`/`LTAC` complete as vendors on `Get-EntitySyncEntity`,
+  `Connect-EntitySyncVendor`, `Test-EntitySyncConnection`, and
+  `New-EntitySyncPlan -TargetVendor` (and explicitly do NOT complete on
+  `-SourceVendor`, matching spec.md's LCAT-is-target-only constraint), and
+  one confirming `-Type`/`-TargetEntityType` completion for `LCAT`/`LTAC`
+  offers only `Customer`. These exercise command-surface behavior already
+  implemented in T005-T008 (ValidateSet + dynamic parameters), so both
+  tests passed immediately with no product code changes — this is expected
+  per tasks.md's "Tests for User Story 1" phase, which front-loads test
+  authorship before the US1 implementation tasks (T018+) that add real
+  LCAT connection/mapping/apply behavior. `just build` and `just test` both
+  pass (53/53). Next incomplete task: T014 (Pester tests for NCentral
+  Customer to LCAT slug/display/id mapping).
 
 ## Open Blockers
 
