@@ -116,9 +116,33 @@
   Left `ReleaseNotes` and the pre-existing `ncentral` tag gap untouched —
   that drift predates this feature (the N-central adapter commit never
   touched Tags either) and is out of this task's scope. `just build`,
-  `just test-load`, and `just test` all pass (51/51). Next incomplete task:
-  T011 (shared LCAT request/response model support in
-  `src/Adapters/LCAT/LCATEntityAdapter.cs`).
+  `just test-load`, and `just test` all pass (51/51).
+- T011 done: added `LCATCustomerScopeRequest` and `LCATSyncResult` model
+  types plus private static `BuildSyncRequestBody`/`ParseSyncResponse`
+  helpers to `src/Adapters/LCAT/LCATEntityAdapter.cs`, matching the exact
+  field names in `contracts/lcat-sync-rpc.md` (`slug`, `display_name`,
+  `ncentral_customer_id`, `ncentral_parent_customer_id`, `reason`, `ticket`
+  on the request; `inserted_count`/`updated_count`/`retired_count`/
+  `active_count`/`audit_event_id` on the response, read via the existing
+  `JsonElement.GetInt`/`GetString` extensions in
+  `src/Adapters/JsonObjectExtensions.cs`). Kept the two build/parse methods
+  private static, following the `HaloEntityAdapter.MapAddress` reflection
+  pattern called out in the T003 note, since no HTTP mocking infra exists
+  in this test file and future US1/US2 tests (T015, T017, T033, T039) can
+  invoke them the same way. Deliberately did not wire these into
+  `GetEntitiesAsync`/`TestConnectionAsync`/a batch-send method or touch
+  `LCATOptions`/HTTP headers — that connection/auth/send wiring is T018-T020
+  (US1), and this task is Foundational-phase model support only. No slug
+  format or duplicate-ID validation added here either; that is `DefaultEntityMapper.cs`'s
+  job in T012/T043, not the adapter's request/response shape. Verified
+  manually via reflection (`GetMethod(..., NonPublic Static)`) that
+  `BuildSyncRequestBody` produces the exact contract JSON shape and
+  `ParseSyncResponse` round-trips the sample contract response. No Pester
+  test added, matching the T009 precedent that Foundational-phase tasks
+  without a `tasks.md` test entry rely on manual verification. `just build`
+  and `just test` both pass (51/51). Next incomplete task: T012 (slug
+  validation helper for LCAT customer scopes in
+  `src/Mapping/DefaultEntityMapper.cs`).
 
 ## Open Blockers
 
