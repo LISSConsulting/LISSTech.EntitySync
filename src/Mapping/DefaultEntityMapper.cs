@@ -1,9 +1,10 @@
+using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Mapping;
 
-public sealed class DefaultEntityMapper : IEntityMapper
+public sealed partial class DefaultEntityMapper : IEntityMapper
 {
     public EntityWriteRequest MapCreate(ExternalEntity source, string targetVendor, string targetEntityType, MatchOptions options)
     {
@@ -172,4 +173,10 @@ public sealed class DefaultEntityMapper : IEntityMapper
         var separator = value.IndexOf('-', StringComparison.Ordinal);
         return separator > 0 ? value[..separator].Trim() : value;
     }
+
+    // Matches the LCAT customer-scope slug contract in specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md.
+    private static bool IsValidLcatSlug(string? slug) => !string.IsNullOrEmpty(slug) && LcatSlugPattern().IsMatch(slug);
+
+    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled)]
+    private static partial Regex LcatSlugPattern();
 }

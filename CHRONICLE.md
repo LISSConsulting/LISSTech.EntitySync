@@ -140,9 +140,29 @@
   `ParseSyncResponse` round-trips the sample contract response. No Pester
   test added, matching the T009 precedent that Foundational-phase tasks
   without a `tasks.md` test entry rely on manual verification. `just build`
-  and `just test` both pass (51/51). Next incomplete task: T012 (slug
-  validation helper for LCAT customer scopes in
-  `src/Mapping/DefaultEntityMapper.cs`).
+  and `just test` both pass (51/51).
+- T012 done: added a private static `IsValidLcatSlug` helper plus a
+  `[GeneratedRegex]`-backed `LcatSlugPattern` partial method to
+  `src/Mapping/DefaultEntityMapper.cs`, enforcing the exact slug contract
+  from `contracts/lcat-sync-rpc.md`/`data-model.md`
+  (`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$`). Made `DefaultEntityMapper`
+  `partial` (previously not) since `GeneratedRegex` requires a partial method
+  on a partial type, following the existing `EntityNormalizer.cs` precedent
+  for compiled regex helpers rather than a hand-rolled `Regex` field.
+  Deliberately did not wire this into `MapCreate`/`MapUpdate`, add slug
+  *generation* (deriving a slug from a display name), or add safe-failure
+  reasons for unsafe/duplicate slugs — those are T022 (US1 customer
+  mapping), T030 (US2 site-derived slug generation, also T028's test), and
+  T043 (US3 safe-failure reasons), respectively; this task is Foundational
+  validation-only. No Pester test added, matching the T009/T011 precedent
+  that Foundational-phase tasks without a `tasks.md` test entry rely on
+  manual verification. Verified manually via reflection
+  (`GetMethod("IsValidLcatSlug", NonPublic Static)`) against contract
+  examples, boundary lengths (64 chars valid, 65 invalid), leading/trailing
+  dash rejection, embedded spaces, and underscore acceptance. `just build`
+  and `just test` both pass (51/51). Phase 2 (Foundational) is now complete.
+  Next incomplete task: T013 (Phase 3 / US1 Pester tests for LCAT vendor
+  completion).
 
 ## Open Blockers
 
