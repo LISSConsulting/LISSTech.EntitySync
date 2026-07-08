@@ -13,6 +13,32 @@ Describe 'LISSTech.EntitySync' {
     Remove-Module LISSTech.EntitySync -Force -ErrorAction SilentlyContinue
   }
 
+  #region LCAT test scaffolding (specs/001-lcat-sync-adapter)
+  # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T045):
+  # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
+  # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
+  # These helpers build valid LCAT options/adapters so each story's tests can override only the
+  # fields they're exercising instead of repeating adapter setup.
+
+  function New-TestLCATOptions {
+    param(
+      [string]$BaseUrl = 'https://lcat.example.test/',
+      [string]$BearerToken = 'token'
+    )
+    $options = [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]::new()
+    $options.BaseUrl = $BaseUrl
+    $options.BearerToken = $BearerToken
+    return $options
+  }
+
+  function New-TestLCATAdapter {
+    param(
+      [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]$Options = (New-TestLCATOptions)
+    )
+    return [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter]::new($Options)
+  }
+  #endregion
+
   It 'Imports successfully' {
     Get-Module LISSTech.EntitySync | Should -Not -BeNullOrEmpty
   }

@@ -14,7 +14,18 @@
   existing in `src/Commands/GetEntitySyncEntityCommand.cs` (a pre-existing docs gap,
   not LCAT-specific). All LCAT syntax is documented as planned/future since the
   command surface (ValidateSet, dynamic parameters) does not accept `LCAT` until
-  Phase 2 (T005-T008) and US1 (T021). Next incomplete task: T003.
+  Phase 2 (T005-T008) and US1 (T021).
+- T003 done: added a `#region LCAT test scaffolding` block in
+  `Tests/LISSTech.EntitySync.Tests.ps1` (after `AfterAll`, before the first `It`)
+  with `New-TestLCATOptions`/`New-TestLCATAdapter` helper functions, following the
+  existing inline `[XOptions]::new()` + `[XEntityAdapter]::new($options)` pattern
+  used for NCentral/Halo adapter tests. No HTTP-mocking helper exists anywhere in
+  this test file for any vendor; adapter tests either validate before any network
+  call or test private/static parsing methods via reflection (see the
+  `HaloEntityAdapter.MapAddress` example) — future LCAT batch request/response
+  tests (T015, T017, T039) should follow that reflection pattern rather than
+  introducing new HTTP mocking infra. `just build` and `just test` both pass (51/51).
+  Next incomplete task: T004.
 
 ## Open Blockers
 
