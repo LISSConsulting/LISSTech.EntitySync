@@ -203,8 +203,30 @@
   task's tests passed immediately because the behavior pre-existed, this
   task's tests fail because the behavior doesn't yet. `just build` succeeds;
   `just test` reports 53 passed / 4 failed (expected failures, all in the
-  new T014 tests). Next incomplete task: T015 (Pester tests for LCAT adapter
-  customer batch request and count response parsing).
+  new T014 tests).
+- T015 done: added three Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1`
+  (after the T014 mapping tests, before `Declares object output for
+  Get-EntitySyncConnection`) invoking the private static
+  `BuildSyncRequestBody`/`ParseSyncResponse` helpers on `LCATEntityAdapter`
+  via reflection (`GetMethod(..., NonPublic Static)`), following the
+  `HaloEntityAdapter.MapAddress` precedent from T003/T011. One test builds a
+  two-item `List<LCATCustomerScopeRequest>` (a customer scope with no parent
+  and a site scope with a parent) — passed to `Invoke` as `@(, $customers)`
+  so PowerShell doesn't enumerate the list into separate arguments — and
+  asserts the serialized JSON matches `contracts/lcat-sync-rpc.md` exactly:
+  `customers[].slug/display_name/ncentral_customer_id/ncentral_parent_customer_id`,
+  top-level `reason` (`EntitySync N-central to LCAT sync`), and a present-but-null
+  `ticket` key. Two more tests cover `ParseSyncResponse`: one with a full
+  contract-shaped response asserting all five fields
+  (`InsertedCount`/`UpdatedCount`/`RetiredCount`/`ActiveCount`/`AuditEventId`),
+  one with `{}` asserting the existing `GetInt`/`GetString` extension
+  fallbacks already produce 0/null defaults rather than throwing. These tests
+  exercise T011's existing implementation with no product code changes
+  needed (T011 already matched the contract shape), unlike T014 which is
+  still red pending T022. `just build` succeeds; `just test` reports 56
+  passed / 4 failed (the same pre-existing T014 failures, now joined by 3
+  new passing T015 tests). Next incomplete task: T016 (Pester tests for
+  NCentral Customer to LCAT plan creation without vendor writes).
 
 ## Open Blockers
 

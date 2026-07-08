@@ -280,6 +280,65 @@ Describe 'LISSTech.EntitySync' {
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
+  It 'Builds an LCAT batch sync request body matching the customer scope contract shape (T015, US1)' {
+    $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $customerScope.Slug = 'Arista-Air-Conditioning'
+    $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+    $customerScope.NCentralCustomerId = '111'
+
+    $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $siteScope.Slug = 'Arista-Air-Conditioning-Main-Office'
+    $siteScope.DisplayName = 'Main Office'
+    $siteScope.NCentralCustomerId = '9001'
+    $siteScope.NCentralParentCustomerId = '111'
+
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers.Add($customerScope)
+    $customers.Add($siteScope)
+
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $bodyJson = $method.Invoke($null, @(, $customers))
+    $body = $bodyJson | ConvertFrom-Json
+
+    $body.customers.Count | Should -Be 2
+    $body.customers[0].slug | Should -Be 'Arista-Air-Conditioning'
+    $body.customers[0].display_name | Should -Be 'Arista Air Conditioning Corp.'
+    $body.customers[0].ncentral_customer_id | Should -Be '111'
+    $body.customers[0].ncentral_parent_customer_id | Should -BeNullOrEmpty
+    $body.customers[1].slug | Should -Be 'Arista-Air-Conditioning-Main-Office'
+    $body.customers[1].ncentral_customer_id | Should -Be '9001'
+    $body.customers[1].ncentral_parent_customer_id | Should -Be '111'
+    $body.reason | Should -Be 'EntitySync N-central to LCAT sync'
+    $body.PSObject.Properties.Name | Should -Contain 'ticket'
+    $body.ticket | Should -BeNullOrEmpty
+  }
+
+  It 'Parses inserted, updated, retired, and active counts and the audit event id from an LCAT batch sync response (T015, US1)' {
+    $responseJson = '{"inserted_count":1,"updated_count":1,"retired_count":0,"active_count":2,"audit_event_id":"00000000-0000-0000-0000-000000000000"}'
+
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $result = $method.Invoke($null, @($responseJson))
+
+    $result.InsertedCount | Should -Be 1
+    $result.UpdatedCount | Should -Be 1
+    $result.RetiredCount | Should -Be 0
+    $result.ActiveCount | Should -Be 2
+    $result.AuditEventId | Should -Be '00000000-0000-0000-0000-000000000000'
+  }
+
+  It 'Defaults LCAT batch sync response counts to zero and audit event id to null when absent (T015, US1)' {
+    $responseJson = '{}'
+
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $result = $method.Invoke($null, @($responseJson))
+
+    $result.InsertedCount | Should -Be 0
+    $result.UpdatedCount | Should -Be 0
+    $result.RetiredCount | Should -Be 0
+    $result.ActiveCount | Should -Be 0
+    $result.AuditEventId | Should -BeNullOrEmpty
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
