@@ -25,7 +25,16 @@
   `HaloEntityAdapter.MapAddress` example) — future LCAT batch request/response
   tests (T015, T017, T039) should follow that reflection pattern rather than
   introducing new HTTP mocking infra. `just build` and `just test` both pass (51/51).
-  Next incomplete task: T004.
+- T004 done: added "(planned)" LCAT references to `README.md` — a
+  `### LCAT (planned)` subsection in Configuration (env vars, batch-only
+  behavior, credential redaction), an "Adapters planned" note in Project
+  Structure, and a "Planned:" line in Status pointing at
+  `specs/001-lcat-sync-adapter/`. Matches the "(planned)"/future-tense style
+  used in the T002 docs stubs. `tasks.md` checkboxes are intentionally left
+  unmarked — prior T001-T003 commits never edited `tasks.md`; completion is
+  tracked only via CHRONICLE.md and commit messages (specs are read-only per
+  AGENTS workflow). `just build` and `just test` both pass (51/51).
+  Phase 1 (Setup) is now complete. Next incomplete task: T005 (Phase 2 Foundational).
 
 ## Open Blockers
 
