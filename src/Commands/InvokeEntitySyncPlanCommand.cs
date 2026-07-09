@@ -245,6 +245,13 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     private static List<string> ValidateLcatCustomerScopeRequest(EntitySyncPlanItem item, LCATCustomerScopeRequest request, ISet<string> duplicateIds, ISet<string> duplicateSlugs)
     {
         var errors = new List<string>();
+        if (!item.Source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) ||
+            (!item.Source.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase) &&
+             !item.Source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)))
+        {
+            errors.Add($"LCAT customer-scope sync only accepts N-central Customer or Site source records; source was '{item.Source.Vendor}' '{item.Source.EntityType}'");
+        }
+
         if (string.IsNullOrWhiteSpace(request.DisplayName)) errors.Add("display_name is required");
         if (string.IsNullOrWhiteSpace(request.NCentralCustomerId)) errors.Add("ncentral_customer_id is required");
         if (string.IsNullOrWhiteSpace(request.Slug)) errors.Add("slug is required");

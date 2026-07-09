@@ -1425,19 +1425,20 @@ namespace EntitySyncTests
       $plan.TargetEntityType = 'Customer'
 
       foreach ($case in @(
-        [pscustomobject]@{ Id = '1201'; Name = 'Valid Batch Customer' },
-        [pscustomobject]@{ Id = ''; Name = 'Missing Identifier Customer' },
-        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer A' },
-        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer B' },
-        [pscustomobject]@{ Id = '1204'; Name = 'Duplicate Slug Co' },
-        [pscustomobject]@{ Id = '1205'; Name = 'Duplicate Slug Co' }
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = '1201'; Name = 'Valid Batch Customer' },
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = ''; Name = 'Missing Identifier Customer' },
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = 'duplicate-1203'; Name = 'Duplicate Customer A' },
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = 'duplicate-1203'; Name = 'Duplicate Customer B' },
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = '1204'; Name = 'Duplicate Slug Co' },
+        [pscustomobject]@{ Vendor = 'NCentral'; EntityType = 'Customer'; Id = '1205'; Name = 'Duplicate Slug Co' },
+        [pscustomobject]@{ Vendor = 'HaloPSA'; EntityType = 'Client'; Id = '1206'; Name = 'Wrong Source Vendor' }
       )) {
         $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
-        $source.Vendor = 'NCentral'
-        $source.EntityType = 'Customer'
+        $source.Vendor = $case.Vendor
+        $source.EntityType = $case.EntityType
         $source.Id = $case.Id
         $source.Name = $case.Name
-        if (-not [string]::IsNullOrWhiteSpace($case.Id)) {
+        if ($case.Vendor -eq 'NCentral' -and -not [string]::IsNullOrWhiteSpace($case.Id)) {
           $source.ExternalIds['NCentralCustomerId'] = $case.Id
         }
 
@@ -1455,10 +1456,11 @@ namespace EntitySyncTests
       $successResults = @($results | Where-Object Success)
       $failedResults = @($results | Where-Object { -not $_.Success })
       $successResults.Count | Should -Be 1
-      $failedResults.Count | Should -Be 5
+      $failedResults.Count | Should -Be 6
       $failedResults.Message | Should -Contain 'LCAT item skipped before batch sync: ncentral_customer_id is required.'
       ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'duplicate-1203'"
       ($failedResults.Message -join "`n") | Should -Match "duplicate slug 'Duplicate-Slug-Co'"
+      ($failedResults.Message -join "`n") | Should -Match "LCAT customer-scope sync only accepts N-central Customer or Site source records"
 
       $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
       @($requestBody.customers).Count | Should -Be 1
