@@ -352,6 +352,58 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Reports LCAT connection test transport failures as redacted errors without leaking credentials' {
+    $secretToken = 'lcat-connection-refused-bearer-9f8e7d6c'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's HTTP request
+    # is refused, exercising the IsTransportException -> CreateRedactedAdapterException path.
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
+
+    try {
+      $caught = $null
+      try {
+        $lcatAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'LCAT connection test failed'
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Reports LCAT connection test results as false for non-success status codes without leaking credentials' {
+    $secretToken = 'lcat-connection-unauthorized-bearer-1a2b3c4d'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(401, 'Unauthorized', 'do not echo this body')
+    $server.Start()
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken)
+
+    try {
+      $result = $lcatAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeFalse
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET / HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Maps NCentral Customer display name, N-central identifier, and a valid slug into LCAT Fields (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'

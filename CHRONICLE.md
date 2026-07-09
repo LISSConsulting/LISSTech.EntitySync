@@ -25,6 +25,7 @@
 - Empty Queue sweep done: LCAT adapter duplicate-slug coverage now includes whitespace-hidden duplicates before HTTP send; `just test` passes.
 - Empty Queue sweep done: LCAT response parsing now explicitly covers explicit-null and empty-string `audit_event_id` per the contract's "preserved when present" rule; `just test` passes.
 - Empty Queue sweep done: LCAT response parsing now explicitly covers non-string `audit_event_id` shapes (number, boolean, object, array) at the unit level, mirroring the secret-leak integration guard; `just test` passes.
+- Empty Queue sweep done: LCAT `TestConnectionAsync` now has Pester coverage for both the redacted transport-failure path and the non-success status path, closing the last unverified credential-leak vector in the connection test surface; `just test` passes.
 
 ## Open Blockers
 
