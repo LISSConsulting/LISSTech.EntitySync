@@ -822,6 +822,16 @@
   `just test` reports all 86 tests passing. Next incomplete task: T045 (document credential handling
   and safety guarantees in `docs/Connect-EntitySyncVendor.md`, `docs/Invoke-EntitySyncPlan.md`, and
   `README.md`).
+- T045 done: documented LCAT credential handling and safety guarantees in
+  `docs/Connect-EntitySyncVendor.md`, `docs/Invoke-EntitySyncPlan.md`, and `README.md`. The docs now
+  state that LCAT bearer tokens are connection-only secrets, are omitted from connection output,
+  plan artifacts, result messages, and common adapter errors, and are not copied into LCAT batch
+  payloads alongside unrelated N-central registration tokens. The apply docs now spell out that only
+  approved, validated `Create`/`Update`/`Link` rows enter the authoritative LCAT batch while
+  review-blocked, rejected, no-update, unsafe, incomplete, and duplicate-source rows are skipped or
+  returned as non-secret failures. Validation: `just build` succeeds; `just test` reports all 86
+  tests passing. Next incomplete task: T046 (update `docs/Get-EntitySyncEntity.md` with LCAT Customer
+  read behavior and empty-target fallback notes).
 
 ## Open Blockers
 

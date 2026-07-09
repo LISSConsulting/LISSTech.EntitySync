@@ -30,7 +30,7 @@ N-central connections use a User-API token for REST discovery and creation. The 
 
 N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.
 
-`Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl <String> -LCATBearerToken <String>` connects an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `-Vendor LTAC` is accepted as an alias and normalizes to `LCAT` in the returned connection. `LCATBearerToken` never appears in the returned connection object. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+`Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl <String> -LCATBearerToken <String>` connects an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `-Vendor LTAC` is accepted as an alias and normalizes to `LCAT` in the returned connection. `LCATBearerToken` never appears in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; LCAT HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
 
 ## EXAMPLES
 
@@ -50,4 +50,4 @@ Use `Get-EntitySyncLookup -Vendor HaloPSA -Type TopLevel` to discover values for
 Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -LCATBearerToken $env:LCAT_BEARER_TOKEN
 ```
 
-Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters.
+Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters; the bearer token is used only for the LCAT authorization header and is not serialized into returned connection objects or plan artifacts.

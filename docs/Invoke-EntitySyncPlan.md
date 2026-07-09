@@ -61,6 +61,8 @@ Site updates only maintain the HaloPSA integration link until a confirmed N-cent
 
 N-central Customer and Site sources batch together in the same call: a customer-derived item carries no `ncentral_parent_customer_id`, while a site-derived item carries the site's own identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, preserving the site's parent relationship in LCAT. A site with no parent N-central customer ID never reaches the batch — `New-EntitySyncPlan` blocks it at plan time as `Action 'Review'`, so it is written as its own unsuccessful result the same as any other Review item. Before sending, the adapter rejects the whole batch with a clear error if any two items share the same `ncentral_customer_id`, matching the contract's uniqueness rule.
 
+LCAT apply safety is stricter than the generic item loop: only approved `Create`, `Update`, and `Link` rows with valid customer-scope fields enter the batch. `Review`, `Reject`, `No Update`, `None`, unsafe slug, empty display-name/source-id, missing parent-id, and duplicate source-id rows are skipped or returned as failed non-secret results without being sent to LCAT. The batch payload contains only the mapped customer-scope fields; LCAT bearer tokens, authorization headers, and unrelated N-central registration tokens are not copied into requests, result messages, or exported plan artifacts.
+
 ### Example 4
 ```powershell
 $plan | Invoke-EntitySyncPlan -Apply -WhatIf
