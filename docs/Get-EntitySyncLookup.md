@@ -24,6 +24,9 @@ Supported lookups:
 | `HaloPSA` | `NCentralIntegrationLink` |
 | `NCentral` | `ServiceOrganization` |
 
+Vendors without lookup catalogs, including `LCAT`/`LTAC`, return no lookup values and do not require
+`-Type`.
+
 ## EXAMPLES
 
 ### Example 1
@@ -61,3 +64,10 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegrationLink
 ```
 
 Lists HaloPSA's N-central client and site links. Client links are used as authoritative HaloPSA client to N-central customer matches and site links are used as authoritative HaloPSA site to N-central site matches. Both link types are upserted during matching apply flows after successful N-central writes.
+
+### Example 6
+```powershell
+Get-EntitySyncLookup -Vendor LCAT
+```
+
+Returns no records because LCAT does not expose lookup catalogs for the customer-scope sync workflow.

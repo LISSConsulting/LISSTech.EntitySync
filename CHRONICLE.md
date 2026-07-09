@@ -905,6 +905,12 @@
   `EntitySyncLookupTypes.ForVendor("LCAT")` or `LCATEntityAdapter.LookupTypes`, covering the
   previously manual T009 lookup contract. Validation: `just build` succeeds; `just test` reports
   all 89 tests passing.
+- Empty Queue sweep done: aligned the public `Get-EntitySyncLookup` command with the no-lookup
+  vendor contract. Known vendors without lookup catalogs, including `LCAT`/`LTAC`, now return an
+  empty result without requiring `-Type`; vendors with lookup catalogs still get vendor-specific
+  `-Type` completion and validation. Updated command help, regenerated external help, and added
+  Pester coverage. Validation: `just build`, `just test`, `just external-help`, and
+  `just test-load` all succeed; `just test` reports all 89 tests passing.
 
 ## Open Blockers
 

@@ -12,14 +12,18 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, Position = 0)]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
+    private static string NormalizeVendor(string vendor) =>
+        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+
     public object? GetDynamicParameters()
     {
         dynamicParameters = new RuntimeDefinedParameterDictionary();
-        var lookupTypes = EntitySyncLookupTypes.ForVendor(Vendor);
+        var lookupTypes = EntitySyncLookupTypes.ForVendor(NormalizeVendor(Vendor));
         if (lookupTypes.Count > 0) AddTypeParameter(lookupTypes.ToArray());
         return dynamicParameters;
     }
@@ -28,8 +32,12 @@ public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
     {
         try
         {
+            var normalizedVendor = NormalizeVendor(Vendor);
+            var lookupTypes = EntitySyncLookupTypes.ForVendor(normalizedVendor);
+            if (lookupTypes.Count == 0) return;
+
             var type = DynamicValue<string?>("Type", null) ?? throw new InvalidOperationException("Type is required.");
-            var adapter = ConnectionRegistry.Get(Vendor);
+            var adapter = ConnectionRegistry.Get(normalizedVendor);
             var traces = new ConcurrentQueue<string>();
             var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter)
@@ -65,7 +73,7 @@ public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
         }
         catch (Exception ex)
         {
-            ThrowTerminatingError(new ErrorRecord(ex, "GetEntitySyncLookupFailed", ErrorCategory.ReadError, Vendor));
+            ThrowTerminatingError(new ErrorRecord(ex, "GetEntitySyncLookupFailed", ErrorCategory.ReadError, NormalizeVendor(Vendor)));
         }
     }
     private void DrainMessages(ConcurrentQueue<string> traces, ConcurrentQueue<EntitySyncProgress> progress)

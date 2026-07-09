@@ -114,6 +114,7 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
       <maml:para>Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.</maml:para>
       <maml:para>Supported lookups:</maml:para>
       <maml:para>| Vendor | Type | |---|---| | `HaloPSA` | `TopLevel` | | `HaloPSA` | `CustomerRelationship` | | `HaloPSA` | `CustomerType` | | `HaloPSA` | `NCentralIntegration` | | `HaloPSA` | `NCentralIntegrationLink` | | `NCentral` | `ServiceOrganization` |</maml:para>
+      <maml:para>Vendors without lookup catalogs, including `LCAT`/`LTAC`, return no lookup values and do not require `-Type`.</maml:para>
     </maml:description>
     <command:syntax />
     <command:parameters />
@@ -157,6 +158,13 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
         <dev:code>Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegrationLink</dev:code>
         <dev:remarks>
           <maml:para>Lists HaloPSA's N-central client and site links. Client links are used as authoritative HaloPSA client to N-central customer matches and site links are used as authoritative HaloPSA site to N-central site matches. Both link types are upserted during matching apply flows after successful N-central writes.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 6 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor LCAT</dev:code>
+        <dev:remarks>
+          <maml:para>Returns no records because LCAT does not expose lookup catalogs for the customer-scope sync workflow.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>

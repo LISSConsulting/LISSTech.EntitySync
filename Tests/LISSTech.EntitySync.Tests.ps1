@@ -222,9 +222,13 @@ namespace EntitySyncTests
     $nCentralTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralInput, $nCentralInput.Length, $null).CompletionMatches.CompletionText
     $nCentralTypes | Should -Contain 'ServiceOrganization'
     $nCentralTypes | Should -Not -Contain 'TopLevel'
+
+    $lcatParameterInput = 'Get-EntitySyncLookup -Vendor LCAT -'
+    $lcatParameters = [System.Management.Automation.CommandCompletion]::CompleteInput($lcatParameterInput, $lcatParameterInput.Length, $null).CompletionMatches.CompletionText
+    $lcatParameters | Should -Not -Contain '-Type'
   }
 
-  It 'Exposes no lookup types for the LCAT target adapter' {
+  It 'Exposes no lookup types for the LCAT target adapter and public lookup command' {
     $lookupTypes = [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ForVendor('LCAT')
     $lookupTypes | Should -BeNullOrEmpty
 
@@ -235,6 +239,9 @@ namespace EntitySyncTests
     finally {
       $lcatAdapter.Dispose()
     }
+
+    @(Get-EntitySyncLookup -Vendor LCAT) | Should -BeNullOrEmpty
+    @(Get-EntitySyncLookup -Vendor LTAC) | Should -BeNullOrEmpty
   }
 
   It 'Completes only vendor-specific Connect-EntitySyncVendor parameters' {
