@@ -842,6 +842,11 @@
   empty output. Validation: `just build`, `just test-load`, and `just test` all succeed; `just test`
   reports all 87 tests passing. Next incomplete task: T047 (add LCAT quickstart examples to
   `README.md`).
+- T047 done: added LCAT quickstart examples to `README.md` covering N-central Customer to LCAT
+  customer-scope planning, workbook export/import review, `-WhatIf -PassThru` dry-run, Site to LCAT
+  dry-run with parent-customer context, and final reviewed apply as one authoritative LCAT batch.
+  Validation: `just build` succeeds; `just test` reports all 87 tests passing. Next incomplete task:
+  T048 (review LCAT spec artifacts for implementation drift).
 
 ## Open Blockers
 

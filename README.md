@@ -57,6 +57,48 @@ $plan = Import-EntitySyncPlan .\netsuite-halo-client-plan.xlsx
 $plan | Invoke-EntitySyncPlan -Apply -WhatIf
 ```
 
+### N-central to LCAT customer scopes
+
+LCAT sync is target-only and starts from reviewed N-central Customer or Site plans. Use `-WhatIf`
+for the first run; it reports the batch that would be sent without changing LCAT.
+
+```powershell
+Import-Module .\Module\LISSTech.EntitySync.psd1 -Force
+
+Connect-EntitySyncVendor -Vendor NCentral
+Connect-EntitySyncVendor -Vendor LCAT
+
+$customerPlan = New-EntitySyncPlan `
+  -SourceVendor NCentral -SourceEntityType Customer `
+  -TargetVendor LCAT -TargetEntityType Customer `
+  -CreateMissing
+
+$customerPlan | Export-EntitySyncPlan -Path .\ncentral-lcat-customers.xlsx
+$customerPlan = Import-EntitySyncPlan .\ncentral-lcat-customers.xlsx
+
+$customerPlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
+```
+
+Site records use the same LCAT Customer target. Each approved site-derived scope carries its parent
+N-central customer identifier; records missing that parent are blocked for review instead of being
+sent to LCAT.
+
+```powershell
+$sitePlan = New-EntitySyncPlan `
+  -SourceVendor NCentral -SourceEntityType Site `
+  -TargetVendor LCAT -TargetEntityType Customer `
+  -CreateMissing
+
+$sitePlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
+```
+
+When the reviewed plan and dry-run output are clean, remove `-WhatIf` to apply the approved rows as
+one authoritative LCAT batch:
+
+```powershell
+$customerPlan | Invoke-EntitySyncPlan -Apply -PassThru
+```
+
 ---
 
 ## 🏗️ Architecture
