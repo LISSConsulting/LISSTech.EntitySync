@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Management.Automation;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters.Halo;
+using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Runtime;
@@ -72,6 +73,11 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             AddDynamicParameter<string>("NCentralNetSuiteIdPropertyLabel", "NetSuite Customer ID");
             AddDynamicParameter<string>("NCentralNetSuiteNamePropertyLabel", "NetSuite Customer Name");
         }
+        else if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDynamicParameter<string>("LCATBaseUrl");
+            AddDynamicParameter<string>("LCATBearerToken");
+        }
 
         return dynamicParameters;
     }
@@ -84,7 +90,15 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
             if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
             {
-                throw new NotImplementedException("LCAT connection support is implemented in a later EntitySync task.");
+                var lcatOptions = new LCATOptions
+                {
+                    BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("LCATBaseUrl", null), "LCAT_BASE_URL", "LCATBaseUrl"), "LCATBaseUrl"),
+                    BearerToken = Require(DynamicValue<string?>("LCATBearerToken", null), "LCAT_BEARER_TOKEN", "LCATBearerToken")
+                };
+                var lcatAdapter = new LCATEntityAdapter(lcatOptions);
+                ConnectionRegistry.Set(lcatAdapter);
+                WriteObject(new EntitySyncConnection { Vendor = lcatAdapter.Vendor, Adapter = lcatAdapter });
+                return;
             }
 
             if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))

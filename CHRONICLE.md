@@ -364,6 +364,30 @@
   before (unchanged pre-existing T014/T016/T017 failures — no regression, no accidental fix of
   still-pending US1 work). Next incomplete task: T021 (register `Connect-EntitySyncVendor -Vendor
   LCAT` dynamic parameters and environment fallbacks).
+- T021 done: replaced the `NotImplementedException` LCAT branch in
+  `ConnectEntitySyncVendorCommand.cs`'s `EndProcessing` with real registration, following the exact
+  `Require(...)`/env-fallback pattern already used for `NCentralBaseUrl`/`NCentralUserApiToken` and
+  the same `ValidateAbsoluteHttpsUrl` helper NCentral uses for its base URL. Added an `else if
+  (Vendor.Equals("LCAT", ...))` branch to `GetDynamicParameters` registering `LCATBaseUrl`/
+  `LCATBearerToken` (both plain `string` dynamic parameters, no defaults, matching
+  `contracts/powershell-command-contract.md`'s exact parameter names), and in `EndProcessing`
+  builds an `LCATOptions` from `Require(..., "LCAT_BASE_URL", "LCATBaseUrl")` /
+  `Require(..., "LCAT_BEARER_TOKEN", "LCATBearerToken")` (env var names match
+  `docs/Connect-EntitySyncVendor.md`/`README.md`'s existing "(planned)" documentation exactly, so no
+  doc changes were needed), constructs `LCATEntityAdapter`, registers it via
+  `ConnectionRegistry.Set`, and returns an `EntitySyncConnection` — the same shape as every other
+  vendor branch. Did not add any LCAT-specific connection probe (e.g. calling
+  `TestConnectionAsync` inline): NCentral/NetSuite connect the same way, constructing the adapter
+  and registering it without an eager network round-trip; only HaloPSA fetches a token inline
+  because OAuth token acquisition is unavoidable at connect time for that vendor. Verified manually
+  that `EntitySyncConnection` (`Vendor`/`Adapter` only) still never exposes `LCATBearerToken` -
+  confirmed via `Format-List *` on the returned object - and that `-Vendor LTAC` still normalizes
+  to `Vendor 'LCAT'` in the result, matching FR-002. `just build` succeeds; `just test` reports the
+  same 56 passed / 8 failed as before T021 (unchanged pre-existing T014/T016/T017 failures - no
+  test in the suite pinned the old `NotImplementedException` behavior for `Connect-EntitySyncVendor`
+  itself, so nothing needed updating). Next incomplete task: T022 (map NCentral Customer sources to
+  LCAT Customer fields in `DefaultEntityMapper.cs`), which is what unblocks the currently-red T014
+  mapping tests.
 
 ## Open Blockers
 
