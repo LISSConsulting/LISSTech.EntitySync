@@ -364,6 +364,19 @@ namespace EntitySyncTests
     $commands | Should -Contain 'Import-EntitySyncPlan'
   }
 
+  It 'Manifest ReleaseNotes describes every shipped vendor and the rate-limit/bearer-redaction guarantees' {
+    $manifest = Import-PowerShellDataFile -Path $script:ModulePath
+    $releaseNotes = $manifest.PrivateData.PSData.ReleaseNotes
+    $releaseNotes | Should -Not -BeNullOrEmpty -Because 'operators see PSData.ReleaseNotes on PowerShell Gallery and via Find-Module'
+    $releaseNotes | Should -Match 'NetSuite' -Because 'NetSuite adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'HaloPSA' -Because 'HaloPSA adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'N-central' -Because 'N-central adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'LCAT' -Because 'LCAT adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'Retry-After' -Because 'rate-limit/backoff is a load-bearing reliability feature and must be advertised'
+    $releaseNotes | Should -Match 'redacted' -Because 'credential redaction across plan artifacts and error paths is a load-bearing safety guarantee'
+    $releaseNotes | Should -Match 'SecureString' -Because '-LCATSecureBearer is the operator-session JWT entry point and must be advertised'
+  }
+
   It 'Has an about topic' {
     $help = Get-Help about_LISSTech.EntitySync
     $help.Name | Should -Be 'about_LISSTech.EntitySync'

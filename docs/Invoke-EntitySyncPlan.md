@@ -13,6 +13,14 @@ Applies a reviewed EntitySync plan.
 ## DESCRIPTION
 Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
 
+## SYNTAX
+
+```powershell
+Invoke-EntitySyncPlan [-Plan] <EntitySyncPlan> [-Apply] [-PassThru] [-TargetCustomFieldName <String>] [-WhatIf] [-Confirm] [<CommonParameters>]
+```
+
+`-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes.
+
 ## EXAMPLES
 
 ### Example 1

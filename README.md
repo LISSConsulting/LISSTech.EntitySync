@@ -148,7 +148,7 @@ graph LR
 
 | Cmdlet | Role |
 |---|---|
-| `Connect-EntitySyncVendor` | Configure and register a NetSuite or HaloPSA adapter; vendor-specific parameters appear after `-Vendor`. |
+| `Connect-EntitySyncVendor` | Configure and register a NetSuite, HaloPSA, N-central, or LCAT adapter; vendor-specific parameters appear after `-Vendor`. |
 | `Get-EntitySyncConnection` | Inspect registered vendor connection objects. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
 | `Get-EntitySyncLookup` | Discover vendor lookup IDs such as HaloPSA top levels and N-central service organizations. |
