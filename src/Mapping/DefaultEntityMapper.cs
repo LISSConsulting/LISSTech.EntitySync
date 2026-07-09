@@ -209,9 +209,20 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     internal static string DeriveLcatSlug(string? displayName, string? fallbackId)
     {
         var basis = !string.IsNullOrWhiteSpace(displayName) ? displayName : fallbackId ?? string.Empty;
-        var slug = LcatSlugSeparatorPattern().Replace(basis, "-").Trim('-');
+        var slug = ToLcatSlugCandidate(basis);
+        if (IsValidLcatSlug(slug)) return slug;
+
+        var fallbackIdSlug = ToLcatSlugCandidate(fallbackId);
+        if (!IsValidLcatSlug(fallbackIdSlug)) return $"customer-{fallbackId}".Trim('-');
+        var fallbackSlug = ToLcatSlugCandidate($"customer {fallbackIdSlug}");
+        return IsValidLcatSlug(fallbackSlug) ? fallbackSlug : $"customer-{fallbackId}".Trim('-');
+    }
+
+    private static string ToLcatSlugCandidate(string? value)
+    {
+        var slug = LcatSlugSeparatorPattern().Replace(value ?? string.Empty, "-").Trim('-');
         if (slug.Length > 64) slug = slug[..64].Trim('-');
-        return IsValidLcatSlug(slug) ? slug : $"customer-{fallbackId}".Trim('-');
+        return slug;
     }
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled)]

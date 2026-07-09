@@ -402,6 +402,21 @@ namespace EntitySyncTests
     $requestA.Fields['slug'] | Should -Be $requestB.Fields['slug']
   }
 
+  It 'Sanitizes the fallback source identifier when an LCAT slug cannot come from the display name' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Customer'
+    $source.Id = 'cust 12/34'
+    $source.Name = '###'
+    $source.ExternalIds['NCentralCustomerId'] = 'cust 12/34'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Fields['slug'] | Should -Be 'customer-cust-12-34'
+    $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
+  }
+
   It 'Maps NCentral Customer fields into LCAT on update, preserving the existing LCAT customer scope id (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
