@@ -337,6 +337,33 @@
   T014/T016/T017 failures, unchanged — confirms no regression and no accidental fix of
   still-pending US1 work). Next incomplete task: T020 (LCAT batch sync method for approved
   customer-scope requests).
+- T020 done: added a public `SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest>,
+  CancellationToken)` method to `src/Adapters/LCAT/LCATEntityAdapter.cs` that serializes the
+  batch via T011's existing `BuildSyncRequestBody`, POSTs it to the contract's
+  `rpc/sync_ncentral_customers` path (new `SyncPath` const, relative to the trailing-slash-normalized
+  `httpClient.BaseAddress` set in the constructor, PostgREST RPC convention per
+  `contracts/lcat-sync-rpc.md`), and returns `ParseSyncResponse`'s parsed `LCATSyncResult` on
+  success. On a non-success status, throws `InvalidOperationException` including only the HTTP
+  status/reason and the endpoint path — deliberately no response-body preview, unlike
+  `NCentralEntityAdapter`'s error-message convention, since `contracts/lcat-sync-rpc.md`'s
+  Response Rules only guarantee status+path in operator-facing errors and full redaction
+  hardening (stripping the `Authorization` header/any credential echoes from adapter exceptions)
+  is explicitly T040 (US3), not this task. Made the method public (not private, unlike
+  `BuildSyncRequestBody`/`ParseSyncResponse`) since T024 (`InvokeEntitySyncPlanCommand`'s LCAT
+  batch apply branch) will need to call it directly on a resolved `LCATEntityAdapter` instance,
+  the same way `InvokeEntitySyncPlanCommand.cs` already casts `ConnectionRegistry.Get("HaloPSA")`
+  to `HaloEntityAdapter` for `UpsertNCentralClientLinkAsync`/`UpsertNCentralSiteLinkAsync`. Did
+  not wire this into `InvokeEntitySyncPlanCommand.cs` or add plan-item-to-`LCATCustomerScopeRequest`
+  translation — that command/mapping wiring is T022-T024, not this task. T020 has no dedicated
+  test entry in `tasks.md` (T015/T017 already cover `BuildSyncRequestBody`/`ParseSyncResponse`
+  and the `-WhatIf` batch-confirmation-count behavior respectively), matching the T009/T011/T012/T019
+  Foundational/adapter-shell precedent of manual-only verification; confirmed manually via
+  reflection that `SyncCustomerScopesAsync` exists with the expected `Task<LCATSyncResult>`
+  return type and `(IReadOnlyList<LCATCustomerScopeRequest>, CancellationToken)` signature.
+  `just build` and `just test` both succeed; `just test` reports the same 56 passed / 8 failed as
+  before (unchanged pre-existing T014/T016/T017 failures — no regression, no accidental fix of
+  still-pending US1 work). Next incomplete task: T021 (register `Connect-EntitySyncVendor -Vendor
+  LCAT` dynamic parameters and environment fallbacks).
 
 ## Open Blockers
 

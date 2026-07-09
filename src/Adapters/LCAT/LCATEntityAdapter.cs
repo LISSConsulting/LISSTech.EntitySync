@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
@@ -26,6 +27,7 @@ public sealed class LCATSyncResult
 public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 {
     private const string SyncReason = "EntitySync N-central to LCAT sync";
+    private const string SyncPath = "rpc/sync_ncentral_customers";
 
     private readonly LCATOptions options;
     private readonly HttpClient httpClient = new();
@@ -73,6 +75,17 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     {
         using var response = await httpClient.GetAsync(string.Empty, cancellationToken).ConfigureAwait(false);
         return response.IsSuccessStatusCode;
+    }
+
+    public async Task<LCATSyncResult> SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest> customers, CancellationToken cancellationToken)
+    {
+        var body = BuildSyncRequestBody(customers);
+        using var content = new StringContent(body, Encoding.UTF8, "application/json");
+        Trace?.Invoke("LCAT POST " + SyncPath);
+        using var response = await httpClient.PostAsync(SyncPath, content, cancellationToken).ConfigureAwait(false);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"LCAT batch sync failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Path: {SyncPath}.");
+        return ParseSyncResponse(text);
     }
 
     public void Dispose() => httpClient.Dispose();
