@@ -619,6 +619,27 @@
   test` now reports all 74 tests passing (0 failed) — both previously-red T027 tests pass with no
   regressions. Next incomplete task: T032 (include site-derived customer-scope items in the LCAT batch
   apply path in `src/Commands/InvokeEntitySyncPlanCommand.cs`).
+- T032 assessed as already satisfied: `ApplyLcatBatch` in `src/Commands/InvokeEntitySyncPlanCommand.cs`
+  (added in T024) has never branched on `item.Source.EntityType` — it maps every non-`None`/`Review`
+  item via `mapper.MapCreate`/`MapUpdate` and converts the result through `ToLcatCustomerScopeRequest`
+  into the same `batchItems` list regardless of whether the source is an NCentral Customer or Site, so
+  once T030 taught `DefaultEntityMapper.AddLcatCustomerScopeFields` to populate Site fields
+  (`ncentral_customer_id`/`ncentral_parent_customer_id`/`slug`), site-derived scopes started flowing
+  through the existing batch path automatically with no command-side change needed. Confirmed via the
+  existing T029 test ("Composes an LCAT batch payload carrying the site's own id and parent customer id
+  alongside a customer item") at `Tests/LISSTech.EntitySync.Tests.ps1:783`, which reflects on the exact
+  production `InvokeEntitySyncPlanCommand.ToLcatCustomerScopeRequest` helper (not a test-only
+  reimplementation) for both a Customer and a Site request and asserts `BuildSyncRequestBody` serializes
+  both into one `customers[]` array with the site's own id as `ncentral_customer_id` and the parent's id
+  as `ncentral_parent_customer_id` — this already passes (has passed since T030, no changes in T031).
+  Also traced that Review items (including T031's `LcatSiteParentMissing` block for sites with no
+  parent) are already excluded from the batch by the pre-existing `Action.Equals("Review", ...)`
+  short-circuit at the top of the per-item loop, so a site blocked for missing-parent never reaches
+  `ToLcatCustomerScopeRequest` in the first place — no additional filtering required. No code change
+  made for T032; `git log` confirms `InvokeEntitySyncPlanCommand.cs` has had no commits since T024.
+  `just build` and `just test` both pass (74/74, unchanged). Next incomplete task: T033 (LCAT batch
+  request must validate unique `ncentral_customer_id` values across customer and site items in
+  `src/Adapters/LCAT/LCATEntityAdapter.cs`).
 
 ## Open Blockers
 
