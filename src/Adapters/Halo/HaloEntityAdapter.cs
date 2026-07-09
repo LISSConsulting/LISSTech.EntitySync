@@ -11,8 +11,6 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private const int DefaultEnrichmentConcurrency = 2;
-    private const int MinimumRequestIntervalMs = 500;
-    private const int MaxRateLimitRetries = 6;
     private const int CountryLookupId = 74;
     private const int RegionLookupId = 77;
     private const int CustomerRelationshipLookupId = 89;
@@ -20,8 +18,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private readonly HaloOptions options;
     private readonly HttpClient httpClient;
-    private readonly SemaphoreSlim requestThrottle = new(1, 1);
-    private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
+    private readonly RateLimitedHttpRequester rateLimiter = new("HaloPSA");
     private string? accountManagerIdCache;
     private LookupOption? customerRelationshipCache;
     private LookupOption? customerTypeCache;
@@ -154,43 +151,12 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private async Task<HttpResponseMessage> GetAsync(string url, CancellationToken cancellationToken)
     {
-        return await SendWithRateLimitAsync(() => new HttpRequestMessage(HttpMethod.Get, url), cancellationToken).ConfigureAwait(false);
+        return await rateLimiter.SendAsync(httpClient, () => new HttpRequestMessage(HttpMethod.Get, url), Trace, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> PostJsonAsync(string url, string body, CancellationToken cancellationToken)
     {
-        return await SendWithRateLimitAsync(() => new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") }, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<HttpResponseMessage> SendWithRateLimitAsync(Func<HttpRequestMessage> createRequest, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            using var request = createRequest();
-            var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
-
-            var delay = RateLimitHelper.RateLimitDelay(response, attempt);
-            Trace?.Invoke($"HaloPSA rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
-            response.Dispose();
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
-    {
-        await requestThrottle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            if (nextRequestAt > now) await Task.Delay(nextRequestAt - now, cancellationToken).ConfigureAwait(false);
-            nextRequestAt = DateTimeOffset.UtcNow.AddMilliseconds(MinimumRequestIntervalMs);
-        }
-        finally
-        {
-            requestThrottle.Release();
-        }
+        return await rateLimiter.SendAsync(httpClient, () => new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") }, Trace, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<List<ExternalEntity>> EnrichClientsAsync(List<ExternalEntity> clients, int existingCount, bool includeSiteDetails, int throttleLimit, CancellationToken cancellationToken)
@@ -758,7 +724,11 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         return response.IsSuccessStatusCode;
     }
 
-    public void Dispose() => httpClient.Dispose();
+    public void Dispose()
+    {
+        rateLimiter.Dispose();
+        httpClient.Dispose();
+    }
 
     private async Task<ExternalEntity> GetFullClientAsync(string id, CancellationToken cancellationToken)
     {

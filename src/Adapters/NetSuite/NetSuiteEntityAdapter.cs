@@ -10,13 +10,9 @@ namespace LISSTech.EntitySync.Adapters.NetSuite;
 
 public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 {
-    private const int MinimumRequestIntervalMs = 500;
-    private const int MaxRateLimitRetries = 6;
-
     private readonly NetSuiteOptions options;
     private readonly HttpClient httpClient = new();
-    private readonly SemaphoreSlim requestThrottle = new(1, 1);
-    private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
+    private readonly RateLimitedHttpRequester rateLimiter = new("NetSuite");
 
     public NetSuiteEntityAdapter(NetSuiteOptions options)
     {
@@ -89,7 +85,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 
     public void Dispose()
     {
-        requestThrottle.Dispose();
+        rateLimiter.Dispose();
         httpClient.Dispose();
     }
 
@@ -295,7 +291,8 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
     private async Task<HttpResponseMessage> SendSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
     {
         var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer" });
-        return await SendWithRateLimitAsync(
+        return await rateLimiter.SendAsync(
+            httpClient,
             () =>
             {
                 var request = new HttpRequestMessage(HttpMethod.Post, uri);
@@ -304,38 +301,8 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
                 request.Content = new StringContent(JsonSerializer.Serialize(new { q = suiteQl }), Encoding.UTF8, "application/json");
                 return request;
             },
+            Trace,
             cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<HttpResponseMessage> SendWithRateLimitAsync(Func<HttpRequestMessage> createRequest, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            using var request = createRequest();
-            var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
-
-            var delay = RateLimitHelper.RateLimitDelay(response, attempt);
-            Trace?.Invoke($"NetSuite rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
-            response.Dispose();
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
-    {
-        await requestThrottle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            if (nextRequestAt > now) await Task.Delay(nextRequestAt - now, cancellationToken).ConfigureAwait(false);
-            nextRequestAt = DateTimeOffset.UtcNow.AddMilliseconds(MinimumRequestIntervalMs);
-        }
-        finally
-        {
-            requestThrottle.Release();
-        }
     }
 
     private static string BuildCustomerAddressQuery(IEnumerable<string> customerIds)

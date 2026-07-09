@@ -4412,4 +4412,63 @@ namespace EntitySyncTests
   It 'Does not strip legal words from the middle of names' {
     [LISSTech.EntitySync.Core.EntityNormalizer]::NormalizeName('The Limited Company Shop LLC') | Should -Be 'limited company shop'
   }
+
+  It 'Shares the throttle/retry helper constants across vendors so HaloPSA, N-central, and NetSuite cannot drift' {
+    $haloConst = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MinimumRequestIntervalMs
+    $haloMax = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MaxRateLimitRetries
+    $haloConst | Should -Be 500
+    $haloMax | Should -Be 6
+
+    # The three adapters used to each carry a private copy of these constants; the consolidation
+    # removed them, so reflection against the adapter types must not find the field anymore.
+    foreach ($type in @(
+      [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter],
+      [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter],
+      [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter]
+    )) {
+      $flag = [System.Reflection.BindingFlags]'NonPublic, Static, Instance'
+      $type.GetField('MinimumRequestIntervalMs', $flag) | Should -BeNullOrEmpty
+      $type.GetField('MaxRateLimitRetries', $flag) | Should -BeNullOrEmpty
+      $type.GetField('requestThrottle', $flag) | Should -BeNullOrEmpty
+      $type.GetField('nextRequestAt', $flag) | Should -BeNullOrEmpty
+      $type.GetMethod('SendWithRateLimitAsync', $flag) | Should -BeNullOrEmpty
+      $type.GetMethod('WaitForRequestSlotAsync', $flag) | Should -BeNullOrEmpty
+    }
+  }
+
+  It 'RateLimitedHttpRequester accepts the same public surface that HaloPSA, N-central, and NetSuite adapters call' {
+    # The retry/throttle behavior is exercised end-to-end by the per-adapter rate-limit suites
+    # (HaloPSA / N-central / NetSuite). This test locks in the public surface the adapters rely
+    # on so a future signature drift cannot silently break all three vendors at once.
+    $type = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]
+    $type.IsPublic | Should -BeTrue
+    $type.IsSealed | Should -BeTrue
+
+    $send = $type.GetMethod('SendAsync', [System.Reflection.BindingFlags]'Public, Instance')
+    $send | Should -Not -BeNullOrEmpty
+    $send.GetParameters().Count | Should -Be 4
+    ($send.GetParameters() | ForEach-Object { $_.ParameterType }) | Should -Be @(
+      [System.Net.Http.HttpClient],
+      [System.Func[System.Net.Http.HttpRequestMessage]],
+      [System.Action[string]],
+      [System.Threading.CancellationToken]
+    )
+    $send.ReturnType | Should -Be ([System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]])
+
+    $dispose = $type.GetMethod('Dispose', [System.Reflection.BindingFlags]'Public, Instance')
+    $dispose | Should -Not -BeNullOrEmpty
+    $type.GetInterface('System.IDisposable') | Should -Not -BeNullOrEmpty
+
+    # The trace callback is the third parameter on SendAsync (Action<string>) so each adapter
+    # can pass its own `Trace` property without the helper having to expose one. Callers may
+    # pass $null to silence the retry trace, so the parameter is typed as a reference type.
+    $traceParameter = $send.GetParameters()[2]
+    $traceParameter.Name | Should -Be 'trace'
+    $traceParameter.ParameterType | Should -Be ([System.Action[string]])
+  }
+
+  It 'RateLimitedHttpRequester rejects an empty vendor name' {
+    { [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::new('') } | Should -Throw -ErrorId 'ArgumentException'
+    { [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::new('   ') } | Should -Throw -ErrorId 'ArgumentException'
+  }
 }

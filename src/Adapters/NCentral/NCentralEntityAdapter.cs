@@ -11,13 +11,10 @@ namespace LISSTech.EntitySync.Adapters.NCentral;
 public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 1000;
-    private const int MinimumRequestIntervalMs = 500;
-    private const int MaxRateLimitRetries = 6;
 
     private readonly NCentralOptions options;
     private readonly HttpClient httpClient;
-    private readonly SemaphoreSlim requestThrottle = new(1, 1);
-    private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
+    private readonly RateLimitedHttpRequester rateLimiter = new("N-central");
     private string? accessToken;
     private DateTimeOffset accessTokenExpiresAt = DateTimeOffset.MinValue;
 
@@ -264,7 +261,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 
     public void Dispose()
     {
-        requestThrottle.Dispose();
+        rateLimiter.Dispose();
         httpClient.Dispose();
     }
 
@@ -287,7 +284,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     private async Task<HttpResponseMessage> SendAuthenticatedAsync(HttpMethod method, string url, HttpContent? content, CancellationToken cancellationToken)
     {
         await EnsureAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-        return await SendWithRateLimitAsync(
+        return await rateLimiter.SendAsync(
+            httpClient,
             () =>
             {
                 var request = new HttpRequestMessage(method, url) { Content = content };
@@ -295,13 +293,15 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
                 Trace?.Invoke("N-central " + method.Method + " " + url);
                 return request;
             },
+            Trace,
             cancellationToken).ConfigureAwait(false);
     }
 
     private async Task EnsureAccessTokenAsync(CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(accessToken) && accessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1)) return;
-        using var response = await SendWithRateLimitAsync(
+        using var response = await rateLimiter.SendAsync(
+            httpClient,
             () =>
             {
                 var request = new HttpRequestMessage(HttpMethod.Post, "api/auth/authenticate");
@@ -309,6 +309,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
                 Trace?.Invoke("N-central POST api/auth/authenticate");
                 return request;
             },
+            Trace,
             cancellationToken).ConfigureAwait(false);
         var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"N-central authentication failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
@@ -318,37 +319,6 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         accessToken = access.GetString("token") ?? throw new InvalidOperationException("N-central authentication response did not include an access token.");
         var expirySeconds = access.GetInt("expirySeconds") ?? 3600;
         accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expirySeconds));
-    }
-
-    private async Task<HttpResponseMessage> SendWithRateLimitAsync(Func<HttpRequestMessage> createRequest, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            using var request = createRequest();
-            var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
-
-            var delay = RateLimitHelper.RateLimitDelay(response, attempt);
-            Trace?.Invoke($"N-central rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
-            response.Dispose();
-            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
-    {
-        await requestThrottle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            if (nextRequestAt > now) await Task.Delay(nextRequestAt - now, cancellationToken).ConfigureAwait(false);
-            nextRequestAt = DateTimeOffset.UtcNow.AddMilliseconds(MinimumRequestIntervalMs);
-        }
-        finally
-        {
-            requestThrottle.Release();
-        }
     }
 
     private static ExternalEntity MapCustomer(JsonElement item)
@@ -570,7 +540,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             ? new Uri(options.SoapEndpointPath, UriKind.Absolute)
             : new Uri(httpClient.BaseAddress!, options.SoapEndpointPath.TrimStart('/'));
         var body = BuildEi2SoapEnvelope(method);
-        using var response = await SendWithRateLimitAsync(
+        using var response = await rateLimiter.SendAsync(
+            httpClient,
             () =>
             {
                 var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -580,6 +551,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
                 Trace?.Invoke("N-central SOAP " + methodName + " " + endpoint.PathAndQuery);
                 return request;
             },
+            Trace,
             cancellationToken).ConfigureAwait(false);
         var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"N-central SOAP {methodName} failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
