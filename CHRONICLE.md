@@ -901,6 +901,10 @@
   reports all 88 tests passing; `just external-help` succeeds.
 - Empty Queue sweep done: removed stale in-progress wording from the LCAT test helper comment in
   `Tests/LISSTech.EntitySync.Tests.ps1`; no behavior changed.
+- Empty Queue sweep done: added a regression test proving LCAT exposes no lookup types through
+  `EntitySyncLookupTypes.ForVendor("LCAT")` or `LCATEntityAdapter.LookupTypes`, covering the
+  previously manual T009 lookup contract. Validation: `just build` succeeds; `just test` reports
+  all 89 tests passing.
 
 ## Open Blockers
 

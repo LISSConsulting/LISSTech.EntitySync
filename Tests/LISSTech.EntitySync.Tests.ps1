@@ -224,6 +224,19 @@ namespace EntitySyncTests
     $nCentralTypes | Should -Not -Contain 'TopLevel'
   }
 
+  It 'Exposes no lookup types for the LCAT target adapter' {
+    $lookupTypes = [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ForVendor('LCAT')
+    $lookupTypes | Should -BeNullOrEmpty
+
+    $lcatAdapter = New-TestLCATAdapter
+    try {
+      $lcatAdapter.LookupTypes | Should -BeNullOrEmpty
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Completes only vendor-specific Connect-EntitySyncVendor parameters' {
     $haloInput = 'Connect-EntitySyncVendor -Vendor HaloPSA -'
     $halo = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
