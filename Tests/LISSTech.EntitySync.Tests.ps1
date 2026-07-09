@@ -550,6 +550,66 @@ Describe 'LISSTech.EntitySync' {
     }
   }
 
+  It 'Maps NCentral Site display name, site identifier, and parent N-central customer identifier into LCAT Fields (T026, US2)' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Site'
+    $source.Id = '555'
+    $source.Name = 'Northshore Plumbing - Warehouse'
+    $source.ExternalIds['NCentralSiteId'] = '555'
+    $source.ExternalIds['NCentralCustomerId'] = '444'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Vendor | Should -Be 'LCAT'
+    $request.EntityType | Should -Be 'Customer'
+    $request.Fields['display_name'] | Should -Be 'Northshore Plumbing - Warehouse'
+    $request.Fields['ncentral_customer_id'] | Should -Be '555'
+    $request.Fields['ncentral_parent_customer_id'] | Should -Be '444'
+    $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
+  }
+
+  It 'Falls back to the N-central site Id for ncentral_customer_id when NCentralSiteId is absent (T026, US2)' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Site'
+    $source.Id = '666'
+    $source.Name = 'Fallback Metals LLC - Depot'
+    $source.ExternalIds['NCentralCustomerId'] = '222'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Fields['ncentral_customer_id'] | Should -Be '666'
+    $request.Fields['ncentral_parent_customer_id'] | Should -Be '222'
+  }
+
+  It 'Maps NCentral Site fields into LCAT on update, preserving the existing LCAT customer scope id and parent id (T026, US2)' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Site'
+    $source.Id = '777'
+    $source.Name = 'Arista Air Conditioning Corp. - East'
+    $source.ExternalIds['NCentralSiteId'] = '777'
+    $source.ExternalIds['NCentralCustomerId'] = '111'
+
+    $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $target.Vendor = 'LCAT'
+    $target.EntityType = 'Customer'
+    $target.Id = 'lcat-scope-42'
+    $target.Name = 'Arista Air Conditioning Corp. - East'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $request = $mapper.MapUpdate($source, $target, [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $request.Id | Should -Be 'lcat-scope-42'
+    $request.Fields['display_name'] | Should -Be 'Arista Air Conditioning Corp. - East'
+    $request.Fields['ncentral_customer_id'] | Should -Be '777'
+    $request.Fields['ncentral_parent_customer_id'] | Should -Be '111'
+    $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

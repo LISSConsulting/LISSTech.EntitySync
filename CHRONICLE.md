@@ -478,6 +478,25 @@
   both pass (64/64, no regressions — docs-only change). Phase 3 (User Story 1 / MVP) is now complete.
   Next incomplete task: T026 (Phase 4 / US2 — Pester tests for NCentral Site to LCAT payload mapping
   with `ncentral_parent_customer_id`).
+- T026 done: added three Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T017 batch
+  tests, before `Declares object output for Get-EntitySyncConnection`) calling `DefaultEntityMapper.MapCreate`/
+  `MapUpdate` with source vendor `NCentral`/`Site` and target vendor `LCAT`/`Customer`, asserting
+  `request.Fields['display_name']`, `request.Fields['ncentral_customer_id']` (the site's own effective
+  id — `NCentralSiteId` falling back to `source.Id`, matching data-model.md's "N-central identifier for
+  the source customer or source site"), `request.Fields['ncentral_parent_customer_id']` (the parent
+  customer's id from `source.ExternalIds['NCentralCustomerId']`, per data-model.md's "Parent N-central
+  customer identifier for site-derived scopes"), and `request.Fields['slug']` (validated against the
+  contract regex only, not a pinned algorithm — deterministic site-derived slug generation using parent
+  + site names is T028, not this task). One test covers create with both external ids present, one
+  covers the site-id fallback to `source.Id` when `NCentralSiteId` is absent, one covers `MapUpdate`
+  preserving `target.Id`. Did not add tests for missing-parent safe failure (T027) or site-derived slug
+  determinism (T028) — those are separate tasks with their own test entries. As expected for a
+  test-first US2 task, all three tests currently fail since `AddLcatCustomerScopeFields` in
+  `src/Mapping/DefaultEntityMapper.cs` only branches on `source.EntityType == Customer` (added in T022)
+  and has no Site branch yet (T030 implements it) — mirrors the T014 red-test precedent. `just build`
+  succeeds; `just test` reports 64 passed / 3 failed (the 3 new expected T026 failures, no regressions
+  in the previously-passing 64). Next incomplete task: T027 (Pester tests for missing site parent
+  N-central customer ID safe failure).
 
 ## Open Blockers
 
