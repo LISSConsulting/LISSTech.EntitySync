@@ -79,6 +79,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<LCATSyncResult> SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest> customers, CancellationToken cancellationToken)
     {
+        EnsureUniqueCustomerIds(customers);
         var body = BuildSyncRequestBody(customers);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         Trace?.Invoke("LCAT POST " + SyncPath);
@@ -91,6 +92,22 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     public void Dispose() => httpClient.Dispose();
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
+
+    private static void EnsureUniqueCustomerIds(IReadOnlyList<LCATCustomerScopeRequest> customers)
+    {
+        var duplicates = customers
+            .GroupBy(customer => customer.NCentralCustomerId, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToArray();
+
+        if (duplicates.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"LCAT batch sync request contains duplicate ncentral_customer_id value(s): {string.Join(", ", duplicates)}. " +
+                "Each customer or site item must resolve to a unique ncentral_customer_id.");
+        }
+    }
 
     private static string BuildSyncRequestBody(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {

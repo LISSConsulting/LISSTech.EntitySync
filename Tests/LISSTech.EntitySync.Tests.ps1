@@ -819,6 +819,33 @@ Describe 'LISSTech.EntitySync' {
     $body.customers[1].ncentral_parent_customer_id | Should -Be '701'
   }
 
+  It 'Rejects an LCAT batch sync request carrying duplicate ncentral_customer_id values across customer and site items (T033, US2)' {
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope.Slug = 'arista-air-conditioning-main-office'
+      $siteScope.DisplayName = 'Main Office'
+      $siteScope.NCentralCustomerId = '701'
+      $siteScope.NCentralParentCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+      $customers.Add($siteScope)
+
+      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*duplicate ncentral_customer_id*'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

@@ -640,6 +640,29 @@
   `just build` and `just test` both pass (74/74, unchanged). Next incomplete task: T033 (LCAT batch
   request must validate unique `ncentral_customer_id` values across customer and site items in
   `src/Adapters/LCAT/LCATEntityAdapter.cs`).
+- T033 done: added a private static `EnsureUniqueCustomerIds` helper to
+  `src/Adapters/LCAT/LCATEntityAdapter.cs`, called at the top of `SyncCustomerScopesAsync` before
+  `BuildSyncRequestBody`/any HTTP call, that groups the batch by `NCentralCustomerId` (ordinal) and
+  throws `InvalidOperationException` naming the offending id(s) if any group has more than one
+  member — enforcing `contracts/lcat-sync-rpc.md`'s "`ncentral_customer_id` is required and must be
+  unique within the request" rule as defense-in-depth at the adapter boundary, independent of
+  plan-time duplicate detection (that's T043/US3, not yet implemented). Chose an adapter-level guard
+  rather than relying solely on a future plan-time check because `SyncCustomerScopesAsync` is the
+  last point before the batch leaves the process, and a site with no `NCentralSiteId` already falls
+  back to `source.Id` (T030) which coincidentally equals its parent customer's id in some malformed
+  inputs — this check catches that case regardless of how the batch was assembled. Added one Pester
+  test ("Rejects an LCAT batch sync request carrying duplicate ncentral_customer_id values...") to
+  `Tests/LISSTech.EntitySync.Tests.ps1` (after the T029 batch-composition test, before `Declares
+  object output for Get-EntitySyncConnection`) that constructs two `LCATCustomerScopeRequest` objects
+  sharing the same `NCentralCustomerId` and asserts `SyncCustomerScopesAsync` throws before any
+  network call — this is safe to test without HTTP mocking (this repo's established no-mocking-infra
+  convention per the T003 note) since the validation throws synchronously ahead of
+  `httpClient.PostAsync`. T033 has no dedicated test entry in `tasks.md` (unlike T026-T029's "Tests
+  for User Story 2" block), but the check is trivially testable without network access, unlike T019/
+  T020/T032 which relied on manual-only verification for adapter-shell work that does need a live
+  HTTP round trip. `just build` succeeds; `just test` reports all 75 tests passing (0 failed, up from
+  74 — no regressions). Next incomplete task: T034 (update site sync examples and parent relationship
+  notes in `docs/New-EntitySyncPlan.md`, `docs/Invoke-EntitySyncPlan.md`, and `README.md`).
 
 ## Open Blockers
 
