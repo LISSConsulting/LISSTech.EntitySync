@@ -802,6 +802,17 @@
   Pester host; after that correction, `just test` rebuilt successfully and reports all 84 tests
   passing. Next incomplete task: T043 (unsafe slug, duplicate source ID, empty display name, and
   empty source ID safe-failure reasons during mapping/planning).
+- T043 done: updated `src/Commands/NewEntitySyncPlanCommand.cs` so LCAT planning precomputes
+  duplicate N-central source identifiers and marks invalid source records as `Review` with
+  `LcatSourceInvalid` before normal matching can turn them into approved creates. The new validation
+  covers missing source identifiers, duplicate source identifiers, empty display names, missing site
+  parent customer identifiers, and source records that cannot produce a safe LCAT customer-scope
+  slug; it reuses the LCAT slug contract helpers from `src/Mapping/DefaultEntityMapper.cs`. Added a
+  Pester regression in `Tests/LISSTech.EntitySync.Tests.ps1` covering the new plan-time reasons and
+  adjusted existing private-method tests for the new duplicate-ID input. Validation: `just build`
+  succeeds; `just test` reports all 85 tests passing. Next incomplete task: T044 (confirm plan
+  export/import round trips LCAT reasons and excludes credentials in `src/Core/EntitySyncPlanWorkbook.cs`
+  and `src/Commands/ExportEntitySyncPlanCommand.cs`).
 
 ## Open Blockers
 

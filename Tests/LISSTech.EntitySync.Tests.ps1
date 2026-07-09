@@ -1214,6 +1214,72 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Marks invalid LCAT source records for review during planning with non-secret safe-failure reasons (T043, US3)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $missingId = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $missingId.Vendor = 'NCentral'
+      $missingId.EntityType = 'Customer'
+      $missingId.Name = 'Missing Identifier Customer'
+
+      $missingName = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $missingName.Vendor = 'NCentral'
+      $missingName.EntityType = 'Customer'
+      $missingName.Id = '1302'
+      $missingName.ExternalIds['NCentralCustomerId'] = '1302'
+
+      $unsafeSlug = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $unsafeSlug.Vendor = 'NCentral'
+      $unsafeSlug.EntityType = 'Customer'
+      $unsafeSlug.Id = '###'
+      $unsafeSlug.Name = '###'
+      $unsafeSlug.ExternalIds['NCentralCustomerId'] = '###'
+
+      $duplicateOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $duplicateOne.Vendor = 'NCentral'
+      $duplicateOne.EntityType = 'Customer'
+      $duplicateOne.Id = '1304'
+      $duplicateOne.Name = 'Duplicate Customer A'
+      $duplicateOne.ExternalIds['NCentralCustomerId'] = 'duplicate-1304'
+
+      $duplicateTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $duplicateTwo.Vendor = 'NCentral'
+      $duplicateTwo.EntityType = 'Customer'
+      $duplicateTwo.Id = '1305'
+      $duplicateTwo.Name = 'Duplicate Customer B'
+      $duplicateTwo.ExternalIds['NCentralCustomerId'] = 'duplicate-1304'
+
+      $plan = @($missingId, $missingName, $unsafeSlug, $duplicateOne, $duplicateTwo) |
+        New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+
+      $plan.Items.Count | Should -Be 5
+      $plan.Items.Action | Should -Not -Contain 'Create'
+      $plan.Items.Action | Should -Not -Contain 'Update'
+      $plan.Items.Action | Should -Not -Contain 'Link'
+      $plan.Items.MatchType | Should -Contain 'LcatSourceInvalid'
+
+      $reasons = $plan.Items.Reasons -join "`n"
+      $reasons | Should -Match 'source identifier'
+      $reasons | Should -Match 'display name'
+      $reasons | Should -Match 'safe LCAT customer-scope slug'
+      $reasons | Should -Match "Duplicate N-central source identifier 'duplicate-1304'"
+      $reasons | Should -Not -Match 'token'
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Reports LCAT non-success responses without authorization headers or bearer credentials (T039, US3)' {
     $secretToken = 'lcat-error-secret-bearer-1a2b3c4d'
     $server = [EntitySyncTests.OneShotHttpServer]::new(403, 'Forbidden', '{"error":"do not echo this body"}')
@@ -1430,8 +1496,9 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NetSuiteInternalId'
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds))
 
     $item.MatchType | Should -Be 'NoMatch'
     $item.Reasons -join '; ' | Should -Not -Match 'N-central integration'
@@ -1451,8 +1518,9 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NCentralCustomerId'
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false, $duplicateLcatSourceIds))
 
     $item.MatchType | Should -Be 'IntegrationLinkTargetMissing'
     $item.Reasons -join '; ' | Should -Match 'N-central target 390'
@@ -1505,8 +1573,9 @@ namespace EntitySyncTests
     $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds))
 
     $item.Action | Should -Be 'Review'
     $item.MatchType | Should -Be 'LowConfidence'

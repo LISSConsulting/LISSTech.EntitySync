@@ -204,9 +204,9 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     }
 
     // Matches the LCAT customer-scope slug contract in specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md.
-    private static bool IsValidLcatSlug(string? slug) => !string.IsNullOrEmpty(slug) && LcatSlugPattern().IsMatch(slug);
+    internal static bool IsValidLcatSlug(string? slug) => !string.IsNullOrEmpty(slug) && LcatSlugPattern().IsMatch(slug);
 
-    private static string DeriveLcatSlug(string? displayName, string? fallbackId)
+    internal static string DeriveLcatSlug(string? displayName, string? fallbackId)
     {
         var basis = !string.IsNullOrWhiteSpace(displayName) ? displayName : fallbackId ?? string.Empty;
         var slug = LcatSlugSeparatorPattern().Replace(basis, "-").Trim('-');
