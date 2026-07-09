@@ -247,8 +247,16 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
             UpdatedCount = ReadOptionalCount(root, "updated_count"),
             RetiredCount = ReadOptionalCount(root, "retired_count"),
             ActiveCount = ReadOptionalCount(root, "active_count"),
-            AuditEventId = root.GetString("audit_event_id")
+            AuditEventId = ReadOptionalAuditEventId(root)
         };
+    }
+
+    private static string? ReadOptionalAuditEventId(JsonElement root)
+    {
+        if (!root.TryGetPropertyIgnoreCase("audit_event_id", out var property)) return null;
+        if (property.ValueKind == JsonValueKind.Null) return null;
+        if (property.ValueKind == JsonValueKind.String) return property.GetString();
+        throw new JsonException("LCAT batch sync response field 'audit_event_id' must be a string.");
     }
 
     private static int ReadOptionalCount(JsonElement root, string name)
