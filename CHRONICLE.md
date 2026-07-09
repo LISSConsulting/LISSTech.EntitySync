@@ -864,6 +864,9 @@
   Added a loopback Pester regression proving both `LCAT` and `LTAC` requests issue the adapter's GET
   connection test without external network access. Validation: `just build` succeeds; `just test`
   reports all 88 tests passing. Next incomplete task: T049 (`just build`).
+- T049 done: ran `just build` for the LCAT sync adapter polish validation. Build completed
+  successfully with 0 warnings and 0 errors, producing `Module/LISSTech.EntitySync.dll`.
+  Next incomplete task: T050 (`just test-load`).
 
 ## Open Blockers
 
