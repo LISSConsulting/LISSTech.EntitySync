@@ -280,14 +280,14 @@ Set-EntitySyncCustomProperty -Vendor NCentral -CustomerId 390 -Name 'HaloPSA Cli
 
 This command updates existing custom-property values only; create the custom-property definitions in N-central first.
 
-### LCAT (planned)
+### LCAT
 
 | Variable | Parameter |
 |---|---|
 | `LCAT_BASE_URL` | `-LCATBaseUrl` |
 | `LCAT_BEARER_TOKEN` | `-LCATBearerToken` |
 
-`Connect-EntitySyncVendor -Vendor LCAT` will register a target-only adapter for syncing N-central Customer and Site records into LCAT customer scopes as one authoritative batch per approved plan, matching LCAT's `sync_ncentral_customers` RPC contract. `LCATBearerToken` will never appear in the returned connection object. See `specs/001-lcat-sync-adapter/spec.md`.
+`Connect-EntitySyncVendor -Vendor LCAT` (`LTAC` is also accepted and normalizes to `LCAT`) registers a target-only adapter for syncing N-central Customer and Site records into LCAT customer scopes as one authoritative batch per approved plan, matching LCAT's `sync_ncentral_customers` RPC contract. `LCAT` has no customer-scope read endpoint, so plans never return target candidates — every N-central source plans as `Create`/`NoMatch`. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`; a site with no parent N-central customer ID is blocked at plan time with `Action 'Review'` instead of being created. `LCATBearerToken` never appears in the returned connection object. See `specs/001-lcat-sync-adapter/spec.md`.
 
 ---
 
@@ -331,7 +331,7 @@ just clean        # remove compiled output
 ├── 🌎 en-US/                           # about topic source
 ├── 🧪 Tests/                           # Pester tests
 ├── 🧬 src/
-│   ├── Adapters/                       # HaloPSA + NetSuite vendor IO (LCAT planned)
+│   ├── Adapters/                       # HaloPSA + NetSuite + N-central + LCAT vendor IO
 │   ├── Commands/                       # public PowerShell cmdlets
 │   ├── Core/                           # canonical models + plan types
 │   ├── Mapping/                        # vendor-to-canonical mapping
@@ -348,6 +348,6 @@ just clean        # remove compiled output
 
 Initial target: **NetSuite customers → HaloPSA clients**.
 
-Planned: **N-central customers/sites → LCAT customer scopes** (see `specs/001-lcat-sync-adapter/`).
+Also implemented: **N-central customers/sites → LCAT customer scopes**, applied as one authoritative batch per approved plan (see `specs/001-lcat-sync-adapter/`).
 
 The core is intentionally vendor-neutral. Add the next vendor by implementing the adapter port, mapping into `ExternalEntity`, and leaving matching/planning alone.

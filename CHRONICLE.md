@@ -663,6 +663,26 @@
   HTTP round trip. `just build` succeeds; `just test` reports all 75 tests passing (0 failed, up from
   74 — no regressions). Next incomplete task: T034 (update site sync examples and parent relationship
   notes in `docs/New-EntitySyncPlan.md`, `docs/Invoke-EntitySyncPlan.md`, and `README.md`).
+- T034 done: added an Example 5 to `docs/New-EntitySyncPlan.md` (NCentral Site -> LCAT Customer plan)
+  documenting that site-derived scopes carry the site's own id as `ncentral_customer_id` and the
+  parent's id as `ncentral_parent_customer_id`, and that a site with no parent is blocked
+  `Action 'Review'`/`MatchType 'LcatSiteParentMissing'` even with `-CreateMissing` (T031's actual
+  behavior); also noted in Example 4 that customer-derived scopes leave `ncentral_parent_customer_id`
+  empty. Extended `docs/Invoke-EntitySyncPlan.md`'s "## NCentral to LCAT" section with a paragraph
+  describing that Customer and Site sources batch together in one call, the missing-parent Review
+  block keeps a site out of the batch entirely (never reaches `ApplyLcatBatch`, confirmed by the T032
+  chronicle note), and the adapter rejects the whole batch if two items share an `ncentral_customer_id`
+  (T033). Updated `README.md`'s `### LCAT (planned)` section to `### LCAT` with present-tense wording
+  covering the `LTAC` alias, no-read-endpoint/no-target-candidates behavior, and the site
+  parent-relationship/missing-parent Review block; also fixed two stale references left over from
+  before LCAT (and NCentral) adapters existed: the Project Structure `Adapters/` comment (was
+  "HaloPSA + NetSuite vendor IO (LCAT planned)", now lists all four adapters that actually exist under
+  `src/Adapters/`) and the Status section's "Planned: N-central customers/sites -> LCAT customer
+  scopes" line (now "Also implemented: ..."). Did not touch the full LCAT quickstart walkthrough in
+  README — that's T047 (Phase 6 Polish), a separate task from this one's narrower "site sync examples
+  and parent relationship notes" scope. `just build` succeeds; `just test` reports all 75 tests passing
+  (0 failed, docs-only change, no regressions). Next incomplete task: T035 (Phase 5 / US3 — Pester
+  tests proving `LCATBearerToken` is absent from connection objects and common error messages).
 
 ## Open Blockers
 

@@ -44,4 +44,11 @@ Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` ar
 $plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
 ```
 
-Creates an N-central Customer to LCAT Customer scope plan. `LCAT` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `LCAT`), and `Customer` is the only `-TargetEntityType` LCAT supports. LCAT has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+Creates an N-central Customer to LCAT Customer scope plan. `LCAT` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `LCAT`), and `Customer` is the only `-TargetEntityType` LCAT supports. LCAT has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+
+### Example 5
+```powershell
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+```
+
+Creates an N-central Site to LCAT Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LCAT scope stays traceable to the site's owning customer. A site with no parent N-central customer ID is blocked with `Action 'Review'` (`MatchType 'LcatSiteParentMissing'`) and a reason naming the missing parent identifier, instead of being created — this safe failure applies even with `-CreateMissing`. See `specs/001-lcat-sync-adapter/data-model.md`.
