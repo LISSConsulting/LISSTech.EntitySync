@@ -1253,7 +1253,9 @@ namespace EntitySyncTests
         [pscustomobject]@{ Id = '1201'; Name = 'Valid Batch Customer' },
         [pscustomobject]@{ Id = ''; Name = 'Missing Identifier Customer' },
         [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer A' },
-        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer B' }
+        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer B' },
+        [pscustomobject]@{ Id = '1204'; Name = 'Duplicate Slug Co' },
+        [pscustomobject]@{ Id = '1205'; Name = 'Duplicate Slug Co' }
       )) {
         $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
         $source.Vendor = 'NCentral'
@@ -1278,9 +1280,10 @@ namespace EntitySyncTests
       $successResults = @($results | Where-Object Success)
       $failedResults = @($results | Where-Object { -not $_.Success })
       $successResults.Count | Should -Be 1
-      $failedResults.Count | Should -Be 3
+      $failedResults.Count | Should -Be 5
       $failedResults.Message | Should -Contain 'LCAT item skipped before batch sync: ncentral_customer_id is required.'
       ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'duplicate-1203'"
+      ($failedResults.Message -join "`n") | Should -Match "duplicate slug 'Duplicate-Slug-Co'"
 
       $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
       @($requestBody.customers).Count | Should -Be 1
@@ -1289,6 +1292,40 @@ namespace EntitySyncTests
     }
     finally {
       $server.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Rejects direct LCAT adapter batch calls with duplicate customer-scope slugs before HTTP send' {
+    $lcatAdapter = New-TestLCATAdapter
+    try {
+      $customerOne = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerOne.Slug = 'duplicate-scope'
+      $customerOne.DisplayName = 'Duplicate Scope A'
+      $customerOne.NCentralCustomerId = '1301'
+
+      $customerTwo = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerTwo.Slug = 'Duplicate-Scope'
+      $customerTwo.DisplayName = 'Duplicate Scope B'
+      $customerTwo.NCentralCustomerId = '1302'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerOne)
+      $customers.Add($customerTwo)
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'duplicate slug'
+      $caught.Exception.Message | Should -Match 'duplicate-scope'
+    }
+    finally {
       $lcatAdapter.Dispose()
     }
   }

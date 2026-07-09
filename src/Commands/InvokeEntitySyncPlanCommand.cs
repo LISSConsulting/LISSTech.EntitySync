@@ -138,10 +138,16 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToHashSet(StringComparer.Ordinal);
+        var duplicateSlugs = candidateItems
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.Slug))
+            .GroupBy(candidate => candidate.Request.Slug, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var candidate in candidateItems)
         {
-            var validationErrors = ValidateLcatCustomerScopeRequest(candidate.Item, candidate.Request, duplicateIds);
+            var validationErrors = ValidateLcatCustomerScopeRequest(candidate.Item, candidate.Request, duplicateIds, duplicateSlugs);
             if (validationErrors.Count > 0)
             {
                 WriteResult(new EntityWriteResult
@@ -215,7 +221,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         }
     }
 
-    private static List<string> ValidateLcatCustomerScopeRequest(EntitySyncPlanItem item, LCATCustomerScopeRequest request, ISet<string> duplicateIds)
+    private static List<string> ValidateLcatCustomerScopeRequest(EntitySyncPlanItem item, LCATCustomerScopeRequest request, ISet<string> duplicateIds, ISet<string> duplicateSlugs)
     {
         var errors = new List<string>();
         if (string.IsNullOrWhiteSpace(request.DisplayName)) errors.Add("display_name is required");
@@ -230,6 +236,10 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         if (!string.IsNullOrWhiteSpace(request.NCentralCustomerId) && duplicateIds.Contains(request.NCentralCustomerId))
         {
             errors.Add($"duplicate ncentral_customer_id '{request.NCentralCustomerId}'");
+        }
+        if (!string.IsNullOrWhiteSpace(request.Slug) && duplicateSlugs.Contains(request.Slug))
+        {
+            errors.Add($"duplicate slug '{request.Slug}'");
         }
 
         return errors;

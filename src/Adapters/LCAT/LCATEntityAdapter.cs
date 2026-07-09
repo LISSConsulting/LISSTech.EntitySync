@@ -156,6 +156,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
         }
 
         EnsureUniqueCustomerIds(customers);
+        EnsureUniqueSlugs(customers);
     }
 
     private static void EnsureUniqueCustomerIds(IReadOnlyList<LCATCustomerScopeRequest> customers)
@@ -171,6 +172,22 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
             throw new InvalidOperationException(
                 $"LCAT batch sync request contains duplicate ncentral_customer_id value(s): {string.Join(", ", duplicates)}. " +
                 "Each customer or site item must resolve to a unique ncentral_customer_id.");
+        }
+    }
+
+    private static void EnsureUniqueSlugs(IReadOnlyList<LCATCustomerScopeRequest> customers)
+    {
+        var duplicates = customers
+            .GroupBy(customer => customer.Slug, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToArray();
+
+        if (duplicates.Length > 0)
+        {
+            throw new InvalidOperationException(
+                $"LCAT batch sync request contains duplicate slug value(s): {string.Join(", ", duplicates)}. " +
+                "Each customer or site item must resolve to a unique LCAT customer-scope slug.");
         }
     }
 
