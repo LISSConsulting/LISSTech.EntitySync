@@ -23,7 +23,7 @@ Writes the supplied `EntitySyncPlan` so reviewers can examine and decide on ever
 
 `-FilePath` is an alias for `-Path` for callers that prefer explicit file-path naming. Use `-PassThru` to emit a `FileInfo` for the created workbook so the caller can pass it to another cmdlet.
 
-`Export-EntitySyncPlan` redacts sensitive entries before the artifact is written. Plan items whose `Reasons` contain substrings such as `password`, `secret`, `token`, `credential`, `authorization`, or `bearer` are rewritten to `[credential redacted]`, and `ExternalIds`/`CustomFields` keys matching those fragments are removed. Adapter-specific secrets are deliberately absent: the LCAT bearer token and N-central SOAP password never appear in workbook cells, JSON output, or the file name.
+`Export-EntitySyncPlan` redacts sensitive entries before the artifact is written. Plan items whose `Reasons` or `ExternalIds`/`CustomFields` keys mention credential-shaped identifiers (`Authorization`, `BearerToken`, `LCATBearerToken`, `NCentralRegistrationToken`, `password_reset`, etc.) are rewritten or removed. The matcher is identifier-aware so English reviewer phrases that incidentally contain sensitive words — `tokenization policy review`, `password reset pending`, `secrets management policy`, `bearer of good news`, `reauthorization`, `credentialing` — are preserved. When a `Reason` is redacted it becomes `[credential redacted]`; redacted keys are removed entirely along with their values. Adapter-specific secrets are deliberately absent: the LCAT bearer token and N-central SOAP password never appear in workbook cells, JSON output, or the file name.
 
 ## EXAMPLES
 

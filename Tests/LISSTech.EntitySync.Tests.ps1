@@ -2533,6 +2533,75 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Preserves English-phrase reasons while redacting credential-shaped identifiers (T044, US3 follow-up)' {
+    $xlsxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-sanitizer-phrases-{0}.xlsx" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NCentral'
+      $plan.SourceEntityType = 'Site'
+      $plan.TargetVendor = 'LCAT'
+      $plan.TargetEntityType = 'Customer'
+
+      $legitimate = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $legitimate.Action = 'Review'
+      $legitimate.Status = 'Review'
+      $legitimate.MatchType = 'NeedsReview'
+      $legitimate.Score = 75
+      $legitimate.Source.Vendor = 'NCentral'
+      $legitimate.Source.EntityType = 'Site'
+      $legitimate.Source.Id = 'SITE-100'
+      $legitimate.Source.Name = 'Contoso'
+      [void]$legitimate.Reasons.Add('Reviewer flagged the tokenization policy for this account.')
+      [void]$legitimate.Reasons.Add('Customer requested a password reset pending customer approval.')
+      [void]$legitimate.Reasons.Add('Operations team is reauthorization the SSO provider this week.')
+      [void]$plan.Items.Add($legitimate)
+
+      $credential = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $credential.Action = 'Review'
+      $credential.Status = 'Review'
+      $credential.MatchType = 'LcatSourceInvalid'
+      $credential.Score = 0
+      $credential.Source.Vendor = 'NCentral'
+      $credential.Source.EntityType = 'Site'
+      $credential.Source.Id = 'SITE-200'
+      $credential.Source.Name = 'Fabrikam'
+      $credential.Source.ExternalIds['LCATBearerToken'] = 'should-not-leak-1'
+      $credential.Source.CustomFields['Authorization'] = 'Bearer should-not-leak-2'
+      $credential.Source.CustomFields['NCentralRegistrationToken'] = 'should-not-leak-3'
+      [void]$credential.Reasons.Add('LCATBearerToken=should-not-leak-4')
+      [void]$plan.Items.Add($credential)
+
+      $plan | Export-EntitySyncPlan -FilePath $xlsxPath
+      $reviewed = Import-EntitySyncPlan $xlsxPath
+
+      $legitReviewed = $reviewed.Items[0]
+      $legitReviewed.Reasons | Should -Contain 'Reviewer flagged the tokenization policy for this account.'
+      $legitReviewed.Reasons | Should -Contain 'Customer requested a password reset pending customer approval.'
+      $legitReviewed.Reasons | Should -Contain 'Operations team is reauthorization the SSO provider this week.'
+
+      $credReviewed = $reviewed.Items[1]
+      $credReviewed.Reasons | Should -Contain '[credential redacted]'
+      $credReviewed.Source.ExternalIds.Keys | Should -Not -Contain 'LCATBearerToken'
+      $credReviewed.Source.CustomFields.Keys | Should -Not -Contain 'Authorization'
+      $credReviewed.Source.CustomFields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
+
+      $jsonPath = [System.IO.Path]::ChangeExtension($xlsxPath, '.json')
+      $plan | Export-EntitySyncPlan -FilePath $jsonPath
+      $json = Get-Content -Raw $jsonPath
+      $json | Should -Not -Match 'should-not-leak'
+      $json | Should -Not -Match 'LCATBearerToken'
+      $json | Should -Not -Match '"Authorization"'
+      $json | Should -Not -Match 'NCentralRegistrationToken'
+      $json | Should -Match 'tokenization'
+      $json | Should -Match 'password reset'
+      $json | Should -Match 'reauthorization'
+    }
+    finally {
+      Remove-Item -LiteralPath $xlsxPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath ([System.IO.Path]::ChangeExtension($xlsxPath, '.json')) -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'Round-trips LCAT plan reasons while excluding credential-bearing artifact fields (T044, US3)' {
     $secretToken = 'lcat-export-secret-4f3e2d1c'
     $xlsxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-redacted-{0}.xlsx" -f [guid]::NewGuid())

@@ -13,6 +13,7 @@ Module/*.pdb
 Module/*.deps.json
 Module/*.xml
 Module/*.nupkg
+Module/*.dll.locked-bak
 Module/en-US/
 
 # Local configuration and secrets
