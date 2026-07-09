@@ -847,6 +847,18 @@
   dry-run with parent-customer context, and final reviewed apply as one authoritative LCAT batch.
   Validation: `just build` succeeds; `just test` reports all 87 tests passing. Next incomplete task:
   T048 (review LCAT spec artifacts for implementation drift).
+- T048 done: reviewed `specs/001-lcat-sync-adapter/plan.md`,
+  `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`, and
+  `specs/001-lcat-sync-adapter/quickstart.md` against the implemented LCAT command, mapping, and
+  adapter paths. The listed spec artifacts still match the current batch contract: `POST
+  /rpc/sync_ncentral_customers`, bearer auth outside the JSON body, `LCAT_BASE_URL`/
+  `LCAT_BEARER_TOKEN` environment fallbacks, customer/site fields, aggregate response counts, and
+  dry-run/apply semantics. Specs are read-only, so no spec files were edited. While reviewing, found
+  one source-level drift item outside the T048 artifact list: `Test-EntitySyncConnection -Vendor
+  LCAT` still throws the old not-implemented guard even though `LCATEntityAdapter.TestConnectionAsync`
+  exists and the PowerShell command contract includes LCAT connection testing. Validation:
+  `just build` succeeds. Next incomplete task: T049 (`just build`) or resolve the open finding below
+  before final polish validation.
 
 ## Open Blockers
 
@@ -857,6 +869,7 @@
 
 | Priority | Finding | Evidence | Status |
 |----------|---------|----------|--------|
+| P2 | `Test-EntitySyncConnection -Vendor LCAT` still throws `NotImplementedException` instead of using the registered LCAT adapter. | `src/Commands/TestEntitySyncConnectionCommand.cs` has an explicit LCAT guard; `src/Adapters/LCAT/LCATEntityAdapter.cs` now implements `TestConnectionAsync`; `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md` documents `Test-EntitySyncConnection -Vendor LCAT`. | Open; remove the stale guard and add a regression before final polish validation. |
 
 ## Decisions To Preserve
 
