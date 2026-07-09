@@ -25,6 +25,7 @@ namespace EntitySyncTests
         private readonly int statusCode;
         private readonly string reasonPhrase;
         private readonly string responseBody;
+        private readonly List<KeyValuePair<string, string>> extraHeaders = new List<KeyValuePair<string, string>>();
         private Task task;
 
         public OneShotHttpServer(int statusCode, string reasonPhrase, string responseBody)
@@ -38,6 +39,11 @@ namespace EntitySyncTests
         public string BaseUrl { get; private set; } = string.Empty;
 
         public string RequestText { get; private set; } = string.Empty;
+
+        // Additional response headers (e.g. "Retry-After") to send. Mirrors the surface on
+        // MultiShotHttpServer.ResponseSpec so callers can write Retry-After: 1 without
+        // hand-rolling a parallel response writer.
+        public List<KeyValuePair<string, string>> ExtraHeaders { get { return extraHeaders; } }
 
         public void Start()
         {
@@ -92,11 +98,23 @@ namespace EntitySyncTests
             var header =
                 $"HTTP/1.1 {statusCode} {reasonPhrase}\r\n" +
                 "Content-Type: application/json\r\n" +
+                RenderExtraHeaders() +
                 $"Content-Length: {bodyBytes.Length}\r\n" +
                 "Connection: close\r\n\r\n";
             var headerBytes = Encoding.ASCII.GetBytes(header);
             stream.Write(headerBytes, 0, headerBytes.Length);
             stream.Write(bodyBytes, 0, bodyBytes.Length);
+        }
+
+        private string RenderExtraHeaders()
+        {
+            if (extraHeaders.Count == 0) return string.Empty;
+            var builder = new StringBuilder();
+            foreach (var header in extraHeaders)
+            {
+                builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
+            }
+            return builder.ToString();
         }
 
         public void Dispose()
@@ -185,12 +203,24 @@ namespace EntitySyncTests
                 var header =
                     $"HTTP/1.1 {spec.StatusCode} {spec.ReasonPhrase}\r\n" +
                     "Content-Type: application/json\r\n" +
+                    RenderExtraHeaders(spec.ExtraHeaders) +
                     $"Content-Length: {bodyBytes.Length}\r\n" +
                     "Connection: close\r\n\r\n";
                 var headerBytes = Encoding.ASCII.GetBytes(header);
                 stream.Write(headerBytes, 0, headerBytes.Length);
                 stream.Write(bodyBytes, 0, bodyBytes.Length);
             }
+        }
+
+        private static string RenderExtraHeaders(IReadOnlyList<KeyValuePair<string, string>> headers)
+        {
+            if (headers == null || headers.Count == 0) return string.Empty;
+            var builder = new StringBuilder();
+            foreach (var header in headers)
+            {
+                builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
+            }
+            return builder.ToString();
         }
 
         public void Dispose()
@@ -210,6 +240,10 @@ namespace EntitySyncTests
             public int StatusCode { get; }
             public string ReasonPhrase { get; }
             public string ResponseBody { get; }
+
+            // Additional response headers (e.g. "Retry-After") to send for this response.
+            // Lets HaloPSA rate-limit tests inject Retry-After without a bespoke server.
+            public List<KeyValuePair<string, string>> ExtraHeaders { get; } = new List<KeyValuePair<string, string>>();
         }
     }
 }
@@ -698,6 +732,127 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Retries HaloPSA rate-limited requests with the bearer token preserved when Retry-After honors the override' {
+    $secretToken = 'halo-ratelimit-bearer-8b9c0d1e'
+    $retry429 = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'do not echo this body')
+    $retry429.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      $retry429,
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"clients":[]}')
+    )
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $result = $haloAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait(2)
+      $server.Requests.Count | Should -Be 2
+      $server.Requests[0] | Should -Match '^GET /api/client\?count=1 HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^GET /api/client\?count=1 HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Stops retrying HaloPSA rate-limited requests after MaxRateLimitRetries without leaking the bearer token' {
+    $secretToken = 'halo-ratelimit-exhaust-bearer-9c0d1e2f'
+    $responses = @()
+    # One initial attempt + 6 retries (MaxRateLimitRetries = 6 in HaloEntityAdapter) = 7 requests
+    # before the adapter returns the final 429. Use Retry-After: 1 second so each iteration stays
+    # bounded to ~1.5s (1s delay + 500ms MinimumRequestIntervalMs); a zero Retry-After falls
+    # through to the 15s exponential backoff and would balloon the test past a minute.
+    for ($i = 0; $i -lt 7; $i++) {
+      $spec = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'still rate limited')
+      $spec.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+      $responses += $spec
+    }
+    $server = [EntitySyncTests.MultiShotHttpServer]::new($responses)
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $result = $haloAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeFalse
+      $server.Wait(7)
+      $server.Requests.Count | Should -Be 7
+      foreach ($request in $server.Requests) {
+        $request | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      }
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns the Retry-After delta-seconds value from HaloPSA RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+    $response.Headers.TryAddWithoutValidation('Retry-After', '7') | Out-Null
+
+    $delay = $method.Invoke($null, @($response, 0))
+    [int]$delay.TotalSeconds | Should -Be 7
+  }
+
+  It 'Returns the Retry-After future-date delta from HaloPSA RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+
+    # Future date: subtracts now so the result is somewhere between 4 and 5 seconds.
+    $futureResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $futureDate = [DateTimeOffset]::UtcNow.AddSeconds(5).ToString('r')
+    $futureResponse.Headers.TryAddWithoutValidation('Retry-After', $futureDate) | Out-Null
+    $futureDelay = $method.Invoke($null, @($futureResponse, 0))
+    [int]$futureDelay.TotalSeconds | Should -BeGreaterOrEqual 4
+    [int]$futureDelay.TotalSeconds | Should -BeLessOrEqual 5
+
+    # Past date: should not return a non-positive delta; must fall through to exponential backoff
+    # (attempt 0 yields the 15s floor from 15 * 2^0).
+    $pastResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $pastDate = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToString('r')
+    $pastResponse.Headers.TryAddWithoutValidation('Retry-After', $pastDate) | Out-Null
+    $pastDelay = $method.Invoke($null, @($pastResponse, 0))
+    [int]$pastDelay.TotalSeconds | Should -Be 15
+  }
+
+  It 'Returns exponential backoff from HaloPSA RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+
+    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
+    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    $expectations = @{
+      0 = 15
+      1 = 30
+      2 = 60
+      3 = 120
+      4 = 240
+      5 = 300
+      6 = 300
+      7 = 300
+    }
+    foreach ($entry in $expectations.GetEnumerator()) {
+      $delay = $method.Invoke($null, @($response, [int]$entry.Key))
+      [int]$delay.TotalSeconds | Should -Be ([int]$entry.Value)
     }
   }
 
