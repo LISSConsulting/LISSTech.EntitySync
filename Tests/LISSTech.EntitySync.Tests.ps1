@@ -910,10 +910,10 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Returns the Retry-After delta-seconds value from NCentral RateLimitDelay when the override is positive' {
-    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+  It 'Returns the Retry-After delta-seconds value from RateLimitHelper.RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
@@ -923,10 +923,10 @@ namespace EntitySyncTests
     [int]$delay.TotalSeconds | Should -Be 7
   }
 
-  It 'Returns the Retry-After future-date delta from NCentral RateLimitDelay and falls through to exponential backoff for past dates' {
-    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+  It 'Returns the Retry-After future-date delta from RateLimitHelper.RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
 
@@ -947,10 +947,10 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from NCentral RateLimitDelay capped at 300 seconds when Retry-After is missing' {
-    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
@@ -1160,10 +1160,10 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Returns the Retry-After delta-seconds value from NetSuite RateLimitDelay when the override is positive' {
-    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+  It 'Returns the Retry-After delta-seconds value from RateLimitHelper.RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
@@ -1173,10 +1173,10 @@ namespace EntitySyncTests
     [int]$delay.TotalSeconds | Should -Be 7
   }
 
-  It 'Returns the Retry-After future-date delta from NetSuite RateLimitDelay and falls through to exponential backoff for past dates' {
-    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+  It 'Returns the Retry-After future-date delta from RateLimitHelper.RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
 
@@ -1197,10 +1197,10 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from NetSuite RateLimitDelay capped at 300 seconds when Retry-After is missing' {
-    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
@@ -1578,10 +1578,10 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Returns the Retry-After delta-seconds value from HaloPSA RateLimitDelay when the override is positive' {
-    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+  It 'Returns the Retry-After delta-seconds value from RateLimitHelper.RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
@@ -1591,10 +1591,10 @@ namespace EntitySyncTests
     [int]$delay.TotalSeconds | Should -Be 7
   }
 
-  It 'Returns the Retry-After future-date delta from HaloPSA RateLimitDelay and falls through to exponential backoff for past dates' {
-    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+  It 'Returns the Retry-After future-date delta from RateLimitHelper.RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
 
@@ -1615,10 +1615,10 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from HaloPSA RateLimitDelay capped at 300 seconds when Retry-After is missing' {
-    $method = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter].GetMethod(
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
-      [System.Reflection.BindingFlags]'NonPublic, Static'
+      [System.Reflection.BindingFlags]'Public, Static'
     )
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()

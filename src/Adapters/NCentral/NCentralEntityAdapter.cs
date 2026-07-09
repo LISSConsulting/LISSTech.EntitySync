@@ -329,7 +329,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
 
-            var delay = RateLimitDelay(response, attempt);
+            var delay = RateLimitHelper.RateLimitDelay(response, attempt);
             Trace?.Invoke($"N-central rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
             response.Dispose();
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
@@ -349,18 +349,6 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         {
             requestThrottle.Release();
         }
-    }
-
-    private static TimeSpan RateLimitDelay(HttpResponseMessage response, int attempt)
-    {
-        if (response.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero) return delta;
-        if (response.Headers.RetryAfter?.Date is DateTimeOffset date)
-        {
-            var delay = date - DateTimeOffset.UtcNow;
-            if (delay > TimeSpan.Zero) return delay;
-        }
-
-        return TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, attempt)));
     }
 
     private static ExternalEntity MapCustomer(JsonElement item)
