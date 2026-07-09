@@ -17,11 +17,6 @@ public static class ConnectionRegistry
         throw new InvalidOperationException($"No EntitySync connection exists for vendor '{vendor}'. Run Connect-EntitySyncVendor first.");
     }
 
-    public static IReadOnlyList<string> Names()
-    {
-        return Adapters.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
     public static IReadOnlyList<EntitySyncConnection> Connections()
     {
         return Adapters
