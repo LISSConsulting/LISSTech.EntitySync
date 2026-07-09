@@ -508,6 +508,22 @@ namespace EntitySyncTests
       Should -Throw "*field 'inserted_count' must be a non-negative integer*"
   }
 
+  It 'Preserves explicit-null and empty-string LCAT audit event ids from the sync response (contract: audit_event_id is preserved when present)' -ForEach @(
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":null}'; Label = 'Null' },
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":""}'; Label = 'EmptyString' }
+  ) {
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $result = $method.Invoke($null, @($Response))
+
+    $result.ActiveCount | Should -Be 0
+    if ($Label -eq 'Null') {
+      $result.AuditEventId | Should -BeNullOrEmpty
+    }
+    else {
+      $result.AuditEventId | Should -Be ''
+    }
+  }
+
   It 'Creates an NCentral Customer to LCAT plan from pipeline sources without any LCAT vendor write (T016, US1)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
