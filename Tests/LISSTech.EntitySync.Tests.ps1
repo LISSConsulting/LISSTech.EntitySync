@@ -971,6 +971,62 @@ Describe 'LISSTech.EntitySync' {
     $results | Should -BeNullOrEmpty
   }
 
+  It 'Skips Review, Reject, No Update, None, unsafe, duplicate, and incomplete LCAT plan items during apply (T038, US3)' {
+    $lcatAdapter = New-TestLCATAdapter
+    # A disposed adapter turns any accidental approved batch write into a deterministic failure.
+    $lcatAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NCentral'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'LCAT'
+    $plan.TargetEntityType = 'Customer'
+
+    $cases = @(
+      [pscustomobject]@{ Id = '901'; Name = 'Ambiguous Match Co.'; Action = 'Review'; Status = 'Planned'; MatchType = 'NeedsReview'; Reason = 'Multiple possible target candidates' },
+      [pscustomobject]@{ Id = '902'; Name = 'Rejected Customer'; Action = 'None'; Status = 'Rejected'; MatchType = 'Rejected'; Reason = 'Reviewer rejected item' },
+      [pscustomobject]@{ Id = '903'; Name = 'No Update Customer'; Action = 'None'; Status = 'NoUpdate'; MatchType = 'NoUpdate'; Reason = 'Reviewer chose No Update' },
+      [pscustomobject]@{ Id = '904'; Name = 'Plain None Customer'; Action = 'None'; Status = 'Planned'; MatchType = 'NoMatch'; Reason = 'No action planned' },
+      [pscustomobject]@{ Id = '905'; Name = '###'; Action = 'Review'; Status = 'Planned'; MatchType = 'Invalid'; Reason = 'Unsafe LCAT slug' },
+      [pscustomobject]@{ Id = '906'; Name = 'Duplicate Id Customer'; Action = 'Review'; Status = 'Planned'; MatchType = 'Duplicate'; Reason = 'Duplicate N-central source identifier' },
+      [pscustomobject]@{ Id = ''; Name = 'Incomplete Customer'; Action = 'Review'; Status = 'Planned'; MatchType = 'Invalid'; Reason = 'Missing N-central source identifier' }
+    )
+
+    foreach ($case in $cases) {
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Vendor = 'NCentral'
+      $source.EntityType = 'Customer'
+      $source.Id = $case.Id
+      $source.Name = $case.Name
+      if (-not [string]::IsNullOrWhiteSpace($case.Id)) {
+        $source.ExternalIds['NCentralCustomerId'] = $case.Id
+      }
+
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = $case.Action
+      $item.Status = $case.Status
+      $item.MatchType = $case.MatchType
+      $item.Source = $source
+      [void]$item.Reasons.Add($case.Reason)
+      [void]$plan.Items.Add($item)
+    }
+
+    $results = $null
+    try {
+      $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru
+    }
+    catch {
+      throw
+    }
+
+    $reviewResults = @($results | Where-Object { $_.Action -eq 'Review' })
+    $reviewResults.Count | Should -Be 4
+    $reviewResults.Success | Should -Not -Contain $true
+    $reviewResults.Message | Should -Contain 'Item requires review before apply.'
+    @($results | Where-Object { $_.Action -ne 'Review' }).Count | Should -Be 0
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

@@ -747,6 +747,20 @@
   `just test` reports all 80 tests passing (0 failed, up from 79 — no regressions). Next incomplete
   task: T038 (Pester tests for Review, Reject, No Update, None, unsafe, duplicate, and incomplete
   items being skipped).
+- T038 done: added one Pester test to `Tests/LISSTech.EntitySync.Tests.ps1` proving
+  `Invoke-EntitySyncPlan -Plan <LCAT plan> -Apply -PassThru` skips Review, Reject, No Update, None,
+  unsafe, duplicate, and incomplete items without attempting an LCAT batch write. The test registers
+  a disposed LCAT adapter so any accidental approved batch call would fail deterministically, then
+  builds only non-approved or invalid `EntitySyncPlanItem` rows: Review items are reported back as
+  failed review results, while Reject/No Update/plain None rows remain silent skips. No product code
+  changes were required because `ApplyLcatBatch` already skips `Action = None` and reports
+  `Action = Review` before batch composition. While authoring the test, the first run failed because
+  output assigned inside a `Should -Not -Throw` scriptblock was not available to the later
+  assertions; the final test captures output directly and lets exceptions propagate. A parallel
+  `just build`/`just test` attempt also hit a transient .NET `obj` cache file lock, so validation was
+  rerun sequentially. Final validation: `just build` succeeds; `just test` reports all 81 tests
+  passing (0 failed, up from 80). Next incomplete task: T039 (Pester tests for LCAT non-success
+  responses returning status/path without authorization headers or credentials).
 
 ## Open Blockers
 
