@@ -138,7 +138,8 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var matchIndex = matcher.CreateIndex(targets, options);
             var plan = new EntitySyncPlan { SourceVendor = SourceVendor, SourceEntityType = sourceEntityType, TargetVendor = TargetVendor, TargetEntityType = targetEntityType, TargetCandidates = targets.ToList() };
             var requiresAuthoritativeTarget = usingHaloNCentralLinks || usingHaloNCentralSiteLinks;
-            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget);
+            var isLcatTarget = TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase);
+            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget);
             plan.Items.AddRange(items);
 
             WriteObject(plan);
@@ -150,14 +151,14 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         }
     }
 
-    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget)
+    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget)
     {
         var items = new EntitySyncPlanItem[sources.Count];
         var completed = 0;
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = EffectiveThrottleLimit(throttleLimit) };
         var task = Task.Run(() => Parallel.For(0, sources.Count, parallelOptions, i =>
         {
-            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget);
+            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget);
             Interlocked.Increment(ref completed);
         }));
 
@@ -173,11 +174,22 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return items;
     }
 
-    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget)
+    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget)
     {
         if (source.CustomFields.TryGetValue("HaloNCentralIntegrationConflict", out var conflict) && !string.IsNullOrWhiteSpace(conflict))
         {
             return new EntitySyncPlanItem { Source = source, Action = "Review", MatchType = "IntegrationLinkConflict", Reasons = { conflict } };
+        }
+
+        if (isLcatTarget && source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(source.GetExternalId("NCentralCustomerId")))
+        {
+            return new EntitySyncPlanItem
+            {
+                Source = source,
+                Action = "Review",
+                MatchType = "LcatSiteParentMissing",
+                Reasons = { $"N-central site {source.Id} has no parent N-central customer identifier; LCAT customer scopes require the parent N-central customer identifier." }
+            };
         }
 
         var candidates = matchIndex.FindMatches(source);

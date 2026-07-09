@@ -599,6 +599,26 @@
   missing-parent tests still red (blocked on T031, not this task). Next incomplete task: T031 (add
   plan-time validation reasons for missing NCentral site parent IDs in
   `src/Commands/NewEntitySyncPlanCommand.cs`).
+- T031 done: added an `isLcatTarget` flag (`TargetVendor.Equals("LCAT", OrdinalIgnoreCase)`, computed once
+  in `EndProcessing` after alias normalization) threaded through `MatchSources`/`CreatePlanItem` in
+  `src/Commands/NewEntitySyncPlanCommand.cs`, plus a new check in `CreatePlanItem` — right after the
+  existing `HaloNCentralIntegrationConflict` check, before any candidate matching — that blocks with
+  `Action 'Review'`/`MatchType 'LcatSiteParentMissing'` and a reason mentioning "parent N-central customer
+  identifier" whenever `isLcatTarget` is true, `source.EntityType == "Site"`, and
+  `source.GetExternalId("NCentralCustomerId")` is null/whitespace (no fallback to `source.Id`, since that
+  external id is the site's own identifier, not its parent's, per data-model.md). Deliberately checked
+  `source.EntityType` (the actual entity on each pipeline/fetched source) rather than the requested
+  `sourceEntityType` dynamic-parameter value, matching T030's mapper precedent, since pipeline sources
+  bypass query-based entity-type filtering entirely. Placed the check ahead of matching (not folded into
+  the existing `NoMatch` branch) so it fires regardless of `-CreateMissing` — this is what the T027 tests
+  require ("blocks... even without -CreateMissing"). Updating this static method's signature required
+  updating three pre-existing reflection-based tests in `Tests/LISSTech.EntitySync.Tests.ps1` (lines
+  ~995, ~1016, ~1070 — "Does not treat ordinary NetSuite external IDs...", "Flags missing authoritative
+  targets...", "Leaves low-confidence targets blank...") to pass an extra trailing `$false` argument;
+  none of their assertions changed since none exercise an LCAT Site source. `just build` succeeds; `just
+  test` now reports all 74 tests passing (0 failed) — both previously-red T027 tests pass with no
+  regressions. Next incomplete task: T032 (include site-derived customer-scope items in the LCAT batch
+  apply path in `src/Commands/InvokeEntitySyncPlanCommand.cs`).
 
 ## Open Blockers
 

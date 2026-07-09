@@ -992,7 +992,7 @@ Describe 'LISSTech.EntitySync' {
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false))
 
     $item.MatchType | Should -Be 'NoMatch'
     $item.Reasons -join '; ' | Should -Not -Match 'N-central integration'
@@ -1013,7 +1013,7 @@ Describe 'LISSTech.EntitySync' {
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false))
 
     $item.MatchType | Should -Be 'IntegrationLinkTargetMissing'
     $item.Reasons -join '; ' | Should -Match 'N-central target 390'
@@ -1067,7 +1067,7 @@ Describe 'LISSTech.EntitySync' {
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false))
 
     $item.Action | Should -Be 'Review'
     $item.MatchType | Should -Be 'LowConfidence'
