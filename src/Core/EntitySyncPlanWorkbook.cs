@@ -23,6 +23,7 @@ internal static class EntitySyncPlanWorkbook
 
     public static void Write(EntitySyncPlan plan, string path)
     {
+        plan = EntitySyncPlanArtifactSanitizer.Sanitize(plan);
         if (File.Exists(path)) File.Delete(path);
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
         WriteText(archive, "[Content_Types].xml", ContentTypesXml());

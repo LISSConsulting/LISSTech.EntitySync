@@ -810,9 +810,18 @@
   slug; it reuses the LCAT slug contract helpers from `src/Mapping/DefaultEntityMapper.cs`. Added a
   Pester regression in `Tests/LISSTech.EntitySync.Tests.ps1` covering the new plan-time reasons and
   adjusted existing private-method tests for the new duplicate-ID input. Validation: `just build`
-  succeeds; `just test` reports all 85 tests passing. Next incomplete task: T044 (confirm plan
-  export/import round trips LCAT reasons and excludes credentials in `src/Core/EntitySyncPlanWorkbook.cs`
-  and `src/Commands/ExportEntitySyncPlanCommand.cs`).
+  succeeds; `just test` reports all 85 tests passing.
+- T044 done: added `EntitySyncPlanArtifactSanitizer` in `src/Core/` and routed both workbook
+  writes (`EntitySyncPlanWorkbook.Write`, including chain callers) and JSON exports
+  (`ExportEntitySyncPlanCommand`) through a sanitized clone before serializing. The sanitizer removes
+  credential-bearing `ExternalIds`/`CustomFields` entries and redacts explicitly credential-labeled
+  plan reasons while preserving ordinary LCAT safe-failure reasons. Added a Pester regression proving
+  LCAT `LcatSourceInvalid` reasons survive an XLSX export/import round trip, JSON export omits
+  `LCATBearerToken`/`Authorization` and the secret value, normal N-central IDs/parent context remain,
+  and export does not mutate the caller's in-memory plan. Validation: `just build` succeeds;
+  `just test` reports all 86 tests passing. Next incomplete task: T045 (document credential handling
+  and safety guarantees in `docs/Connect-EntitySyncVendor.md`, `docs/Invoke-EntitySyncPlan.md`, and
+  `README.md`).
 
 ## Open Blockers
 

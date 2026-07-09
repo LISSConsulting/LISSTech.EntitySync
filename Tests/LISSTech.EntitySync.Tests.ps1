@@ -1812,6 +1812,66 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Round-trips LCAT plan reasons while excluding credential-bearing artifact fields (T044, US3)' {
+    $secretToken = 'lcat-export-secret-4f3e2d1c'
+    $xlsxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-redacted-{0}.xlsx" -f [guid]::NewGuid())
+    $jsonPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-redacted-{0}.json" -f [guid]::NewGuid())
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NCentral'
+      $plan.SourceEntityType = 'Site'
+      $plan.TargetVendor = 'LCAT'
+      $plan.TargetEntityType = 'Customer'
+
+      $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+      $item.Action = 'Review'
+      $item.Status = 'Review'
+      $item.MatchType = 'LcatSourceInvalid'
+      $item.Score = 0
+      $item.Source.Vendor = 'NCentral'
+      $item.Source.EntityType = 'Site'
+      $item.Source.Id = 'SITE-901'
+      $item.Source.Name = '###'
+      $item.Source.ExternalIds['NCentralSiteId'] = 'SITE-901'
+      $item.Source.ExternalIds['NCentralCustomerId'] = 'CUST-390'
+      $item.Source.ExternalIds['LCATBearerToken'] = $secretToken
+      $item.Source.CustomFields['NCentralCustomerName'] = 'GOAT USA Inc.'
+      $item.Source.CustomFields['Authorization'] = "Bearer $secretToken"
+      $item.Source.CustomFields['LCATBearerToken'] = $secretToken
+      [void]$item.Reasons.Add("N-central Site SITE-901 cannot produce a safe LCAT customer-scope slug.")
+      [void]$item.Reasons.Add("Duplicate N-central source identifier 'SITE-901' cannot be synced to LCAT customer scopes.")
+      [void]$item.Reasons.Add("LCATBearerToken=$secretToken")
+      [void]$plan.Items.Add($item)
+
+      $plan | Export-EntitySyncPlan -FilePath $xlsxPath
+      $plan | Export-EntitySyncPlan -FilePath $jsonPath
+
+      $reviewed = Import-EntitySyncPlan $xlsxPath
+      $reviewedItem = $reviewed.Items[0]
+      $reviewedItem.MatchType | Should -Be 'LcatSourceInvalid'
+      $reviewedItem.Reasons | Should -Contain "N-central Site SITE-901 cannot produce a safe LCAT customer-scope slug."
+      $reviewedItem.Reasons | Should -Contain "Duplicate N-central source identifier 'SITE-901' cannot be synced to LCAT customer scopes."
+      $reviewedItem.Reasons | Should -Contain '[credential redacted]'
+      $reviewedItem.Source.ExternalIds['NCentralSiteId'] | Should -Be 'SITE-901'
+      $reviewedItem.Source.ExternalIds['NCentralCustomerId'] | Should -Be 'CUST-390'
+      $reviewedItem.Source.CustomFields['NCentralCustomerName'] | Should -Be 'GOAT USA Inc.'
+      $reviewedItem.Source.ExternalIds.Keys | Should -Not -Contain 'LCATBearerToken'
+      $reviewedItem.Source.CustomFields.Keys | Should -Not -Contain 'Authorization'
+      $reviewedItem.Source.CustomFields.Keys | Should -Not -Contain 'LCATBearerToken'
+
+      $json = Get-Content -Raw $jsonPath
+      $json | Should -Not -Match ([regex]::Escape($secretToken))
+      $json | Should -Not -Match 'LCATBearerToken'
+      $json | Should -Not -Match 'Authorization'
+
+      $plan.Items[0].Source.CustomFields['LCATBearerToken'] | Should -Be $secretToken
+    }
+    finally {
+      Remove-Item -LiteralPath $xlsxPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $jsonPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
   It 'Generates an Excel plan filename when exporting to a directory' {
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NetSuite'

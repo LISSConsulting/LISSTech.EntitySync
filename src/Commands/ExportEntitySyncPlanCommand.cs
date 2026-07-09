@@ -27,7 +27,7 @@ public sealed class ExportEntitySyncPlanCommand : PSCmdlet
             return;
         }
 
-        var json = JsonSerializer.Serialize(Plan, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(EntitySyncPlanArtifactSanitizer.Sanitize(Plan), new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(resolved, json, new System.Text.UTF8Encoding(false));
         WriteExportResult(resolved);
     }
