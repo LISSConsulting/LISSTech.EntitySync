@@ -875,6 +875,9 @@
   `Invoke-EntitySyncChain`, `Invoke-EntitySyncNetSuiteSuiteQL`, `Invoke-EntitySyncPlan`,
   `New-EntitySyncPlan`, `Set-EntitySyncCustomProperty`, and `Test-EntitySyncConnection`.
   Next incomplete task: T051 (`just test`).
+- T051 done: ran `just test` for the LCAT sync adapter polish validation. The command rebuilt the
+  module successfully and Pester reported all 88 tests passing with 0 failures. Next incomplete task:
+  T052 (run the LCAT quickstart dry-run validation from `specs/001-lcat-sync-adapter/quickstart.md`).
 
 ## Open Blockers
 
