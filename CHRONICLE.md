@@ -28,6 +28,7 @@
 - Empty Queue sweep done: LCAT `TestConnectionAsync` now has Pester coverage for both the redacted transport-failure path and the non-success status path, closing the last unverified credential-leak vector in the connection test surface; `just test` passes.
 - Empty Queue sweep done: LCAT adapter and apply command now share the `DefaultEntityMapper.IsValidLcatSlug` contract validator instead of carrying duplicate `LcatSlugPattern` regex fields, with a Pester guard that exercises the central validator against contract boundary cases; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: dead `ConnectionRegistry.Names()` helper removed (no callers in `src/`, `Tests/`, `Module/`, or `docs/`); `just build` and `just test` pass (117 tests).
+- Empty Queue sweep done: README "PowerShell API" table now lists all 12 exported cmdlets including `Set-EntitySyncCustomProperty` and `Invoke-EntitySyncNetSuiteSuiteQL`, and `docs/Connect-EntitySyncVendor.md` SYNTAX for `-Vendor HaloPSA` now advertises the 7 HaloPSA parameters actually exposed in code (`HaloNetSuiteCustomerIdFieldId`, `HaloCustomerRelationshipId`, `HaloCustomerRelationshipName`, `HaloCustomerTypeId`, `HaloCustomerTypeName`, `HaloAccountManagerEmail`, `HaloAccountManagerField`); `just test` passes (117 tests).
 
 ## Open Blockers
 
@@ -40,8 +41,6 @@
 |----------|---------|----------|--------|
 | follow-up | `EntitySyncPlanArtifactSanitizer.IsSensitiveName` uses a substring `Contains` match (`authorization|bearer|credential|password|secret|token`) that silently rewrites legitimate reviewer notes such as "tokenization policy review" or "password reset pending" into `[credential redacted]`; affects reason strings plus `ExternalIds`/`CustomFields` keys | `src/Core/EntitySyncPlanArtifactSanitizer.cs:7-15,51-54` | Logged — pending Pester coverage that locks in current behavior before any matcher tightening |
 | follow-up | 5 exported cmdlets have no `docs/*.md` (no external help): `Get-EntitySyncConnection`, `Test-EntitySyncConnection`, `Invoke-EntitySyncNetSuiteSuiteQL`, `Export-EntitySyncPlan`, `Import-EntitySyncPlan` | `Module/LISSTech.EntitySync.psd1:12-25` vs `docs/` | Logged |
-| follow-up | `docs/Connect-EntitySyncVendor.md:16` SYNTAX missing 7 HaloPSA parameters that ship in code: `HaloNetSuiteCustomerIdFieldId`, `HaloCustomerRelationshipId`, `HaloCustomerRelationshipName`, `HaloCustomerTypeId`, `HaloCustomerTypeName`, `HaloAccountManagerEmail`, `HaloAccountManagerField` | `src/Commands/ConnectEntitySyncVendorCommand.cs:36-54` vs `docs/Connect-EntitySyncVendor.md:16` | Logged |
-| follow-up | README "PowerShell API" table omits `Set-EntitySyncCustomProperty` and `Invoke-EntitySyncNetSuiteSuiteQL` | `README.md:146-158` vs `Module/LISSTech.EntitySync.psd1:12-25` | Logged |
 | follow-up | Halo/NetSuite/NCentral adapters have minimal direct Pester coverage for `TestConnectionAsync`, rate-limit/backoff, and lookups | largest source files; recent LCAT `TestConnectionAsync` work (commit `40244f3`) is unmirrored | Logged |
 
 ## Decisions To Preserve

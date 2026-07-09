@@ -150,11 +150,13 @@ graph LR
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
 | `Get-EntitySyncLookup` | Discover vendor lookup IDs such as HaloPSA top levels and N-central service organizations. |
 | `Get-EntitySyncEntity` | Pull canonical entities from a connected vendor; `-Type` defaults to the selected vendor's supported entity type. |
+| `Invoke-EntitySyncNetSuiteSuiteQL` | Run a SuiteQL query against the active NetSuite connection and emit rows as PSObjects. |
 | `New-EntitySyncPlan` | Compare source entities to target entities and emit a plan. |
 | `Export-EntitySyncPlan` | Persist a plan to a reviewer-friendly `.xlsx` workbook or fallback JSON. |
 | `Import-EntitySyncPlan` | Reload a reviewed `.xlsx` workbook or JSON plan. |
 | `Invoke-EntitySyncPlan` | Apply approved `Link` / `Create` items with PowerShell safety semantics. |
 | `Invoke-EntitySyncChain` | Generate or apply reviewed workbooks for NetSuite -> HaloPSA -> downstream vendor chains. |
+| `Set-EntitySyncCustomProperty` | Plan or apply a custom-property write on an N-central customer. |
 
 ### Flow
 
