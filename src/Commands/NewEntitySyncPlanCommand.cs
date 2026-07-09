@@ -140,7 +140,8 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var requiresAuthoritativeTarget = usingHaloNCentralLinks || usingHaloNCentralSiteLinks;
             var isLcatTarget = TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase);
             var duplicateLcatSourceIds = isLcatTarget ? FindDuplicateLcatSourceIdentifiers(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds);
+            var duplicateLcatSlugs = isLcatTarget ? FindDuplicateLcatSlugs(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds, duplicateLcatSlugs);
             plan.Items.AddRange(items);
 
             WriteObject(plan);
@@ -152,14 +153,14 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         }
     }
 
-    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds)
+    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs)
     {
         var items = new EntitySyncPlanItem[sources.Count];
         var completed = 0;
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = EffectiveThrottleLimit(throttleLimit) };
         var task = Task.Run(() => Parallel.For(0, sources.Count, parallelOptions, i =>
         {
-            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds);
+            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds, duplicateLcatSlugs);
             Interlocked.Increment(ref completed);
         }));
 
@@ -175,14 +176,14 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return items;
     }
 
-    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds)
+    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs)
     {
         if (source.CustomFields.TryGetValue("HaloNCentralIntegrationConflict", out var conflict) && !string.IsNullOrWhiteSpace(conflict))
         {
             return new EntitySyncPlanItem { Source = source, Action = "Review", MatchType = "IntegrationLinkConflict", Reasons = { conflict } };
         }
 
-        if (isLcatTarget && TryGetLcatSourceValidationErrors(source, duplicateLcatSourceIds, out var lcatValidationErrors))
+        if (isLcatTarget && TryGetLcatSourceValidationErrors(source, duplicateLcatSourceIds, duplicateLcatSlugs, out var lcatValidationErrors))
         {
             return new EntitySyncPlanItem
             {
@@ -248,7 +249,21 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return duplicates;
     }
 
-    private static bool TryGetLcatSourceValidationErrors(ExternalEntity source, IReadOnlySet<string> duplicateLcatSourceIds, out string[] errors)
+    private static HashSet<string> FindDuplicateLcatSlugs(IReadOnlyList<ExternalEntity> sources)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var duplicates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in sources)
+        {
+            var slug = GetLcatSlug(source);
+            if (string.IsNullOrWhiteSpace(slug)) continue;
+            if (!seen.Add(slug)) duplicates.Add(slug);
+        }
+
+        return duplicates;
+    }
+
+    private static bool TryGetLcatSourceValidationErrors(ExternalEntity source, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs, out string[] errors)
     {
         var validationErrors = new List<string>();
         var sourceIdentifier = GetLcatSourceIdentifier(source);
@@ -271,6 +286,23 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             validationErrors.Add($"N-central site {DisplaySourceId(source)} has no parent N-central customer identifier; LCAT customer scopes require the parent N-central customer identifier.");
         }
 
+        var slug = GetLcatSlug(source);
+        if (!DefaultEntityMapper.IsValidLcatSlug(slug))
+        {
+            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} cannot produce a safe LCAT customer-scope slug.");
+        }
+        else if (duplicateLcatSlugs.Contains(slug))
+        {
+            validationErrors.Add($"Duplicate LCAT customer-scope slug '{slug}' cannot be synced from more than one N-central source record.");
+        }
+
+        errors = validationErrors.ToArray();
+        return errors.Length > 0;
+    }
+
+    private static string GetLcatSlug(ExternalEntity source)
+    {
+        var sourceIdentifier = GetLcatSourceIdentifier(source);
         var slugBasis = source.Name;
         if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
         {
@@ -278,14 +310,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             slugBasis = string.IsNullOrWhiteSpace(parentContext) ? source.Name : $"{parentContext} {source.Name}";
         }
 
-        var slug = DefaultEntityMapper.DeriveLcatSlug(slugBasis, sourceIdentifier);
-        if (!DefaultEntityMapper.IsValidLcatSlug(slug))
-        {
-            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} cannot produce a safe LCAT customer-scope slug.");
-        }
-
-        errors = validationErrors.ToArray();
-        return errors.Length > 0;
+        return DefaultEntityMapper.DeriveLcatSlug(slugBasis, sourceIdentifier);
     }
 
     private static string? GetLcatSourceIdentifier(ExternalEntity source)

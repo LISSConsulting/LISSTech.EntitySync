@@ -1317,10 +1317,24 @@ namespace EntitySyncTests
       $duplicateTwo.Name = 'Duplicate Customer B'
       $duplicateTwo.ExternalIds['NCentralCustomerId'] = 'duplicate-1304'
 
-      $plan = @($missingId, $missingName, $unsafeSlug, $duplicateOne, $duplicateTwo) |
+      $duplicateSlugOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $duplicateSlugOne.Vendor = 'NCentral'
+      $duplicateSlugOne.EntityType = 'Customer'
+      $duplicateSlugOne.Id = '1306'
+      $duplicateSlugOne.Name = 'Contoso!!!'
+      $duplicateSlugOne.ExternalIds['NCentralCustomerId'] = '1306'
+
+      $duplicateSlugTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $duplicateSlugTwo.Vendor = 'NCentral'
+      $duplicateSlugTwo.EntityType = 'Customer'
+      $duplicateSlugTwo.Id = '1307'
+      $duplicateSlugTwo.Name = 'Contoso???'
+      $duplicateSlugTwo.ExternalIds['NCentralCustomerId'] = '1307'
+
+      $plan = @($missingId, $missingName, $unsafeSlug, $duplicateOne, $duplicateTwo, $duplicateSlugOne, $duplicateSlugTwo) |
         New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
 
-      $plan.Items.Count | Should -Be 5
+      $plan.Items.Count | Should -Be 7
       $plan.Items.Action | Should -Not -Contain 'Create'
       $plan.Items.Action | Should -Not -Contain 'Update'
       $plan.Items.Action | Should -Not -Contain 'Link'
@@ -1331,6 +1345,7 @@ namespace EntitySyncTests
       $reasons | Should -Match 'display name'
       $reasons | Should -Match 'safe LCAT customer-scope slug'
       $reasons | Should -Match "Duplicate N-central source identifier 'duplicate-1304'"
+      $reasons | Should -Match "Duplicate LCAT customer-scope slug 'Contoso'"
       $reasons | Should -Not -Match 'token'
     }
     finally {
@@ -1556,8 +1571,9 @@ namespace EntitySyncTests
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
     $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
 
     $item.MatchType | Should -Be 'NoMatch'
     $item.Reasons -join '; ' | Should -Not -Match 'N-central integration'
@@ -1578,8 +1594,9 @@ namespace EntitySyncTests
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
     $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false, $duplicateLcatSourceIds))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
 
     $item.MatchType | Should -Be 'IntegrationLinkTargetMissing'
     $item.Reasons -join '; ' | Should -Match 'N-central target 390'
@@ -1633,8 +1650,9 @@ namespace EntitySyncTests
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
     $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
 
     $item.Action | Should -Be 'Review'
     $item.MatchType | Should -Be 'LowConfidence'
