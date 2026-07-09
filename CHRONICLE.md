@@ -522,6 +522,34 @@
   succeeds; `just test` reports 64 passed / 5 failed (the 3 pre-existing T026 failures plus the 2 new
   expected T027 failures, no regressions in the previously-passing 64). Next incomplete task: T028
   (Pester tests for site-derived slug generation using parent customer and site names).
+- T028 done: added three Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T027
+  missing-parent tests, before `Declares object output for Get-EntitySyncConnection`) calling
+  `DefaultEntityMapper.MapCreate` with NCentral Site sources whose `Name` is the site's own name only
+  (e.g. `Main Office`, matching how `NCentralEntityAdapter.MapSite` actually populates `Name` — it
+  never prefixes with the parent, confirmed by reading `MapSite`/`AddParentCustomerNamesAsync` in
+  `src/Adapters/NCentral/NCentralEntityAdapter.cs`, unlike the T026 tests' illustrative compound
+  `"Parent - Site"` names) with the parent name supplied via the same `NCentralCustomerName` custom
+  field the real adapter sets on sites. One test asserts two sites sharing the identical site name
+  (`Main Office`) under two different parent customers produce two *different* slugs (proving parent
+  context factors into slug derivation, since the contract's own example disambiguates
+  `Arista-Air-Conditioning-Main-Office` from a same-named site under a different parent, and
+  spec.md's edge case "Two source records would produce the same LCAT slug" requires this); one
+  asserts calling `MapCreate` twice on the same site source yields the identical slug (determinism);
+  one asserts changing only the parent customer name (site id/name held constant) changes the derived
+  slug, isolating that the parent name specifically is an input rather than incidentally passing
+  because the parent id differed. Deliberately did not pin an exact slug string or algorithm (e.g. the
+  contract's literal `Arista-Air-Conditioning-Main-Office` example) — same rationale as T014/T026:
+  `DeriveLcatSlug`'s exact concatenation/suffix-handling is T030's implementation choice, and T022's
+  chronicle note already established this mapper deliberately skips cleanco-style legal-suffix
+  stripping, so pinning the contract's literal example string would fail even a reasonable
+  implementation. As expected for a test-first US2 task, all three tests currently fail: `slug` (and
+  every other LCAT field) comes back `$null` because `AddLcatCustomerScopeFields` in
+  `src/Mapping/DefaultEntityMapper.cs` still only branches on `source.EntityType == Customer` (T030
+  adds the Site branch and site-aware slug derivation). This is on top of the still-red T026/T027
+  failures (blocked on T030/T031, separate tasks). `just build` succeeds; `just test` reports 64
+  passed / 8 failed (the 5 pre-existing T026/T027 failures plus 3 new expected T028 failures, no
+  regressions in the previously-passing 64). Next incomplete task: T029 (Pester tests for NCentral
+  Site to LCAT plan creation and batch payload composition).
 
 ## Open Blockers
 

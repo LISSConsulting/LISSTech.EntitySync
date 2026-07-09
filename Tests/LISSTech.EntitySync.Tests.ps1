@@ -673,6 +673,78 @@ Describe 'LISSTech.EntitySync' {
     }
   }
 
+  It 'Derives different LCAT slugs for two N-central Sites with the same site name under different parent customers (T028, US2)' {
+    $siteUnderParentOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteUnderParentOne.Vendor = 'NCentral'
+    $siteUnderParentOne.EntityType = 'Site'
+    $siteUnderParentOne.Id = '501'
+    $siteUnderParentOne.Name = 'Main Office'
+    $siteUnderParentOne.ExternalIds['NCentralSiteId'] = '501'
+    $siteUnderParentOne.ExternalIds['NCentralCustomerId'] = '111'
+    $siteUnderParentOne.CustomFields['NCentralCustomerName'] = 'Arista Air Conditioning'
+
+    $siteUnderParentTwo = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteUnderParentTwo.Vendor = 'NCentral'
+    $siteUnderParentTwo.EntityType = 'Site'
+    $siteUnderParentTwo.Id = '502'
+    $siteUnderParentTwo.Name = 'Main Office'
+    $siteUnderParentTwo.ExternalIds['NCentralSiteId'] = '502'
+    $siteUnderParentTwo.ExternalIds['NCentralCustomerId'] = '222'
+    $siteUnderParentTwo.CustomFields['NCentralCustomerName'] = 'Fallback Metals LLC'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $requestOne = $mapper.MapCreate($siteUnderParentOne, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $requestTwo = $mapper.MapCreate($siteUnderParentTwo, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $requestOne.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
+    $requestTwo.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
+    $requestOne.Fields['slug'] | Should -Not -Be $requestTwo.Fields['slug']
+  }
+
+  It 'Derives the same LCAT slug each time for the same N-central Site source (T028, US2)' {
+    $site = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $site.Vendor = 'NCentral'
+    $site.EntityType = 'Site'
+    $site.Id = '503'
+    $site.Name = 'Warehouse'
+    $site.ExternalIds['NCentralSiteId'] = '503'
+    $site.ExternalIds['NCentralCustomerId'] = '333'
+    $site.CustomFields['NCentralCustomerName'] = 'Northshore Plumbing'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $slugFirst = $mapper.MapCreate($site, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $slugSecond = $mapper.MapCreate($site, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+
+    $slugFirst | Should -Not -BeNullOrEmpty
+    $slugFirst | Should -Be $slugSecond
+  }
+
+  It 'Changes the derived LCAT slug when only the parent customer name differs for an otherwise identical N-central Site (T028, US2)' {
+    $siteWithParentName = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteWithParentName.Vendor = 'NCentral'
+    $siteWithParentName.EntityType = 'Site'
+    $siteWithParentName.Id = '504'
+    $siteWithParentName.Name = 'Depot'
+    $siteWithParentName.ExternalIds['NCentralSiteId'] = '504'
+    $siteWithParentName.ExternalIds['NCentralCustomerId'] = '444'
+    $siteWithParentName.CustomFields['NCentralCustomerName'] = 'Original Parent Name'
+
+    $siteWithRenamedParent = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteWithRenamedParent.Vendor = 'NCentral'
+    $siteWithRenamedParent.EntityType = 'Site'
+    $siteWithRenamedParent.Id = '504'
+    $siteWithRenamedParent.Name = 'Depot'
+    $siteWithRenamedParent.ExternalIds['NCentralSiteId'] = '504'
+    $siteWithRenamedParent.ExternalIds['NCentralCustomerId'] = '444'
+    $siteWithRenamedParent.CustomFields['NCentralCustomerName'] = 'Renamed Parent Name'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $originalSlug = $mapper.MapCreate($siteWithParentName, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $renamedSlug = $mapper.MapCreate($siteWithRenamedParent, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+
+    $originalSlug | Should -Not -Be $renamedSlug
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
