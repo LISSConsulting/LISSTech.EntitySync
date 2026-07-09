@@ -107,13 +107,10 @@ namespace EntitySyncTests
 '@
     }
 
-    # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T046):
-    # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
-    # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
-    # These helpers build valid LCAT options/adapters so each story's tests can override only the
-    # fields they're exercising instead of repeating adapter setup. Defined in BeforeAll (not
-    # directly in the Describe body) so they are still in scope when Pester v5 invokes It blocks
-    # during the run phase rather than only during discovery.
+    # These helpers build valid LCAT options/adapters so LCAT tests can override only the fields
+    # they exercise instead of repeating adapter setup. Defined in BeforeAll (not directly in the
+    # Describe body) so they are still in scope when Pester v5 invokes It blocks during the run
+    # phase rather than only during discovery.
     function New-TestLCATOptions {
       param(
         [string]$BaseUrl = 'https://lcat.example.test/',

@@ -899,6 +899,8 @@
   output remains the adapter sync-result path. Updated `docs/Invoke-EntitySyncPlan.md`, regenerated
   `en-US/LISSTech.EntitySync.dll-Help.xml`, and extended Pester coverage. Validation: `just test`
   reports all 88 tests passing; `just external-help` succeeds.
+- Empty Queue sweep done: removed stale in-progress wording from the LCAT test helper comment in
+  `Tests/LISSTech.EntitySync.Tests.ps1`; no behavior changed.
 
 ## Open Blockers
 
