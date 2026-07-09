@@ -1040,6 +1040,157 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Retries NetSuite rate-limited SuiteQL probes with the OAuth header preserved when Retry-After honors the override' {
+    $consumerKey = 'netsuite-ratelimit-retry-consumer-key-9a8b7c6d'
+    $tokenId = 'netsuite-ratelimit-retry-token-id-5e4f3a2b'
+    $retry429 = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'do not echo this body')
+    $retry429.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      $retry429,
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"items":[]}')
+    )
+    $server.Start()
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions -BaseUrl $server.BaseUrl -ConsumerKey $consumerKey -TokenId $tokenId)
+
+    try {
+      $result = $nsAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait(2)
+      $server.Requests.Count | Should -Be 2
+      # Both attempts must POST to the SuiteQL endpoint and carry the OAuth header with the same
+      # ConsumerKey/TokenId so NetSuite could honor either request if the host really were suitetalk.
+      foreach ($request in $server.Requests) {
+        $request | Should -Match '^POST /services/rest/query/v1/suiteql HTTP/1\.1'
+        $request | Should -Match ([regex]::Escape("oauth_consumer_key=`"$consumerKey`""))
+        $request | Should -Match ([regex]::Escape("oauth_token=`"$tokenId`""))
+      }
+
+      # The OAuth nonce is random per BuildOAuthHeader call and the signature is HMAC over the
+      # signature base (which includes the nonce + timestamp + URL). If both retries were re-signed
+      # (the factory closure was re-invoked), the nonces and signatures must both differ.
+      $noncePattern = 'oauth_nonce="([^"]+)"'
+      $signaturePattern = 'oauth_signature="([^"]+)"'
+      $nonce0 = [regex]::Match($server.Requests[0], $noncePattern).Groups[1].Value
+      $nonce1 = [regex]::Match($server.Requests[1], $noncePattern).Groups[1].Value
+      $signature0 = [regex]::Match($server.Requests[0], $signaturePattern).Groups[1].Value
+      $signature1 = [regex]::Match($server.Requests[1], $signaturePattern).Groups[1].Value
+      $nonce0 | Should -Not -BeNullOrEmpty
+      $nonce1 | Should -Not -BeNullOrEmpty
+      $nonce0 | Should -Not -Be $nonce1
+      $signature0 | Should -Not -Be $signature1
+    }
+    finally {
+      $server.Dispose()
+      $nsAdapter.Dispose()
+    }
+  }
+
+  It 'Stops retrying NetSuite rate-limited SuiteQL probes after MaxRateLimitRetries with the OAuth header riding each retry' {
+    $consumerKey = 'netsuite-ratelimit-exhaust-consumer-key-1c2d3e4f'
+    $tokenId = 'netsuite-ratelimit-exhaust-token-id-5a6b7c8d'
+    $responses = @()
+    # One initial attempt + 6 retries (MaxRateLimitRetries = 6 in NetSuiteEntityAdapter) = 7 requests
+    # before the adapter returns the final 429. Use Retry-After: 1 so each iteration stays bounded
+    # to ~1.5s (1s delay + 500ms MinimumRequestIntervalMs); a zero Retry-After falls through to the
+    # 15s exponential backoff and would balloon the test past a minute.
+    for ($i = 0; $i -lt 7; $i++) {
+      $spec = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'still rate limited')
+      $spec.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+      $responses += $spec
+    }
+    $server = [EntitySyncTests.MultiShotHttpServer]::new($responses)
+    $server.Start()
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions -BaseUrl $server.BaseUrl -ConsumerKey $consumerKey -TokenId $tokenId)
+
+    try {
+      $result = $nsAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      # TestConnectionAsync just checks response.IsSuccessStatusCode, so 429 yields false -- there
+      # is no exception path here to walk. The OAuth credentials must still ride the wire on every
+      # attempt so NetSuite could honor a retry if the limit cleared before we gave up.
+      $result | Should -BeFalse
+      $server.Wait(7)
+      $server.Requests.Count | Should -Be 7
+      foreach ($request in $server.Requests) {
+        $request | Should -Match '^POST /services/rest/query/v1/suiteql HTTP/1\.1'
+        $request | Should -Match ([regex]::Escape("oauth_consumer_key=`"$consumerKey`""))
+        $request | Should -Match ([regex]::Escape("oauth_token=`"$tokenId`""))
+      }
+
+      # Nonces must differ across attempts (proof that the factory closure re-ran and the OAuth
+      # header was re-signed each retry rather than cached).
+      $noncePattern = 'oauth_nonce="([^"]+)"'
+      $nonces = foreach ($request in $server.Requests) { [regex]::Match($request, $noncePattern).Groups[1].Value }
+      ($nonces | Sort-Object -Unique).Count | Should -Be 7
+    }
+    finally {
+      $server.Dispose()
+      $nsAdapter.Dispose()
+    }
+  }
+
+  It 'Returns the Retry-After delta-seconds value from NetSuite RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+    $response.Headers.TryAddWithoutValidation('Retry-After', '7') | Out-Null
+
+    $delay = $method.Invoke($null, @($response, 0))
+    [int]$delay.TotalSeconds | Should -Be 7
+  }
+
+  It 'Returns the Retry-After future-date delta from NetSuite RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+
+    # Future date: subtracts now so the result is somewhere between 4 and 5 seconds.
+    $futureResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $futureDate = [DateTimeOffset]::UtcNow.AddSeconds(5).ToString('r')
+    $futureResponse.Headers.TryAddWithoutValidation('Retry-After', $futureDate) | Out-Null
+    $futureDelay = $method.Invoke($null, @($futureResponse, 0))
+    [int]$futureDelay.TotalSeconds | Should -BeGreaterOrEqual 4
+    [int]$futureDelay.TotalSeconds | Should -BeLessOrEqual 5
+
+    # Past date: should not return a non-positive delta; must fall through to exponential backoff
+    # (attempt 0 yields the 15s floor from 15 * 2^0).
+    $pastResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $pastDate = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToString('r')
+    $pastResponse.Headers.TryAddWithoutValidation('Retry-After', $pastDate) | Out-Null
+    $pastDelay = $method.Invoke($null, @($pastResponse, 0))
+    [int]$pastDelay.TotalSeconds | Should -Be 15
+  }
+
+  It 'Returns exponential backoff from NetSuite RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+
+    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
+    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    $expectations = @{
+      0 = 15
+      1 = 30
+      2 = 60
+      3 = 120
+      4 = 240
+      5 = 300
+      6 = 300
+      7 = 300
+    }
+    foreach ($entry in $expectations.GetEnumerator()) {
+      $delay = $method.Invoke($null, @($response, [int]$entry.Key))
+      [int]$delay.TotalSeconds | Should -Be ([int]$entry.Value)
+    }
+  }
+
   It 'Returns HaloPSA top-level lookups with the bearer token sent on the request' {
     $secretToken = 'halo-lookup-toplevel-bearer-a1b2c3d4'
     $body = '{"toplevels":[{"id":1,"name":"Alpha MSP"},{"id":2,"name":"Beta MSP"}]}'

@@ -10,8 +10,13 @@ namespace LISSTech.EntitySync.Adapters.NetSuite;
 
 public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 {
+    private const int MinimumRequestIntervalMs = 500;
+    private const int MaxRateLimitRetries = 6;
+
     private readonly NetSuiteOptions options;
     private readonly HttpClient httpClient = new();
+    private readonly SemaphoreSlim requestThrottle = new(1, 1);
+    private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
 
     public NetSuiteEntityAdapter(NetSuiteOptions options)
     {
@@ -28,15 +33,9 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
     public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
         if (!query.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("NetSuite adapter currently supports EntityType Customer.");
-        var uri = BuildSuiteQlUri(query);
         var suiteQl = BuildCustomerQuery(query);
         Trace?.Invoke($"NetSuite SuiteQL: {suiteQl}");
-        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("OAuth", BuildOAuthHeader("POST", uri));
-        request.Headers.TryAddWithoutValidation("Prefer", "transient");
-        request.Content = new StringContent(JsonSerializer.Serialize(new { q = suiteQl }), Encoding.UTF8, "application/json");
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        using var document = await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
+        using var document = await ExecuteSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
         var root = document.RootElement;
         var array = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items) ? items : root;
         if (array.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"NetSuite REST Web Services returned JSON, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
@@ -63,12 +62,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
     {
-        var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer", Count = 1 });
-        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("OAuth", BuildOAuthHeader("POST", uri));
-        request.Headers.TryAddWithoutValidation("Prefer", "transient");
-        request.Content = new StringContent(JsonSerializer.Serialize(new { q = BuildCustomerQuery(new EntityQuery { EntityType = "Customer", Count = 1 }) }), Encoding.UTF8, "application/json");
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await SendSuiteQlAsync(BuildCustomerQuery(new EntityQuery { EntityType = "Customer", Count = 1 }), cancellationToken).ConfigureAwait(false);
         return response.IsSuccessStatusCode;
     }
 
@@ -93,7 +87,11 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         return rows;
     }
 
-    public void Dispose() => httpClient.Dispose();
+    public void Dispose()
+    {
+        requestThrottle.Dispose();
+        httpClient.Dispose();
+    }
 
     private static object? ToNetSuiteValue(JsonElement value)
     {
@@ -290,12 +288,66 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
     private async Task<JsonDocument> ExecuteSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
     {
         var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer" });
-        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
-        request.Headers.Authorization = new AuthenticationHeaderValue("OAuth", BuildOAuthHeader("POST", uri));
-        request.Headers.TryAddWithoutValidation("Prefer", "transient");
-        request.Content = new StringContent(JsonSerializer.Serialize(new { q = suiteQl }), Encoding.UTF8, "application/json");
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await SendSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
         return await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseMessage> SendSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
+    {
+        var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer" });
+        return await SendWithRateLimitAsync(
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post, uri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("OAuth", BuildOAuthHeader("POST", uri));
+                request.Headers.TryAddWithoutValidation("Prefer", "transient");
+                request.Content = new StringContent(JsonSerializer.Serialize(new { q = suiteQl }), Encoding.UTF8, "application/json");
+                return request;
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseMessage> SendWithRateLimitAsync(Func<HttpRequestMessage> createRequest, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            using var request = createRequest();
+            var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
+
+            var delay = RateLimitDelay(response, attempt);
+            Trace?.Invoke($"NetSuite rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
+            response.Dispose();
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
+    {
+        await requestThrottle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (nextRequestAt > now) await Task.Delay(nextRequestAt - now, cancellationToken).ConfigureAwait(false);
+            nextRequestAt = DateTimeOffset.UtcNow.AddMilliseconds(MinimumRequestIntervalMs);
+        }
+        finally
+        {
+            requestThrottle.Release();
+        }
+    }
+
+    private static TimeSpan RateLimitDelay(HttpResponseMessage response, int attempt)
+    {
+        if (response.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero) return delta;
+        if (response.Headers.RetryAfter?.Date is DateTimeOffset date)
+        {
+            var delay = date - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero) return delay;
+        }
+
+        return TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, attempt)));
     }
 
     private static string BuildCustomerAddressQuery(IEnumerable<string> customerIds)
