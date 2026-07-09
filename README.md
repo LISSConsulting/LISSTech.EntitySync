@@ -1,11 +1,13 @@
 # LISSTech.EntitySync
 
-**Vendor entity synchronization that refuses to guess silently: connect NetSuite and HaloPSA, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
+**Vendor entity synchronization that refuses to guess silently: connect NetSuite, HaloPSA, N-central, and LCAT, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
 
 [![PowerShell 7.4+](https://img.shields.io/badge/PowerShell-7.4+-5391FE?style=for-the-badge&logo=powershell&logoColor=000&labelColor=000)](https://learn.microsoft.com/powershell/)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-8A2BE2?style=for-the-badge&logo=dotnet&logoColor=fff&labelColor=000)](https://dotnet.microsoft.com/)
 [![NetSuite](https://img.shields.io/badge/Adapter-NetSuite-FF6B35?style=for-the-badge&labelColor=000)](https://www.netsuite.com/)
 [![HaloPSA](https://img.shields.io/badge/Adapter-HaloPSA-4ECDC4?style=for-the-badge&labelColor=000)](https://halopsa.com/)
+[![N-central](https://img.shields.io/badge/Adapter-N--central-2E71B8?style=for-the-badge&labelColor=000)](https://www.n-able.com/products/n-central)
+[![LCAT](https://img.shields.io/badge/Adapter-LCAT-DA5657?style=for-the-badge&labelColor=000)](#-configuration)
 [![Safe By Default](https://img.shields.io/badge/Safety-Plan_First_Cut_Later-C7F464?style=for-the-badge&labelColor=000)](#-safety-model)
 
 [**Quick Start**](#-quick-start) · [**Architecture**](#%EF%B8%8F-architecture) · [**PowerShell API**](#-powershell-api) · [**Matching**](#-matching-rules) · [**Safety**](#-safety-model) · [**Build**](#-build--test)
@@ -111,9 +113,13 @@ $customerPlan | Invoke-EntitySyncPlan -Apply -PassThru
 graph LR
     A["🎮 PowerShell Cmdlets<br/>binary module"] --> B["🔌 ConnectionRegistry<br/>active adapters"]
     B --> C["🟦 NetSuite Adapter<br/>customers"]
-    B --> D["🟩 HaloPSA Adapter<br/>clients"]
+    B --> D["🟩 HaloPSA Adapter<br/>clients & sites"]
+    B --> K["🟧 N-central Adapter<br/>customers & sites"]
+    B --> L["🟥 LCAT Adapter<br/>customer scopes<br/>(target only)"]
     C --> E["📦 ExternalEntity<br/>canonical model"]
     D --> E
+    K --> E
+    L --> E
     E --> F["🧠 WeightedEntityMatcher<br/>explainable scoring"]
     F --> G["📋 EntitySyncPlan<br/>None / Link / Create / Review"]
     G --> H{"🧨 Invoke-EntitySyncPlan<br/>-Apply required"}
@@ -122,12 +128,16 @@ graph LR
 
     classDef blue fill:#2E71B8,stroke:#000,stroke-width:3px,color:#fff,font-weight:bold
     classDef mint fill:#4ECDC4,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
+    classDef orange fill:#FF8C42,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
+    classDef red2 fill:#DA5657,stroke:#000,stroke-width:3px,color:#fff,font-weight:bold
     classDef amber fill:#FFE66D,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
     classDef red fill:#DA5657,stroke:#000,stroke-width:3px,color:#fff,font-weight:bold
     classDef green fill:#C7F464,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
 
     class A,B blue
     class C,D mint
+    class K orange
+    class L red2
     class E,F amber
     class G,H red
     class I,J green
@@ -136,7 +146,7 @@ graph LR
 | Layer | Role | Brutal truth |
 |---|---|---|
 | 🎮 **Cmdlets** | Operator surface | PowerShell objects in, PowerShell objects out. No GUI ceremony. |
-| 🔌 **Adapters** | Vendor IO | NetSuite and HaloPSA specifics live at the edge, not smeared through sync logic. |
+| 🔌 **Adapters** | Vendor IO | NetSuite, HaloPSA, N-central, and LCAT specifics live at the edge, not smeared through sync logic. |
 | 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
 | 📋 **Plan** | Change manifest | Sync becomes an Excel-reviewable artifact before it becomes vendor mutation. |

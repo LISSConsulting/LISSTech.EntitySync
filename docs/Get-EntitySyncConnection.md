@@ -29,10 +29,12 @@ The credential fields passed to `Connect-EntitySyncVendor` are intentionally not
 ```powershell
 Connect-EntitySyncVendor -Vendor NetSuite
 Connect-EntitySyncVendor -Vendor HaloPSA
+Connect-EntitySyncVendor -Vendor NCentral
+Connect-EntitySyncVendor -Vendor LCAT
 Get-EntitySyncConnection
 ```
 
-Registers NetSuite and HaloPSA adapters using environment variables, then lists both registered connections.
+Registers adapters for every supported vendor using environment variables, then lists every registered connection in alphabetical order.
 
 ### Example 2
 ```powershell

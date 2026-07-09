@@ -377,6 +377,16 @@ namespace EntitySyncTests
     $releaseNotes | Should -Match 'SecureString' -Because '-LCATSecureBearer is the operator-session JWT entry point and must be advertised'
   }
 
+  It 'Manifest PSData.Tags advertises every shipped vendor for PowerShell Gallery discovery' {
+    $manifest = Import-PowerShellDataFile -Path $script:ModulePath
+    $tags = $manifest.PrivateData.PSData.Tags
+    $tags | Should -Not -BeNullOrEmpty -Because 'PowerShell Gallery tags drive Find-Module filtering and must include every shipped vendor'
+    $tags | Should -Contain 'netsuite' -Because 'NetSuite adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'halopsa' -Because 'HaloPSA adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'ncentral' -Because 'N-central adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'lcat' -Because 'LCAT adapter is shipped and must be discoverable on PowerShell Gallery'
+  }
+
   It 'Has an about topic' {
     $help = Get-Help about_LISSTech.EntitySync
     $help.Name | Should -Be 'about_LISSTech.EntitySync'
