@@ -107,7 +107,7 @@ namespace EntitySyncTests
 '@
     }
 
-    # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T045):
+    # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T046):
     # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
     # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
     # These helpers build valid LCAT options/adapters so each story's tests can override only the
@@ -303,6 +303,17 @@ namespace EntitySyncTests
     $targetLtacInput = 'New-EntitySyncPlan -TargetVendor LTAC -TargetEntityType '
     $targetLtacTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($targetLtacInput, $targetLtacInput.Length, $null).CompletionMatches.CompletionText
     $targetLtacTypes | Should -Be @('Customer')
+  }
+
+  It 'Returns an empty Customer read set for LCAT and LTAC when no LCAT read surface exists (T046, Polish)' {
+    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken 'token'
+    $connection.Vendor | Should -Be 'LCAT'
+
+    $lcatResults = Get-EntitySyncEntity -Vendor LCAT -Type Customer
+    $ltacResults = Get-EntitySyncEntity -Vendor LTAC -Type Customer
+
+    $lcatResults | Should -BeNullOrEmpty
+    $ltacResults | Should -BeNullOrEmpty
   }
 
   It 'Maps NCentral Customer display name, N-central identifier, and a valid slug into LCAT Fields (T014, US1)' {

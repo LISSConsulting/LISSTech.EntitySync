@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Concurrent;
 using System.Management.Automation;
 using LISSTech.EntitySync.Adapters.Halo;
+using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
@@ -71,10 +72,6 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         try
         {
             Vendor = NormalizeVendorAlias(Vendor);
-            if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new NotImplementedException("LCAT Customer reads are implemented in a later EntitySync task.");
-            }
 
             var entityType = DynamicValue<string?>("EntityType", null) ?? throw new InvalidOperationException("EntityType is required.");
             var query = new EntityQuery { EntityType = entityType, Search = Search, IncludeInactive = IncludeInactive, FullObjects = FullObjects, IncludeSiteDetails = FullObjects, ThrottleLimit = ThrottleLimit };
@@ -85,6 +82,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter) haloAdapter.Trace = traces.Enqueue;
             if (adapter is HaloEntityAdapter haloProgressAdapter) haloProgressAdapter.Progress = progress.Enqueue;
+            if (adapter is LCATEntityAdapter lcatAdapter) lcatAdapter.Trace = traces.Enqueue;
             if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
             if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
             IReadOnlyList<ExternalEntity> entities;
@@ -120,6 +118,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
                 }
 
                 if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
+                if (adapter is LCATEntityAdapter completedLcatAdapter) completedLcatAdapter.Trace = null;
                 if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
             }
             DrainMessages(traces, progress);

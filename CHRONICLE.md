@@ -832,6 +832,16 @@
   returned as non-secret failures. Validation: `just build` succeeds; `just test` reports all 86
   tests passing. Next incomplete task: T046 (update `docs/Get-EntitySyncEntity.md` with LCAT Customer
   read behavior and empty-target fallback notes).
+- T046 done: updated `docs/Get-EntitySyncEntity.md` with current LCAT Customer read behavior and
+  empty-target fallback notes: `LCAT`/`LTAC` support only `Customer`, LCAT currently has no
+  customer-scope read surface, and reads return an empty set so N-central sources still plan as
+  customer-scope sync candidates without fabricating target candidates. While verifying the docs,
+  found and removed a stale `NotImplementedException` guard in `src/Commands/GetEntitySyncEntityCommand.cs`
+  so the public command now reaches `LCATEntityAdapter.GetEntitiesAsync` and matches the contract.
+  Added a Pester regression for `Get-EntitySyncEntity -Vendor LCAT|LTAC -Type Customer` returning
+  empty output. Validation: `just build`, `just test-load`, and `just test` all succeed; `just test`
+  reports all 87 tests passing. Next incomplete task: T047 (add LCAT quickstart examples to
+  `README.md`).
 
 ## Open Blockers
 
