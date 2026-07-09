@@ -103,7 +103,14 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
             using var response = await httpClient.PostAsync(SyncPath, content, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw CreateRedactedAdapterException($"LCAT batch sync failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}.", SyncPath);
             var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            return ParseSyncResponse(text);
+            try
+            {
+                return ParseSyncResponse(text);
+            }
+            catch (JsonException)
+            {
+                throw CreateRedactedAdapterException("LCAT batch sync returned a malformed response.", SyncPath);
+            }
         }
         catch (OperationCanceledException)
         {

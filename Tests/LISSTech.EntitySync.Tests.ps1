@@ -1702,6 +1702,46 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Reports malformed successful LCAT batch responses without raw body or bearer credentials' {
+    $secretToken = 'malformed-lcat-bearer-123456'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', 'not-json-secret-body')
+    $server.Start()
+
+    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $lcatAdapter = New-TestLCATAdapter -Options $options
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+      finally {
+        $server.Wait()
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'LCAT batch sync returned a malformed response'
+      $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+      ($caught | Out-String) | Should -Not -Match 'not-json-secret-body'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
