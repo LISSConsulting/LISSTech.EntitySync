@@ -133,14 +133,16 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         }
 
         var duplicateIds = candidateItems
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.NCentralCustomerId))
-            .GroupBy(candidate => candidate.Request.NCentralCustomerId, StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => NormalizeLcatValue(candidate.Request.NCentralCustomerId))
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .GroupBy(id => id, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var duplicateSlugs = candidateItems
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.Slug))
-            .GroupBy(candidate => candidate.Request.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(candidate => NormalizeLcatValue(candidate.Request.Slug))
+            .Where(slug => !string.IsNullOrWhiteSpace(slug))
+            .GroupBy(slug => slug, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -233,17 +235,21 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             errors.Add("ncentral_parent_customer_id is required for N-central site sources");
         }
 
-        if (!string.IsNullOrWhiteSpace(request.NCentralCustomerId) && duplicateIds.Contains(request.NCentralCustomerId))
+        var normalizedCustomerId = NormalizeLcatValue(request.NCentralCustomerId);
+        var normalizedSlug = NormalizeLcatValue(request.Slug);
+        if (!string.IsNullOrWhiteSpace(normalizedCustomerId) && duplicateIds.Contains(normalizedCustomerId))
         {
             errors.Add($"duplicate ncentral_customer_id '{request.NCentralCustomerId}'");
         }
-        if (!string.IsNullOrWhiteSpace(request.Slug) && duplicateSlugs.Contains(request.Slug))
+        if (!string.IsNullOrWhiteSpace(normalizedSlug) && duplicateSlugs.Contains(normalizedSlug))
         {
             errors.Add($"duplicate slug '{request.Slug}'");
         }
 
         return errors;
     }
+
+    private static string NormalizeLcatValue(string? value) => value?.Trim() ?? string.Empty;
 
     private static LCATCustomerScopeRequest ToLcatCustomerScopeRequest(EntityWriteRequest request)
     {

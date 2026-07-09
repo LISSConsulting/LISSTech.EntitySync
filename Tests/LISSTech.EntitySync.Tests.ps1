@@ -1435,6 +1435,30 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Treats whitespace-hidden duplicate approved LCAT identifiers as duplicates before batch composition' {
+    $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $item.Action = 'Create'
+    $item.Source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $item.Source.Vendor = 'NCentral'
+    $item.Source.EntityType = 'Customer'
+    $item.Source.Id = '1501'
+    $item.Source.Name = 'Whitespace Duplicate Customer'
+
+    $request = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $request.Slug = 'Whitespace-Duplicate-Customer'
+    $request.DisplayName = 'Whitespace Duplicate Customer'
+    $request.NCentralCustomerId = ' duplicate-1501 '
+
+    $duplicateIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$duplicateIds.Add('duplicate-1501')
+    $duplicateSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    $method = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ValidateLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $errors = $method.Invoke($null, @($item, $request, $duplicateIds, $duplicateSlugs))
+
+    $errors | Should -Contain "duplicate ncentral_customer_id ' duplicate-1501 '"
+  }
+
   It 'Rejects direct LCAT adapter batch calls with duplicate customer-scope slugs before HTTP send' {
     $lcatAdapter = New-TestLCATAdapter
     try {
