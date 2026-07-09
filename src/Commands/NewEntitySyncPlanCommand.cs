@@ -266,6 +266,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     private static bool TryGetLcatSourceValidationErrors(ExternalEntity source, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs, out string[] errors)
     {
         var validationErrors = new List<string>();
+        if (!source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+        {
+            validationErrors.Add($"LCAT customer-scope sync only accepts N-central Customer or Site source records; source vendor '{source.Vendor}' is not supported.");
+        }
+
         var sourceIdentifier = GetLcatSourceIdentifier(source);
         if (string.IsNullOrWhiteSpace(sourceIdentifier))
         {

@@ -1492,6 +1492,38 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Blocks non-NCentral sources from LCAT customer-scope planning before apply' {
+    $haloOptions = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
+    $haloOptions.BaseUrl = 'https://halo.example.test/'
+    $haloOptions.AccessToken = 'token'
+    $haloAdapter = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($haloOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($haloAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $source.Vendor = 'HaloPSA'
+      $source.EntityType = 'Client'
+      $source.Id = 'HALO-101'
+      $source.Name = 'Contoso Operations'
+
+      $plan = @($source) | New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Client -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+
+      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.Items.Count | Should -Be 1
+      $plan.Items[0].Action | Should -Be 'Review'
+      $plan.Items[0].MatchType | Should -Be 'LcatSourceInvalid'
+      $plan.Items[0].Reasons -join "`n" | Should -Match 'only accepts N-central Customer or Site source records'
+      $plan.Items[0].Reasons -join "`n" | Should -Match "source vendor 'HaloPSA' is not supported"
+    }
+    finally {
+      $haloAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Reports LCAT non-success responses without authorization headers or bearer credentials (T039, US3)' {
     $secretToken = 'lcat-error-secret-bearer-1a2b3c4d'
     $server = [EntitySyncTests.OneShotHttpServer]::new(403, 'Forbidden', '{"error":"do not echo this body"}')
