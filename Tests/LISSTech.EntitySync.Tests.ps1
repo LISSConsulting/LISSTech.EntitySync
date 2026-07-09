@@ -863,6 +863,303 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Returns HaloPSA top-level lookups with the bearer token sent on the request' {
+    $secretToken = 'halo-lookup-toplevel-bearer-a1b2c3d4'
+    $body = '{"toplevels":[{"id":1,"name":"Alpha MSP"},{"id":2,"name":"Beta MSP"}]}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $body)
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $lookups = $haloAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::TopLevel,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      $lookups.Count | Should -Be 2
+      $lookups[0].Vendor | Should -Be 'HaloPSA'
+      $lookups[0].Type | Should -Be 'TopLevel'
+      $lookups[0].Id | Should -Be '1'
+      $lookups[0].Name | Should -Be 'Alpha MSP'
+      $lookups[1].Id | Should -Be '2'
+      $lookups[1].Name | Should -Be 'Beta MSP'
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/toplevel HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns HaloPSA customer relationship lookups from the Lookup API with the bearer token sent' {
+    $secretToken = 'halo-lookup-customerrel-bearer-b2c3d4e5'
+    $body = '{"lookup":[{"id":89,"name":"Partner"},{"id":90,"name":"Customer"}]}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $body)
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $lookups = $haloAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::CustomerRelationship,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      $lookups.Count | Should -Be 2
+      $lookups[0].Type | Should -Be 'CustomerRelationship'
+      $lookups[0].Id | Should -Be '89'
+      $lookups[0].Name | Should -Be 'Partner'
+      $lookups[0].Properties['LookupId'] | Should -Be '89'
+      $lookups[1].Id | Should -Be '90'
+      $lookups[1].Name | Should -Be 'Customer'
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/Lookup\?lookupid=89 HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns HaloPSA customer type lookups from the Lookup API with the bearer token sent' {
+    $secretToken = 'halo-lookup-customertype-bearer-c3d4e5f6'
+    $body = '{"lookup":[{"id":33,"name":"Customer"},{"id":34,"name":"Prospect"}]}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $body)
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $lookups = $haloAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::CustomerType,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      $lookups.Count | Should -Be 2
+      $lookups[0].Type | Should -Be 'CustomerType'
+      $lookups[0].Id | Should -Be '33'
+      $lookups[0].Name | Should -Be 'Customer'
+      $lookups[0].Properties['LookupId'] | Should -Be '33'
+      $lookups[1].Id | Should -Be '34'
+      $lookups[1].Name | Should -Be 'Prospect'
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/Lookup\?lookupid=33 HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns HaloPSA N-central integration lookups with mapped properties and the bearer token sent' {
+    $secretToken = 'halo-lookup-ncentral-bearer-d4e5f6a7'
+    $body = '{"ncentraldetails":[{"id":"7","name":"Prod N-central","url":"https://nc.example.test","toplevel":"Alpha","username":"sync-user","enableintegrator":"true","lastsyncdate":"2026-07-01","lastsyncerror":"","alertusername":"svc/svc-org-99"}]}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $body)
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $lookups = $haloAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::NCentralIntegration,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      $lookups.Count | Should -Be 1
+      $lookups[0].Vendor | Should -Be 'HaloPSA'
+      $lookups[0].Type | Should -Be 'NCentralIntegration'
+      $lookups[0].Id | Should -Be '7'
+      $lookups[0].Name | Should -Be 'Prod N-central'
+      $lookups[0].Properties['Url'] | Should -Be 'https://nc.example.test'
+      $lookups[0].Properties['TopLevel'] | Should -Be 'Alpha'
+      $lookups[0].Properties['Username'] | Should -Be 'sync-user'
+      $lookups[0].Properties['EnableIntegrator'] | Should -Be 'true'
+      $lookups[0].Properties['LastSyncDate'] | Should -Be '2026-07-01'
+      # ServiceOrgId is parsed from the text after the last '/' in alertusername.
+      $lookups[0].Properties['ServiceOrgId'] | Should -Be 'svc-org-99'
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/ncentraldetails\?showall=true HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns HaloPSA N-central integration client and site link lookups resolved from the configured integration id with the bearer token sent' {
+    $secretToken = 'halo-lookup-ncentral-links-bearer-e5f6a7b8'
+    # ResolveNCentralIntegrationIdAsync skips the accounts fetch when NCentralIntegrationId is set,
+    # so we only queue the integration-details response.
+    $body = '{"client_links":[{"id":"cl-1","halo_id":"101","halo_desc":"Acme Inc","third_party_id":"201","third_party_desc":"Acme External","primary":true,"details_id":"7"},{"id":"cl-2","halo_id":"102","halo_desc":"Beta LLC","third_party_id":"","third_party_desc":"","primary":false,"details_id":"7"}],"site_links":[{"id":"sl-1","halo_id":"501","halo_desc":"Acme HQ","client_id":"101","third_party_id":"901","third_party_desc":"Acme HQ Site","third_party_secondary_id":"201","primary":true,"details_id":"7"}]}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $body)
+    $server.Start()
+    $haloOptions = New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken
+    $haloOptions.NCentralIntegrationId = 7
+    $haloAdapter = New-TestHaloAdapter -Options $haloOptions
+
+    try {
+      $lookups = $haloAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::NCentralIntegrationLink,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      # client_links yields one record per entry with a non-empty third_party_id; the empty
+      # third_party_id row is skipped. site_links yields one record.
+      $lookups.Count | Should -Be 2
+
+      $clientLink = $lookups | Where-Object { $_.Properties['SourceEntityType'] -eq 'Client' } | Select-Object -First 1
+      $clientLink | Should -Not -BeNullOrEmpty
+      $clientLink.Vendor | Should -Be 'HaloPSA'
+      $clientLink.Type | Should -Be 'NCentralIntegrationLink'
+      $clientLink.Id | Should -Be 'cl-1'
+      $clientLink.Name | Should -Be 'Acme Inc'
+      $clientLink.Properties['SourceVendor'] | Should -Be 'HaloPSA'
+      $clientLink.Properties['SourceId'] | Should -Be '101'
+      $clientLink.Properties['TargetVendor'] | Should -Be 'NCentral'
+      $clientLink.Properties['TargetEntityType'] | Should -Be 'Customer'
+      $clientLink.Properties['TargetId'] | Should -Be '201'
+      $clientLink.Properties['TargetName'] | Should -Be 'Acme External'
+      $clientLink.Properties['ParentTargetId'] | Should -BeNullOrEmpty
+      $clientLink.Properties['IntegrationId'] | Should -Be '7'
+      $clientLink.Properties['Primary'] | Should -Be 'True'
+
+      $siteLink = $lookups | Where-Object { $_.Properties['SourceEntityType'] -eq 'Site' } | Select-Object -First 1
+      $siteLink | Should -Not -BeNullOrEmpty
+      $siteLink.Id | Should -Be 'sl-1'
+      $siteLink.Name | Should -Be 'Acme HQ'
+      $siteLink.Properties['TargetEntityType'] | Should -Be 'Site'
+      $siteLink.Properties['TargetId'] | Should -Be '901'
+      $siteLink.Properties['ParentTargetId'] | Should -Be '201'
+
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/ncentraldetails/7\?includedetails=true&hasdisconnected=false HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Returns NCentral service organization lookups after authenticating with the user API token' {
+    $secretToken = 'ncentral-lookup-so-usertoken-f6a7b8c9'
+    $accessToken = 'derived-access-token-7f8e9d0c'
+    $authBody = '{"tokens":{"access":{"token":"' + $accessToken + '","expirySeconds":3600}}}'
+    $soBody = '{"data":[{"soId":"42","soName":"Contoso MSP","orgUnitType":"ServiceProvider","parentId":"","externalId":"EXT-42","externalId2":"","contactFirstName":"Pat","contactLastName":"Doe","contactEmail":"pat@example.test","contactPhone":"555-0100"}],"totalItems":1}'
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $soBody)
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $lookups = $ncAdapter.GetLookupsAsync(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ServiceOrganization,
+        [System.Threading.CancellationToken]::None
+      ).GetAwaiter().GetResult()
+
+      $lookups.Count | Should -Be 1
+      $lookups[0].Vendor | Should -Be 'NCentral'
+      $lookups[0].Type | Should -Be 'ServiceOrganization'
+      $lookups[0].Id | Should -Be '42'
+      $lookups[0].Name | Should -Be 'Contoso MSP'
+      $lookups[0].Properties['OrgUnitType'] | Should -Be 'ServiceProvider'
+      $lookups[0].Properties['ExternalId'] | Should -Be 'EXT-42'
+      $lookups[0].Properties['ContactEmail'] | Should -Be 'pat@example.test'
+      $lookups[0].Properties['Phone'] | Should -Be '555-0100'
+      $server.Wait(2)
+      $server.Requests[0] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^GET /api/service-orgs\?pageNumber=1&pageSize=1000 HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape("Authorization: Bearer $accessToken"))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NCentral service organization lookup transport failures as redacted errors without leaking the user API token' {
+    $secretToken = 'ncentral-lookup-so-refused-usertoken-a7b8c9d0'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's authenticate request
+    # is refused, exercising the transport-exception path through NCentralEntityAdapter.GetLookupsAsync.
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $deadBaseUrl -UserApiToken $secretToken)
+
+    try {
+      $caught = $null
+      try {
+        $ncAdapter.GetLookupsAsync(
+          [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ServiceOrganization,
+          [System.Threading.CancellationToken]::None
+        ).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Throws NotSupportedException from NetSuite GetLookupsAsync for every lookup type so callers do not mistake "unimplemented" for "empty results"' {
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions)
+
+    try {
+      $lookupTypes = [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ForVendor('NetSuite')
+      # NetSuite.LookupTypes returns Array.Empty<string>() because the adapter is read-only;
+      # exercise the public path through each HaloPSA/NCentral type to lock in the "always throws" guarantee.
+      $expectedTypes = @(
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::TopLevel,
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::CustomerRelationship,
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::CustomerType,
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::NCentralIntegration,
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::NCentralIntegrationLink,
+        [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ServiceOrganization
+      )
+      $lookupTypes.Count | Should -Be 0
+      foreach ($type in $expectedTypes) {
+        $caught = $null
+        try {
+          $nsAdapter.GetLookupsAsync($type, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+        }
+        catch {
+          $caught = $_
+        }
+
+        $caught | Should -Not -BeNullOrEmpty
+        # PowerShell wraps the adapter's NotSupportedException in MethodInvocationException when
+        # surfacing the Task.GetAwaiter().GetResult() failure; walk the InnerException chain so the
+        # assertion sees the underlying type the adapter actually threw.
+        $inner = $caught.Exception
+        while ($null -ne $inner -and $inner.GetType().FullName -ne 'System.NotSupportedException') {
+          $inner = $inner.InnerException
+        }
+        $inner | Should -Not -BeNullOrEmpty
+        $inner.GetType().FullName | Should -Be 'System.NotSupportedException'
+        $inner.Message | Should -Match 'NetSuite'
+      }
+    }
+    finally {
+      $nsAdapter.Dispose()
+    }
+  }
+
   It 'Retries HaloPSA rate-limited requests with the bearer token preserved when Retry-After honors the override' {
     $secretToken = 'halo-ratelimit-bearer-8b9c0d1e'
     $retry429 = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'do not echo this body')
