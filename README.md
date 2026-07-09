@@ -66,6 +66,9 @@ for the first run; it reports the batch that would be sent without changing LCAT
 Import-Module .\Module\LISSTech.EntitySync.psd1 -Force
 
 Connect-EntitySyncVendor -Vendor NCentral
+# Reuse the operator session JWT minted by Connect-DeviceAssetOps:
+#   $lcatToken = Get-DeviceAssetOpsAccessToken
+#   Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl ... -LCATSecureBearer $lcatToken
 Connect-EntitySyncVendor -Vendor LCAT
 
 $customerPlan = New-EntitySyncPlan `
@@ -330,8 +333,11 @@ This command updates existing custom-property values only; create the custom-pro
 |---|---|
 | `LCAT_BASE_URL` | `-LCATBaseUrl` |
 | `LCAT_BEARER_TOKEN` | `-LCATBearerToken` |
+| _operator session JWT_ | `-LCATSecureBearer` (`SecureString`) |
 
 `Connect-EntitySyncVendor -Vendor LCAT` (`LTAC` is also accepted and normalizes to `LCAT`) registers a target-only adapter for syncing N-central Customer and Site records into LCAT customer scopes as one authoritative batch per approved plan, matching LCAT's `sync_ncentral_customers` RPC contract. `LCAT` has no customer-scope read endpoint, so plans never return target candidates — every N-central source plans as `Create`/`NoMatch`. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`; a site with no parent N-central customer ID is blocked at plan time with `Action 'Review'` instead of being created. `LCATBearerToken` never appears in the returned connection object. See `specs/001-lcat-sync-adapter/spec.md`.
+
+`-LCATSecureBearer` accepts a `SecureString` so the operator JWT minted by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken`) can be reused without writing the cleartext token to a script transcript. The SecureString is unwrapped in-process and used only for the LCAT authorization header. `-LCATBearerToken` and `-LCATSecureBearer` are mutually exclusive — pass exactly one.
 
 LCAT credentials are treated as connection-only secrets. The bearer token is used for the LCAT authorization header, but is omitted from `Get-EntitySyncConnection`, exported workbook/JSON plans, dry-run/apply result messages, and common adapter error paths. LCAT apply sends only approved, validated `Create`/`Update`/`Link` customer-scope rows in one batch; review-blocked, rejected, no-update, unsafe, incomplete, or duplicate-source rows are skipped before request composition.
 

@@ -2176,6 +2176,113 @@ namespace EntitySyncTests
     ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
   }
 
+  It 'Accepts an LCAT bearer supplied as a SecureString and registers a working LCAT connection' {
+    $secretToken = 'secure-string-lcat-bearer-1a2b3c4d'
+    $secure = [securestring]::new()
+    foreach ($char in $secretToken.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+
+    $connection = $null
+    try {
+      $connection = Connect-EntitySyncVendor -Vendor LCAT `
+        -LCATBaseUrl 'https://lcat.example.test' `
+        -LCATSecureBearer $secure
+
+      $connection.Vendor | Should -Be 'LCAT'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'LCATSecureBearer'
+
+      # The unwrapped token is the one the adapter actually carries; verify it
+      # by inspecting the underlying HttpClient authorization header via the
+      # adapter's first request to a fake host.
+      $adapter = $connection.Adapter
+      $adapterType = $adapter.GetType()
+      $httpClientField = $adapterType.GetField('httpClient', [System.Reflection.BindingFlags]'NonPublic, Instance')
+      $httpClientField | Should -Not -BeNullOrEmpty
+      $httpClient = $httpClientField.GetValue($adapter)
+      $authHeader = $httpClient.DefaultRequestHeaders.Authorization
+      $authHeader | Should -Not -BeNullOrEmpty
+      $authHeader.Scheme | Should -Be 'Bearer'
+      $authHeader.Parameter | Should -Be $secretToken
+    }
+    finally {
+      if ($connection) { ($connection.Adapter -as [IDisposable])?.Dispose() }
+    }
+  }
+
+  It 'Keeps the LCAT SecureString cleartext out of Connect-EntitySyncVendor output and error messages' {
+    $secretToken = 'must-never-render-lcat-bearer-9d8c7b6a'
+    $secure = [securestring]::new()
+    foreach ($char in $secretToken.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+
+    $rendered = $null
+    $connection = $null
+    try {
+      $connection = Connect-EntitySyncVendor -Vendor LCAT `
+        -LCATBaseUrl 'https://lcat.example.test' `
+        -LCATSecureBearer $secure
+
+      $rendered = @(
+        ($connection | Format-List -Property * | Out-String)
+        ($connection.Adapter | Format-List -Property * | Out-String)
+        ($connection | ConvertTo-Json -Depth 5)
+      ) -join "`n"
+    }
+    catch {
+      $rendered = $_ | Out-String
+    }
+    finally {
+      if ($connection) { ($connection.Adapter -as [IDisposable])?.Dispose() }
+    }
+
+    $rendered | Should -Not -Match ([regex]::Escape($secretToken))
+  }
+
+  It 'Rejects an empty LCATSecureBearer SecureString with a non-leaking error' {
+    $empty = [securestring]::new()
+    $empty.MakeReadOnly()
+
+    $caught = $null
+    try {
+      Connect-EntitySyncVendor -Vendor LCAT `
+        -LCATBaseUrl 'https://lcat.example.test' `
+        -LCATSecureBearer $empty -ErrorAction Stop
+    }
+    catch {
+      $caught = $_
+    }
+
+    $caught | Should -Not -BeNullOrEmpty
+    $caught.Exception.Message | Should -Match 'LCATSecureBearer'
+  }
+
+  It 'Rejects simultaneous -LCATBearerToken and -LCATSecureBearer' {
+    $secure = [securestring]::new()
+    foreach ($char in 'secure-bearer-9z8y7x'.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+
+    $caught = $null
+    try {
+      Connect-EntitySyncVendor -Vendor LCAT `
+        -LCATBaseUrl 'https://lcat.example.test' `
+        -LCATBearerToken 'string-bearer-1234' `
+        -LCATSecureBearer $secure -ErrorAction Stop
+    }
+    catch {
+      $caught = $_
+    }
+
+    $caught | Should -Not -BeNullOrEmpty
+    $caught.Exception.Message | Should -Match 'mutually exclusive'
+  }
+
+  It 'Declares -LCATSecureBearer as a SecureString in the LCAT parameter set' {
+    $command = Get-Command Connect-EntitySyncVendor
+    $secureParam = $command.Parameters['LCATSecureBearer']
+    $secureParam | Should -Not -BeNullOrEmpty
+    $secureParam.ParameterType | Should -Be ([securestring])
+  }
+
   It 'Excludes LCAT credential-bearing options from registered connection output (T041, US3)' {
     $secretToken = 'registered-lcat-bearer-a1b2c3d4'
     $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken

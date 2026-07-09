@@ -29,16 +29,19 @@ CONFIGURATION
     or pass the matching Connect-EntitySyncVendor parameters. The module
     derives the OAuth access token from those values.
 
-    LCAT uses a bearer token (or an operator-supplied SecureString) and only
-    acts as a sync target for N-central Customer and Site sources. Set
-    LCAT_BASE_URL and LCAT_BEARER_TOKEN, or pass the matching
-    Connect-EntitySyncVendor parameters. The bearer token is used only for
-    the LCAT authorization header and is omitted from Get-EntitySyncConnection,
-    exported plans, dry-run/apply result messages, and adapter error paths.
-    LCAT has no customer-scope read endpoint, so plans never return target
-    candidates; every approved N-central source plans as Create/NoMatch, and
-    site-derived scopes carry the parent N-central customer's identifier as
-    ncentral_parent_customer_id.
+    LCAT uses a bearer token and only acts as a sync target for N-central
+    Customer and Site sources. Set LCAT_BASE_URL and LCAT_BEARER_TOKEN, or
+    pass the matching Connect-EntitySyncVendor parameters. To reuse an
+    operator-session JWT minted by LISSTech.DeviceAssetOps
+    (Get-DeviceAssetOpsAccessToken) without exposing the cleartext token,
+    pass it as -LCATSecureBearer (SecureString) instead of
+    -LCATBearerToken; the two parameters are mutually exclusive. The bearer
+    token is used only for the LCAT authorization header and is omitted from
+    Get-EntitySyncConnection, exported plans, dry-run/apply result messages,
+    and adapter error paths. LCAT has no customer-scope read endpoint, so
+    plans never return target candidates; every approved N-central source
+    plans as Create/NoMatch, and site-derived scopes carry the parent
+    N-central customer's identifier as ncentral_parent_customer_id.
 
 SEE ALSO
     Connect-EntitySyncVendor

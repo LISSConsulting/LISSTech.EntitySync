@@ -16,7 +16,7 @@ Creates an in-session connection to a supported vendor adapter.
 Connect-EntitySyncVendor -Vendor HaloPSA [-HaloBaseUrl <String>] [-HaloClientId <String>] [-HaloClientSecret <String>] [-HaloScope <String>] [-HaloTopLevelId <Int32>] [-HaloDefaultColour <String>] [-HaloNetSuiteCustomerIdField <String>] [-HaloNetSuiteCustomerIdFieldId <String>] [-HaloNetSuiteCustomerNameField <String>] [-HaloCustomerRelationshipId <Int32>] [-HaloCustomerRelationshipName <String>] [-HaloCustomerTypeId <Int32>] [-HaloCustomerTypeName <String>] [-HaloAccountManagerEmail <String>] [-HaloAccountManagerField <String>] [-HaloNCentralIntegrationId <Int32>]
 Connect-EntitySyncVendor -Vendor NetSuite [-NetSuiteAccountId <String>] [-NetSuiteConsumerKey <String>] [-NetSuiteConsumerSecret <String>] [-NetSuiteTokenId <String>] [-NetSuiteTokenSecret <String>]
 Connect-EntitySyncVendor -Vendor NCentral [-NCentralBaseUrl <String>] [-NCentralUserApiToken <String>] [-NCentralServiceOrgId <String>] [-NCentralSoapUsername <String>] [-NCentralSoapPassword <String>] [-NCentralSoapEndpointPath <String>] [-NCentralSoapNamespace <String>] [-NCentralHaloPsaIdPropertyLabel <String>] [-NCentralNetSuiteIdPropertyLabel <String>] [-NCentralNetSuiteNamePropertyLabel <String>]
-Connect-EntitySyncVendor -Vendor LCAT [-LCATBaseUrl <String>] [-LCATBearerToken <String>]
+Connect-EntitySyncVendor -Vendor LCAT [-LCATBaseUrl <String>] [-LCATBearerToken <String>] [-LCATSecureBearer <SecureString>]
 ```
 
 ## DESCRIPTION
@@ -51,3 +51,13 @@ Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -L
 ```
 
 Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters; the bearer token is used only for the LCAT authorization header and is not serialized into returned connection objects or plan artifacts.
+
+### Example 3
+```powershell
+$token = Get-DeviceAssetOpsAccessToken   # from LISSTech.DeviceAssetOps
+Connect-EntitySyncVendor -Vendor LCAT `
+    -LCATBaseUrl 'https://api-agent-controller-prd-ewr-1.clfy-b.lissonline.com' `
+    -LCATSecureBearer $token
+```
+
+Reuses an active `LISSTech.DeviceAssetOps` operator session JWT without writing the cleartext token to a script transcript. The SecureString is unwrapped in-process and used only for the LCAT authorization header. `-LCATBearerToken` and `-LCATSecureBearer` are mutually exclusive; pass exactly one.

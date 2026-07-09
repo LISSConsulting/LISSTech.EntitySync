@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Management.Automation;
+using System.Runtime.InteropServices;
+using System.Security;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LCAT;
@@ -19,6 +21,9 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "LCAT")]
     [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
     public string Vendor { get; set; } = string.Empty;
+
+    [Parameter(ParameterSetName = "LCAT")]
+    public SecureString? LCATSecureBearer { get; set; }
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
@@ -90,10 +95,24 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
             if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
             {
+                var stringTokenExplicit = DynamicValue<string?>("LCATBearerToken", null);
+                var hasSecure = LCATSecureBearer != null;
+                var hasStringExplicit = !string.IsNullOrWhiteSpace(stringTokenExplicit);
+
+                if (hasSecure && hasStringExplicit)
+                {
+                    throw new InvalidOperationException(
+                        "-LCATBearerToken and -LCATSecureBearer are mutually exclusive. Pass exactly one.");
+                }
+
+                var bearerToken = hasSecure
+                    ? UnwrapSecureString(LCATSecureBearer, "LCATSecureBearer")
+                    : Require(stringTokenExplicit, "LCAT_BEARER_TOKEN", "LCATBearerToken");
+
                 var lcatOptions = new LCATOptions
                 {
                     BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("LCATBaseUrl", null), "LCAT_BASE_URL", "LCATBaseUrl"), "LCATBaseUrl"),
-                    BearerToken = Require(DynamicValue<string?>("LCATBearerToken", null), "LCAT_BEARER_TOKEN", "LCATBearerToken")
+                    BearerToken = bearerToken
                 };
                 var lcatAdapter = new LCATEntityAdapter(lcatOptions);
                 ConnectionRegistry.Set(lcatAdapter);
@@ -188,6 +207,29 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         var attributes = new Collection<Attribute> { new ParameterAttribute() };
         var parameter = new RuntimeDefinedParameter(name, typeof(T), attributes) { Value = defaultValue };
         dynamicParameters.Add(name, parameter);
+    }
+
+    private static string UnwrapSecureString(SecureString? secureString, string parameterName)
+    {
+        if (secureString == null || secureString.Length == 0)
+        {
+            throw new InvalidOperationException($"{parameterName} is required and must not be empty.");
+        }
+
+        var ptr = Marshal.SecureStringToGlobalAllocUnicode(secureString);
+        try
+        {
+            var value = Marshal.PtrToStringUni(ptr);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                throw new InvalidOperationException($"{parameterName} is required and must not be empty.");
+            }
+            return value;
+        }
+        finally
+        {
+            Marshal.ZeroFreeGlobalAllocUnicode(ptr);
+        }
     }
 
     private T DynamicValue<T>(string name, T defaultValue)
