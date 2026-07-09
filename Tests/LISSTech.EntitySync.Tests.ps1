@@ -999,6 +999,33 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects case-only duplicate LCAT ncentral_customer_id values before HTTP send' {
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'case-duplicate-customer'
+      $customerScope.DisplayName = 'Case Duplicate Customer'
+      $customerScope.NCentralCustomerId = 'ABC-701'
+
+      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope.Slug = 'case-duplicate-site'
+      $siteScope.DisplayName = 'Case Duplicate Site'
+      $siteScope.NCentralCustomerId = 'abc-701'
+      $siteScope.NCentralParentCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+      $customers.Add($siteScope)
+
+      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*duplicate ncentral_customer_id*'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Rejects malformed LCAT customer-scope requests before sending the batch' {
     $lcatAdapter = New-TestLCATAdapter
 
@@ -1289,6 +1316,60 @@ namespace EntitySyncTests
       @($requestBody.customers).Count | Should -Be 1
       $requestBody.customers[0].ncentral_customer_id | Should -Be '1201'
       $requestBody.customers[0].display_name | Should -Be 'Valid Batch Customer'
+    }
+    finally {
+      $server.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Filters case-only duplicate approved LCAT source identifiers before composing the batch request' {
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":1,"updated_count":0,"retired_count":0,"active_count":1}')
+    $server.Start()
+
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl)
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NCentral'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'LCAT'
+      $plan.TargetEntityType = 'Customer'
+
+      foreach ($case in @(
+        [pscustomobject]@{ Id = '1401'; Name = 'Valid Case Batch Customer' },
+        [pscustomobject]@{ Id = 'CASE-DUPLICATE-1402'; Name = 'Duplicate Case Customer A' },
+        [pscustomobject]@{ Id = 'case-duplicate-1402'; Name = 'Duplicate Case Customer B' }
+      )) {
+        $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+        $source.Vendor = 'NCentral'
+        $source.EntityType = 'Customer'
+        $source.Id = $case.Id
+        $source.Name = $case.Name
+        $source.ExternalIds['NCentralCustomerId'] = $case.Id
+
+        $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+        $item.Action = 'Create'
+        $item.Source = $source
+        $item.MatchType = 'NoMatch'
+        [void]$item.Reasons.Add('No target candidate found')
+        [void]$plan.Items.Add($item)
+      }
+
+      $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru -Confirm:$false
+      $server.Wait()
+
+      $successResults = @($results | Where-Object Success)
+      $failedResults = @($results | Where-Object { -not $_.Success })
+      $successResults.Count | Should -Be 1
+      $failedResults.Count | Should -Be 2
+      ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'CASE-DUPLICATE-1402'"
+      ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'case-duplicate-1402'"
+
+      $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      @($requestBody.customers).Count | Should -Be 1
+      $requestBody.customers[0].ncentral_customer_id | Should -Be '1401'
     }
     finally {
       $server.Dispose()

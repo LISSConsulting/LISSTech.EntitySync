@@ -134,10 +134,10 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 
         var duplicateIds = candidateItems
             .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.NCentralCustomerId))
-            .GroupBy(candidate => candidate.Request.NCentralCustomerId, StringComparer.Ordinal)
+            .GroupBy(candidate => candidate.Request.NCentralCustomerId, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var duplicateSlugs = candidateItems
             .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.Slug))
             .GroupBy(candidate => candidate.Request.Slug, StringComparer.OrdinalIgnoreCase)

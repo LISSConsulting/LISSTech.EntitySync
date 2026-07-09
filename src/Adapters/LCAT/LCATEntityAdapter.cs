@@ -162,7 +162,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     private static void EnsureUniqueCustomerIds(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {
         var duplicates = customers
-            .GroupBy(customer => customer.NCentralCustomerId, StringComparer.Ordinal)
+            .GroupBy(customer => customer.NCentralCustomerId, StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToArray();

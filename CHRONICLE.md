@@ -8,6 +8,7 @@
 - Empty Queue sweep done: LCAT planning now blocks duplicate derived customer-scope slugs for review; `just test` passes.
 - Empty Queue sweep done: LCAT adapter now rejects malformed customer-scope batch rows before HTTP send; `just test` passes.
 - Empty Queue sweep done: LCAT apply and adapter paths now reject duplicate customer-scope slugs before HTTP send; `just test` passes.
+- Empty Queue sweep done: LCAT apply and adapter paths now reject case-only duplicate N-central customer-scope IDs before HTTP send; `just test` passes.
 
 ## Open Blockers
 
