@@ -586,8 +586,9 @@ namespace EntitySyncTests
     $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-batch-whatif-{0}.txt" -f [guid]::NewGuid())
     try {
       Start-Transcript -Path $transcriptPath -Force | Out-Null
+      $results = $null
       try {
-        Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru | Out-Null
+        $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru
       }
       finally {
         Stop-Transcript | Out-Null
@@ -596,6 +597,12 @@ namespace EntitySyncTests
       $confirmations = Get-Content -LiteralPath $transcriptPath | Where-Object { $_ -match 'What if:' }
       $confirmations.Count | Should -Be 1
       $confirmations | Should -Match 'LCAT'
+
+      $results.Count | Should -Be 2
+      $results.Success | Should -Not -Contain $false
+      $results.Message | Should -Match 'LCAT batch sync preview'
+      $results.Raw.NCentralCustomerId | Should -Contain '111'
+      $results.Raw.NCentralCustomerId | Should -Contain '222'
     }
     finally {
       $lcatAdapter.Dispose()
@@ -1124,10 +1131,15 @@ namespace EntitySyncTests
     $plan.TargetEntityType = 'Customer'
     [void]$plan.Items.Add($item)
 
-    $results = $null
-    { $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru } | Should -Not -Throw
+    $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru
 
-    $results | Should -BeNullOrEmpty
+    $results.Count | Should -Be 1
+    $results[0].Vendor | Should -Be 'LCAT'
+    $results[0].Action | Should -Be 'Create'
+    $results[0].Success | Should -BeTrue
+    $results[0].Message | Should -Match 'LCAT batch sync preview'
+    $results[0].Message | Should -Match 'no write performed because -WhatIf was specified'
+    $results[0].Raw.NCentralCustomerId | Should -Be '801'
   }
 
   It 'Skips Review, Reject, No Update, None, unsafe, duplicate, and incomplete LCAT plan items during apply (T038, US3)' {

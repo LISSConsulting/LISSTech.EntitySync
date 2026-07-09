@@ -160,7 +160,11 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         }
 
         if (batchItems.Count == 0) return;
-        if (!ShouldProcess($"{batchItems.Count} customer scope(s)", "Sync approved customer scopes to LCAT")) return;
+        if (!ShouldProcess($"{batchItems.Count} customer scope(s)", "Sync approved customer scopes to LCAT"))
+        {
+            if (IsWhatIfRequested()) WriteLcatWhatIfPreview(batchItems);
+            return;
+        }
 
         var adapter = ConnectionRegistry.Get(Plan.TargetVendor) as LCATEntityAdapter
             ?? throw new InvalidOperationException("LCAT adapter is required to apply an LCAT customer scope batch.");
@@ -186,6 +190,29 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         return action.Equals("Create", StringComparison.OrdinalIgnoreCase)
             || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
             || action.Equals("Link", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsWhatIfRequested()
+    {
+        return MyInvocation.BoundParameters.TryGetValue("WhatIf", out var value)
+            && (value is not SwitchParameter switchParameter || switchParameter.ToBool());
+    }
+
+    private void WriteLcatWhatIfPreview(IReadOnlyList<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)> batchItems)
+    {
+        foreach (var (item, request) in batchItems)
+        {
+            WriteResult(new EntityWriteResult
+            {
+                Vendor = Plan.TargetVendor,
+                EntityType = Plan.TargetEntityType,
+                Id = item.Target?.Id ?? request.NCentralCustomerId,
+                Action = item.Action,
+                Success = true,
+                Message = $"LCAT batch sync preview; no write performed because -WhatIf was specified. Would sync customer scope '{request.DisplayName}' with ncentral_customer_id '{request.NCentralCustomerId}'.",
+                Raw = request
+            });
+        }
     }
 
     private static List<string> ValidateLcatCustomerScopeRequest(EntitySyncPlanItem item, LCATCustomerScopeRequest request, ISet<string> duplicateIds)

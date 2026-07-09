@@ -893,6 +893,12 @@
   platyPS-compatible `EXAMPLES`/`NOTES` content. Validation: `just external-help` succeeds,
   `just test-load` succeeds, and `just test` reports all 88 tests passing. No remaining incomplete
   spec tasks are known; continue with the open finding below or the Empty Queue workflow.
+- Open finding resolved: `Invoke-EntitySyncPlan -Apply -WhatIf -PassThru` now returns one non-secret
+  preview `EntityWriteResult` per approved LCAT batch item after validation, while still relying on
+  the single `ShouldProcess` boundary and performing no adapter write. Real `-Apply -PassThru`
+  output remains the adapter sync-result path. Updated `docs/Invoke-EntitySyncPlan.md`, regenerated
+  `en-US/LISSTech.EntitySync.dll-Help.xml`, and extended Pester coverage. Validation: `just test`
+  reports all 88 tests passing; `just external-help` succeeds.
 
 ## Open Blockers
 
@@ -903,7 +909,6 @@
 
 | Priority | Finding | Evidence | Status |
 |----------|---------|----------|--------|
-| P2 | Quickstart says `Invoke-EntitySyncPlan -Apply -WhatIf -PassThru` output identifies the approved LCAT batch, but current behavior emits only the PowerShell `What if:` confirmation and returns no pass-through objects for approved batch items. | Local T052 dry-run with sample Customer/Site plans reached `What if: Performing the operation "Sync approved customer scopes to LCAT"` for each batch and produced zero pass-through results; existing T037 regression also asserts null output for this path. | Open; decide whether to update quickstart wording or implement structured WhatIf pass-through without adding duplicate output to real `-Apply -PassThru` runs. |
 
 ## Decisions To Preserve
 
