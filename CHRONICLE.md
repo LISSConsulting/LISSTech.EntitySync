@@ -761,6 +761,17 @@
   rerun sequentially. Final validation: `just build` succeeds; `just test` reports all 81 tests
   passing (0 failed, up from 80). Next incomplete task: T039 (Pester tests for LCAT non-success
   responses returning status/path without authorization headers or credentials).
+- T039 done: added a one-shot loopback HTTP server helper in `Tests/LISSTech.EntitySync.Tests.ps1`
+  and a Pester test proving `LCATEntityAdapter.SyncCustomerScopesAsync` reports a controlled
+  non-success response as `HTTP 403 Forbidden` with `Path: rpc/sync_ncentral_customers` while omitting
+  the bearer token, `Authorization` header text, and response body details from the thrown error and
+  rendered error record. The test also asserts the local server received the real POST and bearer
+  header, so the redaction coverage exercises the actual HTTP path rather than a mocked exception.
+  No product code changes were required because the existing adapter error message already used the
+  desired status/path-only shape. `just build` succeeds; `just test` reports all 82 tests passing
+  (0 failed, up from 81). Next incomplete task: T040 (redact LCAT authorization data from adapter
+  exceptions and write results in `src/Adapters/LCAT/LCATEntityAdapter.cs`), which may already be
+  partially satisfied by the T039-proven error shape but still needs an implementation-state check.
 
 ## Open Blockers
 

@@ -8,6 +8,84 @@ Describe 'LISSTech.EntitySync' {
     }
     Import-Module $script:ModulePath -Force
 
+    if (-not ([System.Management.Automation.PSTypeName]'EntitySyncTests.OneShotHttpServer').Type) {
+      Add-Type -TypeDefinition @'
+namespace EntitySyncTests
+{
+    using System;
+    using System.Net;
+    using System.Net.Sockets;
+    using System.Text;
+    using System.Threading.Tasks;
+
+    public sealed class OneShotHttpServer : IDisposable
+    {
+        private readonly TcpListener listener;
+        private readonly int statusCode;
+        private readonly string reasonPhrase;
+        private readonly string responseBody;
+        private Task task;
+
+        public OneShotHttpServer(int statusCode, string reasonPhrase, string responseBody)
+        {
+            this.listener = new TcpListener(IPAddress.Loopback, 0);
+            this.statusCode = statusCode;
+            this.reasonPhrase = reasonPhrase;
+            this.responseBody = responseBody;
+        }
+
+        public string BaseUrl { get; private set; } = string.Empty;
+
+        public string RequestText { get; private set; } = string.Empty;
+
+        public void Start()
+        {
+            listener.Start();
+            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            BaseUrl = $"http://127.0.0.1:{endpoint.Port}/";
+            task = Task.Run(ServeOnce);
+        }
+
+        public void Wait()
+        {
+            task?.GetAwaiter().GetResult();
+        }
+
+        private void ServeOnce()
+        {
+            using var client = listener.AcceptTcpClient();
+            using var stream = client.GetStream();
+            var buffer = new byte[8192];
+            var builder = new StringBuilder();
+            do
+            {
+                var read = stream.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            }
+            while (!builder.ToString().Contains("\r\n\r\n", StringComparison.Ordinal));
+
+            RequestText = builder.ToString();
+            var bodyBytes = Encoding.UTF8.GetBytes(responseBody);
+            var header =
+                $"HTTP/1.1 {statusCode} {reasonPhrase}\r\n" +
+                "Content-Type: application/json\r\n" +
+                $"Content-Length: {bodyBytes.Length}\r\n" +
+                "Connection: close\r\n\r\n";
+            var headerBytes = Encoding.ASCII.GetBytes(header);
+            stream.Write(headerBytes, 0, headerBytes.Length);
+            stream.Write(bodyBytes, 0, bodyBytes.Length);
+        }
+
+        public void Dispose()
+        {
+            listener.Stop();
+        }
+    }
+}
+'@
+    }
+
     # LCAT coverage lands incrementally per specs/001-lcat-sync-adapter/tasks.md (T013-T045):
     # vendor/entity completion (US1), NCentral Customer/Site to LCAT mapping (US1/US2), adapter
     # batch request/response handling (US1/US2), and credential redaction / dry-run safety (US3).
@@ -1025,6 +1103,50 @@ Describe 'LISSTech.EntitySync' {
     $reviewResults.Success | Should -Not -Contain $true
     $reviewResults.Message | Should -Contain 'Item requires review before apply.'
     @($results | Where-Object { $_.Action -ne 'Review' }).Count | Should -Be 0
+  }
+
+  It 'Reports LCAT non-success responses without authorization headers or bearer credentials (T039, US3)' {
+    $secretToken = 'lcat-error-secret-bearer-1a2b3c4d'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(403, 'Forbidden', '{"error":"do not echo this body"}')
+    $server.Start()
+
+    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $lcatAdapter = New-TestLCATAdapter -Options $options
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+      finally {
+        $server.Wait()
+      }
+
+      $server.RequestText | Should -Match 'POST /rpc/sync_ncentral_customers '
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'HTTP 403 Forbidden'
+      $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      $caught.Exception.Message | Should -Not -Match 'do not echo this body'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      $server.Dispose()
+    }
   }
 
   It 'Declares object output for Get-EntitySyncConnection' {
