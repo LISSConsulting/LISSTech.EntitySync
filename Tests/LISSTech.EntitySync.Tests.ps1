@@ -309,6 +309,35 @@ namespace EntitySyncTests
       )
       return [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($Options)
     }
+
+    function New-TestNetSuiteOptions {
+      param(
+        [string]$BaseUrl = 'https://netsuite.example.test/',
+        [string]$AccountId = '1234567',
+        [string]$ConsumerKey = 'consumer-key',
+        [string]$ConsumerSecret = 'consumer-secret',
+        [string]$TokenId = 'token-id',
+        [string]$TokenSecret = 'token-secret'
+      )
+      $options = [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteOptions]::new()
+      # Only assign BaseUrl when the caller passed an explicit value, so tests that want to
+      # exercise the canonical AccountId-derived URL (and the production code path that uses
+      # it) can pass an empty string and keep the default netsuite.com host intact.
+      if ($PSBoundParameters.ContainsKey('BaseUrl')) { $options.BaseUrl = $BaseUrl }
+      $options.AccountId = $AccountId
+      $options.ConsumerKey = $ConsumerKey
+      $options.ConsumerSecret = $ConsumerSecret
+      $options.TokenId = $TokenId
+      $options.TokenSecret = $TokenSecret
+      return $options
+    }
+
+    function New-TestNetSuiteAdapter {
+      param(
+        [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteOptions]$Options = (New-TestNetSuiteOptions)
+      )
+      return [LISSTech.EntitySync.Adapters.NetSuite.NetSuiteEntityAdapter]::new($Options)
+    }
   }
 
   AfterAll {
@@ -732,6 +761,105 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NetSuite connection test results as true for successful SuiteQL probes with the OAuth header sent' {
+    $consumerKey = 'netsuite-connection-ok-consumer-key-a1b2c3d4'
+    $tokenId = 'netsuite-connection-ok-token-id-e5f6a7b8'
+    # OneShotHttpServer returns this body on success; NetSuite only checks response.IsSuccessStatusCode
+    # so any JSON body works. The JSON field ConsumerKey embedded by the OAuth signing happens to match
+    # the real NetSuite OAuth parameter names -- choose an empty-shape body so accidental field matches
+    # don't confuse the assertion that the ConsumerKey must appear in the Authorization header.
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"items":[]}')
+    $server.Start()
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions -BaseUrl $server.BaseUrl -ConsumerKey $consumerKey -TokenId $tokenId)
+
+    try {
+      $result = $nsAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait()
+      $server.RequestText | Should -Match '^POST /services/rest/query/v1/suiteql HTTP/1\.1'
+      # OAuth header must include both the ConsumerKey (oauth_consumer_key) and TokenId (oauth_token)
+      # so the request would be honored by NetSuite when the host really is suitetalk.api.netsuite.com.
+      $server.RequestText | Should -Match ([regex]::Escape("oauth_consumer_key=`"$consumerKey`""))
+      $server.RequestText | Should -Match ([regex]::Escape("oauth_token=`"$tokenId`""))
+    }
+    finally {
+      $server.Dispose()
+      $nsAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NetSuite connection test results as false for non-success status codes without leaking OAuth credentials' {
+    $consumerKey = 'netsuite-connection-unauthorized-consumer-key-c9d0e1f2'
+    $tokenId = 'netsuite-connection-unauthorized-token-id-3a4b5c6d'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(401, 'Unauthorized', 'do not echo this body')
+    $server.Start()
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions -BaseUrl $server.BaseUrl -ConsumerKey $consumerKey -TokenId $tokenId)
+
+    try {
+      $result = $nsAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeFalse
+      $server.Wait()
+      # The OAuth header must still ride the wire on a non-success response (NetSuite's auth
+      # needs it to distinguish 401-OAuth-bad from 401-token-unauthorized). ConsumerSecret and
+      # TokenSecret are HMAC signing keys, never sent; just sanity-check they don't leak.
+      $server.RequestText | Should -Match ([regex]::Escape("oauth_consumer_key=`"$consumerKey`""))
+      $server.RequestText | Should -Match ([regex]::Escape("oauth_token=`"$tokenId`""))
+      $server.RequestText | Should -Not -Match 'netsuite-connection-secret-should-not-leak'
+    }
+    finally {
+      $server.Dispose()
+      $nsAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NetSuite connection test transport failures as redacted errors without leaking OAuth credentials' {
+    $consumerKey = 'netsuite-connection-refused-consumer-key-7e8f9a0b'
+    $tokenId = 'netsuite-connection-refused-token-id-1c2d3e4f'
+    $consumerSecret = 'netsuite-connection-refused-consumer-secret-5a6b7c8d'
+    $tokenSecret = 'netsuite-connection-refused-token-secret-9e0f1a2b'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's HTTP request is
+    # refused, exercising the transport-exception path through NetSuiteEntityAdapter.TestConnectionAsync.
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $nsAdapter = New-TestNetSuiteAdapter -Options (New-TestNetSuiteOptions -BaseUrl $deadBaseUrl -ConsumerKey $consumerKey -TokenId $tokenId -ConsumerSecret $consumerSecret -TokenSecret $tokenSecret)
+
+    try {
+      $caught = $null
+      try {
+        $nsAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      # OAuth credentials travel in the Authorization: OAuth header as url-encoded key=value pairs;
+      # a transport failure must never include any of them in the raised exception's message body.
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($consumerKey))
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($tokenId))
+      # ConsumerSecret and TokenSecret are never serialized into the wire format -- they only seed
+      # the HMAC signing key -- so they cannot leak on the wire, and the exception must not echo
+      # them either, since they will be the next thing an operator rotates if a leak is suspected.
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($consumerSecret))
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($tokenSecret))
+      $caught.Exception.Message | Should -Not -Match 'oauth_consumer_key'
+      $caught.Exception.Message | Should -Not -Match 'oauth_token'
+      $caught.Exception.Message | Should -Not -Match 'oauth_signature'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($consumerKey))
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($tokenId))
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($consumerSecret))
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($tokenSecret))
+    }
+    finally {
+      $nsAdapter.Dispose()
     }
   }
 

@@ -190,10 +190,10 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 
     private Uri BuildSuiteQlUri(EntityQuery query)
     {
-        var builder = new UriBuilder(Uri.UriSchemeHttps, $"{AccountHost(options.AccountId)}.suitetalk.api.netsuite.com")
-        {
-            Path = "/services/rest/query/v1/suiteql"
-        };
+        var path = "/services/rest/query/v1/suiteql";
+        var builder = !string.IsNullOrWhiteSpace(options.BaseUrl)
+            ? new UriBuilder(new Uri(options.BaseUrl.TrimEnd('/'))) { Path = path }
+            : new UriBuilder(Uri.UriSchemeHttps, $"{AccountHost(options.AccountId)}.suitetalk.api.netsuite.com") { Path = path };
         return builder.Uri;
     }
 
