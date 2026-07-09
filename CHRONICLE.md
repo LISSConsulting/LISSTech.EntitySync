@@ -550,6 +550,35 @@
   passed / 8 failed (the 5 pre-existing T026/T027 failures plus 3 new expected T028 failures, no
   regressions in the previously-passing 64). Next incomplete task: T029 (Pester tests for NCentral
   Site to LCAT plan creation and batch payload composition).
+- T029 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T028 slug
+  tests, before `Declares object output for Get-EntitySyncConnection`). One calls the real
+  `New-EntitySyncPlan` cmdlet end-to-end (same registered-adapter/pipeline pattern as T016/T027) with
+  an NCentral Site source that *has* a valid `NCentralCustomerId` parent, asserting `Action 'Create'`/
+  `MatchType 'NoMatch'`/zero `TargetCandidates` — this mirrors T016's Customer-plan assertions for a
+  Site source and passes immediately with no product code changes, since `CreatePlanItem` has no
+  LCAT-specific branch of any kind yet (T031 adds the missing-parent check; a present parent takes the
+  same generic NoMatch/Create path Customers already take), matching the T013 precedent where a test
+  exercising pre-existing generic behavior is expected to go green on the first run. The second test
+  maps one NCentral Customer and one NCentral Site source via `DefaultEntityMapper.MapCreate`, converts
+  each resulting `EntityWriteRequest` into an `LCATCustomerScopeRequest` via reflection on
+  `InvokeEntitySyncPlanCommand.ToLcatCustomerScopeRequest` (private static, added in T024 — reflected
+  the same way T003/T015 reflect other private static helpers), then serializes both through
+  `LCATEntityAdapter.BuildSyncRequestBody` (T011/T015) and asserts the resulting JSON's second
+  `customers[]` entry carries the site's own id as `ncentral_customer_id` and the parent customer's id
+  as `ncentral_parent_customer_id`. This spans mapper -> command conversion -> adapter serialization in
+  one assertion specifically to pin the full site-derived payload shape without any HTTP mocking (this
+  repo's established no-mocking-infra convention per the T003 note), and is the part of T029 that is
+  genuinely red today: `AddLcatCustomerScopeFields` in `src/Mapping/DefaultEntityMapper.cs` still
+  returns immediately for `source.EntityType == Site` (only handles Customer, added in T022), so the
+  site's `EntityWriteRequest.Fields` come back empty and `ToLcatCustomerScopeRequest` defaults
+  `NCentralCustomerId` to `string.Empty` — the test asserts `'702'`, so it fails until T030 populates
+  Site fields. Did not test the `-WhatIf` single-batch-confirmation behavior for a mixed Customer+Site
+  plan (already covered generically by T017 and not entity-type-gated in `ApplyLcatBatch`, so it would
+  add no new red coverage) or missing-parent safe failure (that's T027, already done). `just build`
+  succeeds; `just test` reports 65 passed / 9 failed (the 8 pre-existing T026/T027/T028 failures plus
+  the 1 new expected T029 failure, no regressions). Next incomplete task: T030 (extend LCAT mapping for
+  NCentral Site sources with site ID, display name, slug, and parent customer ID in
+  `src/Mapping/DefaultEntityMapper.cs`), the first implementation task in Phase 4 (US2).
 
 ## Open Blockers
 

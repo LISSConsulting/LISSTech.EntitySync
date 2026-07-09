@@ -745,6 +745,80 @@ Describe 'LISSTech.EntitySync' {
     $originalSlug | Should -Not -Be $renamedSlug
   }
 
+  It 'Creates an NCentral Site to LCAT plan producing a Create action when the site has a valid parent (T029, US2)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $site = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $site.Vendor = 'NCentral'
+      $site.EntityType = 'Site'
+      $site.Id = '605'
+      $site.Name = 'Northshore Plumbing - Warehouse'
+      $site.ExternalIds['NCentralSiteId'] = '605'
+      $site.ExternalIds['NCentralCustomerId'] = '444'
+
+      $plan = @($site) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+
+      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetCandidates.Count | Should -Be 0
+      $plan.Items.Count | Should -Be 1
+      $plan.Items[0].Action | Should -Be 'Create'
+      $plan.Items[0].MatchType | Should -Be 'NoMatch'
+      $plan.Items[0].Target | Should -BeNullOrEmpty
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Composes an LCAT batch payload carrying the site''s own id and parent customer id alongside a customer item (T029, US2)' {
+    $customerSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $customerSource.Vendor = 'NCentral'
+    $customerSource.EntityType = 'Customer'
+    $customerSource.Id = '701'
+    $customerSource.Name = 'Arista Air Conditioning Corp.'
+    $customerSource.ExternalIds['NCentralCustomerId'] = '701'
+
+    $siteSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteSource.Vendor = 'NCentral'
+    $siteSource.EntityType = 'Site'
+    $siteSource.Id = '702'
+    $siteSource.Name = 'Arista Air Conditioning Corp. - Main Office'
+    $siteSource.ExternalIds['NCentralSiteId'] = '702'
+    $siteSource.ExternalIds['NCentralCustomerId'] = '701'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $customerRequest = $mapper.MapCreate($customerSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $siteRequest = $mapper.MapCreate($siteSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $customerScope = $toScopeMethod.Invoke($null, @($customerRequest))
+    $siteScope = $toScopeMethod.Invoke($null, @($siteRequest))
+
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers.Add($customerScope)
+    $customers.Add($siteScope)
+
+    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $bodyJson = $buildMethod.Invoke($null, @(, $customers))
+    $body = $bodyJson | ConvertFrom-Json
+
+    $body.customers.Count | Should -Be 2
+    $body.customers[0].ncentral_customer_id | Should -Be '701'
+    $body.customers[0].ncentral_parent_customer_id | Should -BeNullOrEmpty
+    $body.customers[1].ncentral_customer_id | Should -Be '702'
+    $body.customers[1].ncentral_parent_customer_id | Should -Be '701'
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
