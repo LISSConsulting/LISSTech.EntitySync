@@ -3478,6 +3478,177 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Parses a successful LCAT batch sync response into LCATSyncResult fields and rides the bearer on the wire' {
+    $secretToken = 'lcat-success-bearer-abcdef1234567890'
+    # Mirrors the response shape from specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md:
+    # all five fields populated so the parse-and-return path is exercised end-to-end.
+    $responseBody = '{"inserted_count":2,"updated_count":3,"retired_count":1,"active_count":4,"audit_event_id":"00000000-0000-0000-0000-000000000abc"}'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $responseBody)
+    $server.Start()
+
+    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $lcatAdapter = New-TestLCATAdapter -Options $options
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+      $customerScope.NCentralParentCustomerId = '700'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $result = $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $result | Should -Not -BeNullOrEmpty
+      $result.InsertedCount | Should -Be 2
+      $result.UpdatedCount | Should -Be 3
+      $result.RetiredCount | Should -Be 1
+      $result.ActiveCount | Should -Be 4
+      $result.AuditEventId | Should -Be '00000000-0000-0000-0000-000000000abc'
+
+      $server.Wait()
+      $server.RequestText | Should -Match 'POST /rpc/sync_ncentral_customers '
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+
+      # Locks in the JSON contract the adapter sends to LCAT so the wire format cannot drift.
+      $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      $requestBody.reason | Should -Be 'EntitySync N-central to LCAT sync'
+      $requestBody.ticket | Should -BeNullOrEmpty
+      @($requestBody.customers).Count | Should -Be 1
+      $requestBody.customers[0].slug | Should -Be 'arista-air-conditioning'
+      $requestBody.customers[0].display_name | Should -Be 'Arista Air Conditioning Corp.'
+      $requestBody.customers[0].ncentral_customer_id | Should -Be '701'
+      $requestBody.customers[0].ncentral_parent_customer_id | Should -Be '700'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
+  It 'Returns a default LCATSyncResult when a successful batch sync response omits the optional count and audit fields' {
+    $secretToken = 'lcat-empty-fields-bearer-fedcba0987654321'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{}')
+    $server.Start()
+
+    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $lcatAdapter = New-TestLCATAdapter -Options $options
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $result = $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $result | Should -Not -BeNullOrEmpty
+      $result.InsertedCount | Should -Be 0
+      $result.UpdatedCount | Should -Be 0
+      $result.RetiredCount | Should -Be 0
+      $result.ActiveCount | Should -Be 0
+      $result.AuditEventId | Should -BeNullOrEmpty
+
+      $server.Wait()
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
+  It 'Reports LCAT batch sync transport failures as redacted errors without leaking the bearer token' {
+    $secretToken = 'lcat-batch-sync-refused-bearer-c0ffee01'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's POST is refused,
+    # exercising the IsTransportException -> CreateRedactedAdapterException path on the batch
+    # sync surface (parallels the connection-test transport-failure test on line 689).
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'LCAT batch sync failed before a response was returned'
+      $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Propagates OperationCanceledException from the LCAT batch sync path without redacting the cancellation token' {
+    # The catch (OperationCanceledException) block rethrows verbatim, so callers see the
+    # original cancellation rather than a synthetic redacted adapter error. Locks that in.
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0}')
+    $server.Start()
+
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken 'cancel-lcat-bearer-11223344')
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'arista-air-conditioning'
+      $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
+      $customerScope.NCentralCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      $cts = [System.Threading.CancellationTokenSource]::new()
+      $cts.Cancel()
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, $cts.Token).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      # PowerShell wraps the adapter-thrown TaskCanceledException in a
+      # MethodInvocationException, so assert on InnerException. TaskCanceledException
+      # derives from OperationCanceledException, which the catch (OperationCanceledException)
+      # block in the adapter is required to rethrow verbatim.
+      $caught.Exception.InnerException | Should -BeOfType ([System.OperationCanceledException])
+      $caught.Exception.InnerException.Message | Should -Match 'A task was canceled'
+      $caught.Exception.Message | Should -Not -Match 'LCAT batch sync failed before a response was returned'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
