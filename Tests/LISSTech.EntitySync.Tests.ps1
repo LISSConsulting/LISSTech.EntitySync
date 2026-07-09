@@ -13,6 +13,7 @@ Describe 'LISSTech.EntitySync' {
 namespace EntitySyncTests
 {
     using System;
+    using System.Collections.Generic;
     using System.Net;
     using System.Net.Sockets;
     using System.Text;
@@ -103,6 +104,114 @@ namespace EntitySyncTests
             listener.Stop();
         }
     }
+
+    // Mirrors OneShotHttpServer but serves a queue of canned responses in order on a single
+    // listener. Used for adapter flows (e.g. NCentral TestConnectionAsync) that authenticate
+    // with one request and then exercise the connection with a second.
+    public sealed class MultiShotHttpServer : IDisposable
+    {
+        private readonly TcpListener listener;
+        private readonly Queue<ResponseSpec> responses;
+        private Task task;
+
+        public MultiShotHttpServer(params ResponseSpec[] specs)
+        {
+            this.listener = new TcpListener(IPAddress.Loopback, 0);
+            this.responses = new Queue<ResponseSpec>(specs);
+        }
+
+        public string BaseUrl { get; private set; } = string.Empty;
+
+        public List<string> Requests { get; } = new List<string>();
+
+        public void Start()
+        {
+            listener.Start();
+            var endpoint = (IPEndPoint)listener.LocalEndpoint;
+            BaseUrl = $"http://127.0.0.1:{endpoint.Port}/";
+            task = Task.Run(ServeAll);
+        }
+
+        public void Wait(int expectedRequests)
+        {
+            while (Requests.Count < expectedRequests)
+            {
+                task?.GetAwaiter().GetResult();
+                if (Requests.Count >= expectedRequests) return;
+                Task.Delay(10).GetAwaiter().GetResult();
+            }
+        }
+
+        private void ServeAll()
+        {
+            while (responses.Count > 0)
+            {
+                using var client = listener.AcceptTcpClient();
+                using var stream = client.GetStream();
+                var buffer = new byte[8192];
+                var builder = new StringBuilder();
+                do
+                {
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+                    builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+                }
+                while (!builder.ToString().Contains("\r\n\r\n", StringComparison.Ordinal));
+
+                var request = builder.ToString();
+                var headerEnd = request.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                var contentLength = 0;
+                if (headerEnd >= 0)
+                {
+                    foreach (var line in request.Substring(0, headerEnd).Split(new[] { "\r\n" }, StringSplitOptions.None))
+                    {
+                        if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int.TryParse(line.Substring("Content-Length:".Length).Trim(), out contentLength);
+                        }
+                    }
+                }
+
+                while (headerEnd >= 0 && Encoding.ASCII.GetByteCount(builder.ToString().Substring(headerEnd + 4)) < contentLength)
+                {
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    if (read <= 0) break;
+                    builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+                }
+
+                Requests.Add(builder.ToString());
+                var spec = responses.Dequeue();
+                var bodyBytes = Encoding.UTF8.GetBytes(spec.ResponseBody);
+                var header =
+                    $"HTTP/1.1 {spec.StatusCode} {spec.ReasonPhrase}\r\n" +
+                    "Content-Type: application/json\r\n" +
+                    $"Content-Length: {bodyBytes.Length}\r\n" +
+                    "Connection: close\r\n\r\n";
+                var headerBytes = Encoding.ASCII.GetBytes(header);
+                stream.Write(headerBytes, 0, headerBytes.Length);
+                stream.Write(bodyBytes, 0, bodyBytes.Length);
+            }
+        }
+
+        public void Dispose()
+        {
+            listener.Stop();
+        }
+
+        public sealed class ResponseSpec
+        {
+            public ResponseSpec(int statusCode, string reasonPhrase, string responseBody)
+            {
+                StatusCode = statusCode;
+                ReasonPhrase = reasonPhrase;
+                ResponseBody = responseBody;
+            }
+
+            public int StatusCode { get; }
+            public string ReasonPhrase { get; }
+            public string ResponseBody { get; }
+        }
+    }
 }
 '@
     }
@@ -127,6 +236,44 @@ namespace EntitySyncTests
         [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]$Options = (New-TestLCATOptions)
       )
       return [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter]::new($Options)
+    }
+
+    function New-TestHaloOptions {
+      param(
+        [string]$BaseUrl = 'https://halo.example.test/',
+        [string]$AccessToken = 'token',
+        [int]$TopLevelId = 1
+      )
+      $options = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
+      $options.BaseUrl = $BaseUrl
+      $options.AccessToken = $AccessToken
+      $options.TopLevelId = $TopLevelId
+      return $options
+    }
+
+    function New-TestHaloAdapter {
+      param(
+        [LISSTech.EntitySync.Adapters.Halo.HaloOptions]$Options = (New-TestHaloOptions)
+      )
+      return [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($Options)
+    }
+
+    function New-TestNCentralOptions {
+      param(
+        [string]$BaseUrl = 'https://ncentral.example.test/',
+        [string]$UserApiToken = 'token'
+      )
+      $options = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+      $options.BaseUrl = $BaseUrl
+      $options.UserApiToken = $UserApiToken
+      return $options
+    }
+
+    function New-TestNCentralAdapter {
+      param(
+        [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]$Options = (New-TestNCentralOptions)
+      )
+      return [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($Options)
     }
   }
 
@@ -401,6 +548,156 @@ namespace EntitySyncTests
     finally {
       $server.Dispose()
       $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Reports HaloPSA connection test results as true for successful clients probe with the bearer token sent' {
+    $secretToken = 'halo-connection-ok-bearer-2b3c4d5e'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"clients":[]}')
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $result = $haloAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait()
+      $server.RequestText | Should -Match '^GET /api/client\?count=1 HTTP/1\.1'
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Reports HaloPSA connection test results as false for non-success status codes without leaking credentials' {
+    $secretToken = 'halo-connection-unauthorized-bearer-3c4d5e6f'
+    $server = [EntitySyncTests.OneShotHttpServer]::new(401, 'Unauthorized', 'do not echo this body')
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl -AccessToken $secretToken)
+
+    try {
+      $result = $haloAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeFalse
+      $server.Wait()
+      $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Reports HaloPSA connection test transport failures as redacted errors without leaking bearer credentials' {
+    $secretToken = 'halo-connection-refused-bearer-4d5e6f7a'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's HTTP request is
+    # refused, exercising the transport-exception path through HaloEntityAdapter.TestConnectionAsync.
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $deadBaseUrl -AccessToken $secretToken)
+
+    try {
+      $caught = $null
+      try {
+        $haloAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NCentral connection test results as true after successful authenticate and validate' {
+    $secretToken = 'ncentral-connection-ok-usertoken-5e6f7a8b'
+    $authBody = '{"tokens":{"access":{"token":"derived-access-token-deadbeef","expirySeconds":3600}}}'
+    $validateBody = '{}'
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $validateBody)
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $result = $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait(2)
+      $server.Requests[0] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^GET /api/auth/validate HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape("Authorization: Bearer derived-access-token-deadbeef"))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NCentral connection test results as false when validate returns non-success without leaking credentials' {
+    $secretToken = 'ncentral-connection-unauthorized-usertoken-6f7a8b9c'
+    $authBody = '{"tokens":{"access":{"token":"derived-access-token-cafebabe","expirySeconds":3600}}}'
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(401, 'Unauthorized', 'do not echo this body')
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $result = $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeFalse
+      $server.Wait(2)
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match ([regex]::Escape("Authorization: Bearer derived-access-token-cafebabe"))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Reports NCentral connection test transport failures as redacted errors without leaking user API credentials' {
+    $secretToken = 'ncentral-connection-refused-usertoken-7a8b9c0d'
+
+    # Reserve a loopback port and immediately stop listening so the adapter's HTTP request is
+    # refused, exercising the transport-exception path through NCentralEntityAdapter.TestConnectionAsync.
+    $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $probe.Start()
+    $deadPort = ([System.Net.IPEndPoint]$probe.LocalEndpoint).Port
+    $probe.Stop()
+
+    $deadBaseUrl = "http://127.0.0.1:$deadPort/"
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $deadBaseUrl -UserApiToken $secretToken)
+
+    try {
+      $caught = $null
+      try {
+        $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      $caught.Exception.Message | Should -Not -Match 'Authorization'
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $ncAdapter.Dispose()
     }
   }
 
