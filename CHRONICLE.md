@@ -885,6 +885,14 @@
   reached the single LCAT batch `WhatIf` boundary without calling the adapter. Full regression
   validation after the dry-run check: `just test` reports all 88 tests passing. Next incomplete task:
   T053 (regenerate external help from `docs/` into `en-US/` using `justfile` if platyPS is available).
+- T053 done: regenerated external help from `docs/` into
+  `en-US/LISSTech.EntitySync.dll-Help.xml` using `just external-help`. The first generation attempt
+  exposed platyPS formatting drift in `docs/Invoke-EntitySyncChain.md` and
+  `docs/Invoke-EntitySyncPlan.md`; fixed those docs by adding the missing help metadata/standard
+  sections for `Invoke-EntitySyncChain` and moving nonstandard `Invoke-EntitySyncPlan` headings into
+  platyPS-compatible `EXAMPLES`/`NOTES` content. Validation: `just external-help` succeeds,
+  `just test-load` succeeds, and `just test` reports all 88 tests passing. No remaining incomplete
+  spec tasks are known; continue with the open finding below or the Empty Queue workflow.
 
 ## Open Blockers
 

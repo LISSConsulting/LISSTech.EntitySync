@@ -1,0 +1,382 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<helpItems schema="maml" xmlns="http://msh">
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Connect-EntitySyncVendor</command:name>
+      <command:verb>Connect</command:verb>
+      <command:noun>EntitySyncVendor</command:noun>
+      <maml:description>
+        <maml:para>Creates an in-session connection to a supported vendor adapter.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Connects a vendor adapter for later discovery, planning, and sync operations. Configuration may come from parameters or environment variables.</maml:para>
+      <maml:para>HaloPSA connections use client credentials. The cmdlet posts `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope` to `auth/token`, falls back to `token` if needed, then uses the returned `access_token` for API calls.</maml:para>
+      <maml:para>NetSuite connections use standard REST Web Services SuiteQL. Pass the account ID only, such as `1234567` or `1234567_SB1`; the adapter derives the SuiteTalk REST host. The NetSuite role used by the token must have REST Web Services access and permissions to query customers with SuiteQL.</maml:para>
+      <maml:para>N-central connections use a User-API token for REST discovery and creation. The adapter exchanges it with `POST /api/auth/authenticate`, then uses the returned access token for customer discovery and creation. Set `NCENTRAL_SERVICE_ORG_ID` or `-NCentralServiceOrgId` because customer creation posts to `/api/service-orgs/{soId}/customers`.</maml:para>
+      <maml:para>N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.</maml:para>
+      <maml:para>`Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl &lt;String&gt; -LCATBearerToken &lt;String&gt;` connects an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `-Vendor LTAC` is accepted as an alias and normalizes to `LCAT` in the returned connection. `LCATBearerToken` never appears in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; LCAT HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Connect-EntitySyncVendor</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor HaloPSA
+Connect-EntitySyncVendor -Vendor NetSuite
+Connect-EntitySyncVendor -Vendor NCentral</dev:code>
+        <dev:remarks>
+          <maml:para>Connects adapters using environment variables.</maml:para>
+          <maml:para>Use `Get-EntitySyncLookup -Vendor HaloPSA -Type TopLevel` to discover values for `-HaloTopLevelId`, `Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegration` to discover values for `-HaloNCentralIntegrationId`, and `Get-EntitySyncLookup -Vendor NCentral -Type ServiceOrganization` to discover values for `-NCentralServiceOrgId`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -LCATBearerToken $env:LCAT_BEARER_TOKEN</dev:code>
+        <dev:remarks>
+          <maml:para>Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters; the bearer token is used only for the LCAT authorization header and is not serialized into returned connection objects or plan artifacts.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Get-EntitySyncEntity</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>EntitySyncEntity</command:noun>
+      <maml:description>
+        <maml:para>Pulls canonical entities from a connected vendor adapter.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Reads `ExternalEntity` records from the vendor adapter registered by `Connect-EntitySyncVendor`. `-Type` defaults to the connected vendor's supported entity type and completes only to values that vendor supports.</maml:para>
+      <maml:para>`Get-EntitySyncEntity` is fast by default and returns the vendor's list payload. Use `-FullObjects` only when per-client detail or site address enrichment is required for HaloPSA; that mode is intentionally slower and shows standard PowerShell progress.</maml:para>
+      <maml:para>`Get-EntitySyncEntity -Vendor LCAT -Type Customer` is the only supported LCAT read shape. `LTAC` is accepted as an alias and normalizes to `LCAT`.</maml:para>
+      <maml:para>LCAT currently has no customer-scope list/read endpoint in the sync contract, so Customer reads return an empty set instead of calling the batch write endpoint or fabricating target candidates. This empty-target fallback is intentional: N-central Customer and Site sources still plan as create/sync candidates, and the reviewed plan is applied later through the authoritative LCAT batch path. If LCAT adds a read surface later, this command should return active LCAT customer scopes without changing the plan-first flow. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-EntitySyncEntity</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor HaloPSA
+Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
+        <dev:remarks>
+          <maml:para>Lists HaloPSA clients using the fast list payload.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncEntity -Vendor NCentral -Type Site -IncludeInactive</dev:code>
+        <dev:remarks>
+          <maml:para>Lists N-central sites, including inactive ones.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncEntity -Vendor LCAT -Type Customer</dev:code>
+        <dev:remarks>
+          <maml:para>Returns no records when the connected LCAT target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become LCAT customer-scope sync candidates.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Get-EntitySyncLookup</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>EntitySyncLookup</command:noun>
+      <maml:description>
+        <maml:para>Returns vendor-specific lookup values used to configure sync connections.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.</maml:para>
+      <maml:para>Supported lookups:</maml:para>
+      <maml:para>| Vendor | Type | |---|---| | `HaloPSA` | `TopLevel` | | `HaloPSA` | `CustomerRelationship` | | `HaloPSA` | `CustomerType` | | `HaloPSA` | `NCentralIntegration` | | `HaloPSA` | `NCentralIntegrationLink` | | `NCentral` | `ServiceOrganization` |</maml:para>
+    </maml:description>
+    <command:syntax />
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor HaloPSA -Type TopLevel</dev:code>
+        <dev:remarks>
+          <maml:para>Lists HaloPSA top-level IDs for `Connect-EntitySyncVendor -HaloTopLevelId`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerRelationship
+Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
+        <dev:remarks>
+          <maml:para>Lists HaloPSA customer relationship and customer type lookup values used when mapping NetSuite customers into HaloPSA clients.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor NCentral -Type ServiceOrganization</dev:code>
+        <dev:remarks>
+          <maml:para>Lists N-central service organization IDs for `Connect-EntitySyncVendor -NCentralServiceOrgId`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegration</dev:code>
+        <dev:remarks>
+          <maml:para>Lists configured HaloPSA N-central integration accounts. Use the `Id` as `Connect-EntitySyncVendor -HaloNCentralIntegrationId` when there is more than one integration account.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 5 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegrationLink</dev:code>
+        <dev:remarks>
+          <maml:para>Lists HaloPSA's N-central client and site links. Client links are used as authoritative HaloPSA client to N-central customer matches and site links are used as authoritative HaloPSA site to N-central site matches. Both link types are upserted during matching apply flows after successful N-central writes.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Invoke-EntitySyncChain</command:name>
+      <command:verb>Invoke</command:verb>
+      <command:noun>EntitySyncChain</command:noun>
+      <maml:description>
+        <maml:para>Creates review workbooks for a chained sync and applies only reviewed workbooks.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Creates one review workbook per sync edge during planning, then applies only reviewed workbooks when `-ReviewedPlanPath` and `-Apply` are supplied. The default chain is `NetSuite -&gt; HaloPSA -&gt; NCentral`.</maml:para>
+    </maml:description>
+    <command:syntax />
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert>
+        <maml:para>HaloPSA -&gt; NCentral apply maintains both sides of the client relationship by setting N-central customer `externalId` to the HaloPSA client ID, updating configured N-central organization custom properties, and upserting HaloPSA `client_links` with `POST /api/ncentraldetails`. First-class HaloPSA Site -&gt; NCentral Site plans can also create N-central sites and upsert HaloPSA `site_links`; N-central site field updates are no-op until a confirmed N-central site update endpoint is available.</maml:para>
+      </maml:alert>
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Invoke-EntitySyncChain -Path .\review -LeafVendors NCentral -CreateMissing -PassThru</dev:code>
+        <dev:remarks>
+          <maml:para>Exports one `.xlsx` workbook per edge without writing to vendors.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Invoke-EntitySyncChain -ReviewedPlanPath .\review\*.xlsx -Apply -WhatIf -PassThru</dev:code>
+        <dev:remarks>
+          <maml:para>Shows the writes that would be applied for reviewed workbooks. Remove `-WhatIf` after reviewing the planned writes. Items still marked `Review` are skipped and returned as failures when `-PassThru` is used.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Invoke-EntitySyncPlan</command:name>
+      <command:verb>Invoke</command:verb>
+      <command:noun>EntitySyncPlan</command:noun>
+      <maml:description>
+        <maml:para>Applies a reviewed EntitySync plan.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.</maml:para>
+    </maml:description>
+    <command:syntax />
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert>
+        <maml:para>HaloPSA to NCentral:</maml:para>
+        <maml:para>`New-EntitySyncPlan -SourceVendor HaloPSA -TargetVendor NCentral` uses HaloPSA's N-central integration links as authoritative matches during planning. For client plans, if no Halo integration link exists, planning also treats an N-central customer `externalId` equal to the HaloPSA client ID as an owned link marker. For site plans, the parent Halo client must be linked to an N-central customer before creating a missing N-central site.</maml:para>
+        <maml:para>Apply maintains both sides of the HaloPSA client to N-central customer relationship. Creates use REST, updates use EI2 SOAP `customerModify`, and both write `externalId = &lt;HaloPSA client ID&gt;` plus configured organization custom properties for `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name`. After a successful N-central write, HaloPSA `client_links` are upserted with `POST /api/ncentraldetails`.</maml:para>
+        <maml:para>For HaloPSA Site -&gt; NCentral Site plans, creates use `POST /api/customers/{customerId}/sites`, existing site links update HaloPSA `site_links`, and N-central site field updates are no-op because the confirmed OpenAPI exposes site read/create but no site update endpoint.</maml:para>
+        <maml:para>Confirmed N-central behavior:</maml:para>
+        <maml:para>- Customer discovery uses `GET /api/service-orgs/{soId}/customers` when `-NCentralServiceOrgId` is configured, otherwise `GET /api/customers`.</maml:para>
+        <maml:para>- Customer creation uses `POST /api/service-orgs/{soId}/customers`.</maml:para>
+        <maml:para>- N-central customer names are sanitized before create by replacing `&amp;` with `and`.</maml:para>
+        <maml:para>- The OpenAPI spec does not expose a customer update endpoint, so customer updates use EI2 SOAP `customerModify`.</maml:para>
+        <maml:para>- N-central organization custom properties are updated with EI2 SOAP `organizationPropertyList` and `organizationPropertyModify`.</maml:para>
+        <maml:para>- HaloPSA N-central client links are written with `POST /api/ncentraldetails` by sending the integration account `id` and updated `client_links` collection.</maml:para>
+        <maml:para>- N-central site discovery uses `GET /api/sites`; site creation uses `POST /api/customers/{customerId}/sites`.</maml:para>
+        <maml:para>- HaloPSA N-central site links are written with `POST /api/ncentraldetails` by sending the integration account `id`, preserved `client_links`, and updated `site_links` collection.</maml:para>
+        <maml:para></maml:para>
+        <maml:para>Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.</maml:para>
+        <maml:para>NCentral to LCAT:</maml:para>
+        <maml:para>`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT` plans apply as one batch request per reviewed plan instead of one write per item. All approved items (Create/Update/Link, mapped to LCAT customer-scope fields `slug`/`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`) are sent together in a single call to `POST /rpc/sync_ncentral_customers`; `None` items are skipped and `Review` items are written as their own unsuccessful result without joining the batch. `-Apply -WhatIf` reports a single `ShouldProcess` confirmation for the whole batch (`"{count} customer scope(s)"`) and performs no write. Without `-Apply`, every item is reported as "Planned only" and no batch call is made. With `-PassThru`, one `EntityWriteResult` per batched item is returned, each carrying the same aggregate inserted/updated/retired/active counts from the single LCAT response (`Raw` holds the full sync result). See `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`.</maml:para>
+        <maml:para>N-central Customer and Site sources batch together in the same call: a customer-derived item carries no `ncentral_parent_customer_id`, while a site-derived item carries the site's own identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, preserving the site's parent relationship in LCAT. A site with no parent N-central customer ID never reaches the batch — `New-EntitySyncPlan` blocks it at plan time as `Action 'Review'`, so it is written as its own unsuccessful result the same as any other Review item. Before sending, the adapter rejects the whole batch with a clear error if any two items share the same `ncentral_customer_id`, matching the contract's uniqueness rule.</maml:para>
+        <maml:para>LCAT apply safety is stricter than the generic item loop: only approved `Create`, `Update`, and `Link` rows with valid customer-scope fields enter the batch. `Review`, `Reject`, `No Update`, `None`, unsafe slug, empty display-name/source-id, missing parent-id, and duplicate source-id rows are skipped or returned as failed non-secret results without being sent to LCAT. The batch payload contains only the mapped customer-scope fields; LCAT bearer tokens, authorization headers, and unrelated N-central registration tokens are not copied into requests, result messages, or exported plan artifacts.</maml:para>
+      </maml:alert>
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>$plan | Invoke-EntitySyncPlan -Apply -WhatIf</dev:code>
+        <dev:remarks>
+          <maml:para>Shows PowerShell WhatIf messages for the HaloPSA updates and creates that would be made.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Import-EntitySyncPlan .\netsuite-halo-client-plan.json | Invoke-EntitySyncPlan -Apply -Confirm</dev:code>
+        <dev:remarks>
+          <maml:para>Applies a previously reviewed plan with confirmation.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
+        <dev:remarks>
+          <maml:para>Applies the plan and returns EntityWriteResult objects.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
+        <dev:code>$plan | Invoke-EntitySyncPlan -Apply -WhatIf
+$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
+        <dev:remarks>
+          <maml:para>Dry-runs then applies an N-central Customer to LCAT plan as a single batched customer-scope sync.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>New-EntitySyncPlan</command:name>
+      <command:verb>New</command:verb>
+      <command:noun>EntitySyncPlan</command:noun>
+      <maml:description>
+        <maml:para>Builds a safe, reviewable synchronization plan between two vendors.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Retrieves target entities, performs explainable fuzzy matching, and emits an EntitySync plan. This command does not write to any vendor.</maml:para>
+      <maml:para>When HaloPSA is the target, planning reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Pass `-FullTargetObjects` only when every HaloPSA client must also be enriched with site details for address/postal matching; this can be slower on large tenants.</maml:para>
+    </maml:description>
+    <command:syntax />
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client -CreateMissing
+$plan.Items | Format-Table Action, Score, MatchType, @{n='Source';e={$_.Source.Name}}, @{n='Target';e={$_.Target.Name}}</dev:code>
+        <dev:remarks>
+          <maml:para>Creates a NetSuite customer to HaloPSA client plan and displays decisions.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client -FullTargetObjects</dev:code>
+        <dev:remarks>
+          <maml:para>Uses exhaustive HaloPSA client and site enrichment for matching at the cost of additional API calls.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Site -TargetVendor NCentral -TargetEntityType Site -CreateMissing</dev:code>
+        <dev:remarks>
+          <maml:para>Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` are authoritative when present. If a Halo site has no existing site link, the parent Halo client must be linked to an N-central customer so new N-central sites can be created under the correct customer.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LCAT -TargetEntityType Customer -CreateMissing</dev:code>
+        <dev:remarks>
+          <maml:para>Creates an N-central Customer to LCAT Customer scope plan. `LCAT` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `LCAT`), and `Customer` is the only `-TargetEntityType` LCAT supports. LCAT has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 5 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LCAT -TargetEntityType Customer -CreateMissing</dev:code>
+        <dev:remarks>
+          <maml:para>Creates an N-central Site to LCAT Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LCAT scope stays traceable to the site's owning customer. A site with no parent N-central customer ID is blocked with `Action 'Review'` (`MatchType 'LcatSiteParentMissing'`) and a reason naming the missing parent identifier, instead of being created — this safe failure applies even with `-CreateMissing`. See `specs/001-lcat-sync-adapter/data-model.md`.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Set-EntitySyncCustomProperty</command:name>
+      <command:verb>Set</command:verb>
+      <command:noun>EntitySyncCustomProperty</command:noun>
+      <maml:description>
+        <maml:para>Sets an existing vendor custom-property value.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Sets an existing custom-property value on a connected vendor entity. The command requires `-Apply` before writes are allowed and supports `-WhatIf` and `-Confirm`.</maml:para>
+      <maml:para>N-central support uses EI2 SOAP `organizationPropertyList` to resolve the property label to an ID, then `organizationPropertyModify` to update the value. It updates existing N-central organization custom properties; it does not create custom-property definitions.</maml:para>
+      <maml:para>Current support is limited to N-central customer organization properties.</maml:para>
+    </maml:description>
+    <command:syntax />
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Set-EntitySyncCustomProperty -Vendor NCentral -Id 390 -Name 'HaloPSA Client ID' -Value 684</dev:code>
+        <dev:remarks>
+          <maml:para>Plans the custom-property update only. No vendor changes are made without `-Apply`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Set-EntitySyncCustomProperty -Vendor NCentral -CustomerId 390 -Name 'HaloPSA Client ID' -Value 684 -Apply -WhatIf</dev:code>
+        <dev:remarks>
+          <maml:para>Shows the PowerShell WhatIf message for the N-central custom-property update.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>Set-EntitySyncCustomProperty -Vendor NCentral -CustomerId 390 -Name 'NetSuite Customer ID' -Value 12345 -Apply</dev:code>
+        <dev:remarks>
+          <maml:para>Sets the `NetSuite Customer ID` custom property on N-central customer `390`.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+</helpItems>
