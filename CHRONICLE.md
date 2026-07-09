@@ -782,6 +782,15 @@
   returned by `LCATSyncResult`, which carries no credential-bearing fields. `just build` succeeds;
   `just test` reports all 82 tests passing. Next incomplete task: T041 (ensure LCAT connection output
   does not expose credential-bearing options in `src/Commands/ConnectEntitySyncVendorCommand.cs`).
+- T041 done: added a Pester test to `Tests/LISSTech.EntitySync.Tests.ps1` proving registered LCAT
+  connection output from `Get-EntitySyncConnection` does not expose `LCATOptions`, `LCATBearerToken`,
+  `BearerToken`, or the supplied bearer token value through normal property inspection,
+  `Format-List *`, or `ConvertTo-Json -Depth 5`. No product code changes were required because
+  `ConnectEntitySyncVendorCommand` already writes the shared `EntitySyncConnection` shape and
+  `LCATEntityAdapter` keeps its `LCATOptions` field private. `just build` succeeds; `just test`
+  reports all 83 tests passing (0 failed, up from 82). Next incomplete task: T042 (filter
+  non-approved and invalid LCAT plan items before batch composition in
+  `src/Commands/InvokeEntitySyncPlanCommand.cs`).
 
 ## Open Blockers
 

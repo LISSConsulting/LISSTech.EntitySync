@@ -960,6 +960,36 @@ namespace EntitySyncTests
     ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
   }
 
+  It 'Excludes LCAT credential-bearing options from registered connection output (T041, US3)' {
+    $secretToken = 'registered-lcat-bearer-a1b2c3d4'
+    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken
+
+    try {
+      $registered = Get-EntitySyncConnection | Where-Object Vendor -eq 'LCAT' | Select-Object -First 1
+
+      $registered | Should -Not -BeNullOrEmpty
+      $registered.Vendor | Should -Be 'LCAT'
+      $registered.PSObject.Properties.Name | Should -Not -Contain 'LCATOptions'
+      $registered.PSObject.Properties.Name | Should -Not -Contain 'LCATBearerToken'
+      $registered.PSObject.Properties.Name | Should -Not -Contain 'BearerToken'
+
+      $renderedConnection = $registered | Format-List -Property * | Out-String
+      $renderedConnection | Should -Not -Match 'LCATOptions'
+      $renderedConnection | Should -Not -Match 'LCATBearerToken'
+      $renderedConnection | Should -Not -Match 'BearerToken'
+      $renderedConnection | Should -Not -Match ([regex]::Escape($secretToken))
+
+      $serializedConnection = $registered | ConvertTo-Json -Depth 5
+      $serializedConnection | Should -Not -Match 'LCATOptions'
+      $serializedConnection | Should -Not -Match 'LCATBearerToken'
+      $serializedConnection | Should -Not -Match 'BearerToken'
+      $serializedConnection | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      ($connection.Adapter -as [IDisposable])?.Dispose()
+    }
+  }
+
   It 'Excludes N-central registration tokens and other custom field metadata from LCAT customer mapping (T036, US3)' {
     $registrationToken = 'ncentral-reg-token-4f3e2d1c'
 
