@@ -65,6 +65,27 @@ namespace EntitySyncTests
             }
             while (!builder.ToString().Contains("\r\n\r\n", StringComparison.Ordinal));
 
+            var request = builder.ToString();
+            var headerEnd = request.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            var contentLength = 0;
+            if (headerEnd >= 0)
+            {
+                foreach (var line in request.Substring(0, headerEnd).Split(new[] { "\r\n" }, StringSplitOptions.None))
+                {
+                    if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int.TryParse(line.Substring("Content-Length:".Length).Trim(), out contentLength);
+                    }
+                }
+            }
+
+            while (headerEnd >= 0 && Encoding.ASCII.GetByteCount(builder.ToString().Substring(headerEnd + 4)) < contentLength)
+            {
+                var read = stream.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
+            }
+
             RequestText = builder.ToString();
             var bodyBytes = Encoding.UTF8.GetBytes(responseBody);
             var header =
@@ -1122,7 +1143,7 @@ namespace EntitySyncTests
 
     $results = $null
     try {
-      $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru
+      $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru -Confirm:$false
     }
     catch {
       throw
@@ -1133,6 +1154,64 @@ namespace EntitySyncTests
     $reviewResults.Success | Should -Not -Contain $true
     $reviewResults.Message | Should -Contain 'Item requires review before apply.'
     @($results | Where-Object { $_.Action -ne 'Review' }).Count | Should -Be 0
+  }
+
+  It 'Filters invalid approved LCAT plan items before composing the batch request (T042, US3)' {
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":1,"updated_count":0,"retired_count":0,"active_count":1}')
+    $server.Start()
+
+    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl)
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    try {
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.SourceVendor = 'NCentral'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'LCAT'
+      $plan.TargetEntityType = 'Customer'
+
+      foreach ($case in @(
+        [pscustomobject]@{ Id = '1201'; Name = 'Valid Batch Customer' },
+        [pscustomobject]@{ Id = ''; Name = 'Missing Identifier Customer' },
+        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer A' },
+        [pscustomobject]@{ Id = 'duplicate-1203'; Name = 'Duplicate Customer B' }
+      )) {
+        $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+        $source.Vendor = 'NCentral'
+        $source.EntityType = 'Customer'
+        $source.Id = $case.Id
+        $source.Name = $case.Name
+        if (-not [string]::IsNullOrWhiteSpace($case.Id)) {
+          $source.ExternalIds['NCentralCustomerId'] = $case.Id
+        }
+
+        $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+        $item.Action = 'Create'
+        $item.Source = $source
+        $item.MatchType = 'NoMatch'
+        [void]$item.Reasons.Add('No target candidate found')
+        [void]$plan.Items.Add($item)
+      }
+
+      $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru -Confirm:$false
+      $server.Wait()
+
+      $successResults = @($results | Where-Object Success)
+      $failedResults = @($results | Where-Object { -not $_.Success })
+      $successResults.Count | Should -Be 1
+      $failedResults.Count | Should -Be 3
+      $failedResults.Message | Should -Contain 'LCAT item skipped before batch sync: ncentral_customer_id is required.'
+      ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'duplicate-1203'"
+
+      $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      @($requestBody.customers).Count | Should -Be 1
+      $requestBody.customers[0].ncentral_customer_id | Should -Be '1201'
+      $requestBody.customers[0].display_name | Should -Be 'Valid Batch Customer'
+    }
+    finally {
+      $server.Dispose()
+      $lcatAdapter.Dispose()
+    }
   }
 
   It 'Reports LCAT non-success responses without authorization headers or bearer credentials (T039, US3)' {

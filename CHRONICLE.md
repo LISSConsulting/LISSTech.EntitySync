@@ -791,6 +791,17 @@
   reports all 83 tests passing (0 failed, up from 82). Next incomplete task: T042 (filter
   non-approved and invalid LCAT plan items before batch composition in
   `src/Commands/InvokeEntitySyncPlanCommand.cs`).
+- T042 done: updated `src/Commands/InvokeEntitySyncPlanCommand.cs` so the LCAT apply path only
+  composes approved `Create`/`Update`/`Link` items into the authoritative batch, validates required
+  LCAT customer-scope fields before the adapter call, skips duplicate `ncentral_customer_id` values
+  before they can fail the whole batch, and reports invalid approved items as failed non-secret
+  pass-through results. Extended the loopback HTTP test helper in `Tests/LISSTech.EntitySync.Tests.ps1`
+  to capture request bodies, then added a regression test proving one valid approved item is still
+  sent while an empty-ID item and a duplicate-ID pair are filtered out before request composition.
+  Initial test run exposed the need to pass `-Confirm:$false` for a real apply in the noninteractive
+  Pester host; after that correction, `just test` rebuilt successfully and reports all 84 tests
+  passing. Next incomplete task: T043 (unsafe slug, duplicate source ID, empty display name, and
+  empty source ID safe-failure reasons during mapping/planning).
 
 ## Open Blockers
 

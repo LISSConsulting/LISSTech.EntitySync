@@ -1,4 +1,5 @@
 using System.Management.Automation;
+using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NCentral;
@@ -12,6 +13,8 @@ namespace LISSTech.EntitySync.Commands;
 [OutputType(typeof(EntityWriteResult))]
 public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 {
+    private static readonly Regex LcatSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled);
+
     [Parameter(Mandatory = true, ValueFromPipeline = true, Position = 0)]
     public EntitySyncPlan Plan { get; set; } = default!;
 
@@ -102,6 +105,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     private void ApplyLcatBatch(DefaultEntityMapper mapper, MatchOptions options)
     {
         var batchItems = new List<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)>();
+        var candidateItems = new List<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)>();
 
         for (var i = 0; i < Plan.Items.Count; i++)
         {
@@ -120,11 +124,39 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                 WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = true, Message = "Planned only; pass -Apply to write." });
                 continue;
             }
+            if (!IsApprovedLcatAction(item.Action)) continue;
 
             var request = item.Target != null
                 ? mapper.MapUpdate(item.Source, item.Target, options)
                 : mapper.MapCreate(item.Source, Plan.TargetVendor, Plan.TargetEntityType, options);
-            batchItems.Add((item, ToLcatCustomerScopeRequest(request)));
+            candidateItems.Add((item, ToLcatCustomerScopeRequest(request)));
+        }
+
+        var duplicateIds = candidateItems
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Request.NCentralCustomerId))
+            .GroupBy(candidate => candidate.Request.NCentralCustomerId, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var candidate in candidateItems)
+        {
+            var validationErrors = ValidateLcatCustomerScopeRequest(candidate.Item, candidate.Request, duplicateIds);
+            if (validationErrors.Count > 0)
+            {
+                WriteResult(new EntityWriteResult
+                {
+                    Vendor = Plan.TargetVendor,
+                    EntityType = Plan.TargetEntityType,
+                    Id = candidate.Item.Target?.Id,
+                    Action = candidate.Item.Action,
+                    Success = false,
+                    Message = "LCAT item skipped before batch sync: " + string.Join("; ", validationErrors) + "."
+                });
+                continue;
+            }
+
+            batchItems.Add(candidate);
         }
 
         if (batchItems.Count == 0) return;
@@ -147,6 +179,33 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                 Raw = syncResult
             });
         }
+    }
+
+    private static bool IsApprovedLcatAction(string action)
+    {
+        return action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Link", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<string> ValidateLcatCustomerScopeRequest(EntitySyncPlanItem item, LCATCustomerScopeRequest request, ISet<string> duplicateIds)
+    {
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(request.DisplayName)) errors.Add("display_name is required");
+        if (string.IsNullOrWhiteSpace(request.NCentralCustomerId)) errors.Add("ncentral_customer_id is required");
+        if (string.IsNullOrWhiteSpace(request.Slug)) errors.Add("slug is required");
+        else if (!LcatSlugPattern.IsMatch(request.Slug)) errors.Add("slug must match the LCAT customer-scope contract");
+        if (item.Source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(request.NCentralParentCustomerId))
+        {
+            errors.Add("ncentral_parent_customer_id is required for N-central site sources");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.NCentralCustomerId) && duplicateIds.Contains(request.NCentralCustomerId))
+        {
+            errors.Add($"duplicate ncentral_customer_id '{request.NCentralCustomerId}'");
+        }
+
+        return errors;
     }
 
     private static LCATCustomerScopeRequest ToLcatCustomerScopeRequest(EntityWriteRequest request)
