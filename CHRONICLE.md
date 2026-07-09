@@ -13,6 +13,7 @@
 - Empty Queue sweep done: LCAT adapter now trims customer-scope request values before validation and serialization, blocking whitespace-hidden duplicate N-central IDs before HTTP send; `just test` passes.
 - Empty Queue sweep done: LCAT apply validation now compares trimmed approved customer-scope IDs/slugs before batch composition; `just test` passes.
 - Empty Queue sweep done: LCAT slug fallback now sanitizes usable N-central IDs without allowing punctuation-only IDs through review safety; `just test` passes.
+- Empty Queue sweep done: LCAT apply now returns a non-secret no-op result when a plan has no approved customer-scope items; `just build`, `just test-load`, and `just test` pass.
 
 ## Open Blockers
 

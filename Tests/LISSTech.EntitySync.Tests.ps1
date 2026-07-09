@@ -1335,6 +1335,43 @@ namespace EntitySyncTests
     @($results | Where-Object { $_.Action -ne 'Review' }).Count | Should -Be 0
   }
 
+  It 'Reports a non-secret no-op result when an LCAT apply has no approved batch items' {
+    $lcatAdapter = New-TestLCATAdapter
+    # A disposed adapter proves no HTTP write is attempted for an all-no-op LCAT plan.
+    $lcatAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Customer'
+    $source.Id = '1001'
+    $source.Name = 'No Update Customer'
+    $source.ExternalIds['NCentralCustomerId'] = '1001'
+
+    $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $item.Action = 'None'
+    $item.Status = 'NoUpdate'
+    $item.MatchType = 'NoUpdate'
+    $item.Source = $source
+    [void]$item.Reasons.Add('Reviewer chose No Update')
+
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NCentral'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'LCAT'
+    $plan.TargetEntityType = 'Customer'
+    [void]$plan.Items.Add($item)
+
+    $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru -Confirm:$false
+
+    $results.Count | Should -Be 1
+    $results[0].Vendor | Should -Be 'LCAT'
+    $results[0].Action | Should -Be 'None'
+    $results[0].Success | Should -BeTrue
+    $results[0].Message | Should -Be 'No approved LCAT customer-scope items were eligible for batch sync.'
+    $results[0].Message | Should -Not -Match 'token|Authorization|Bearer'
+  }
+
   It 'Filters invalid approved LCAT plan items before composing the batch request (T042, US3)' {
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":1,"updated_count":0,"retired_count":0,"active_count":1}')
     $server.Start()

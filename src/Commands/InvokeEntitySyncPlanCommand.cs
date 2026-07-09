@@ -106,6 +106,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     {
         var batchItems = new List<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)>();
         var candidateItems = new List<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)>();
+        var resultCount = 0;
 
         for (var i = 0; i < Plan.Items.Count; i++)
         {
@@ -117,11 +118,13 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             if (item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
             {
                 WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = "Review", Success = false, Message = "Item requires review before apply." });
+                resultCount++;
                 continue;
             }
             if (!Apply)
             {
                 WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = true, Message = "Planned only; pass -Apply to write." });
+                resultCount++;
                 continue;
             }
             if (!IsApprovedLcatAction(item.Action)) continue;
@@ -161,13 +164,29 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     Success = false,
                     Message = "LCAT item skipped before batch sync: " + string.Join("; ", validationErrors) + "."
                 });
+                resultCount++;
                 continue;
             }
 
             batchItems.Add(candidate);
         }
 
-        if (batchItems.Count == 0) return;
+        if (batchItems.Count == 0)
+        {
+            if (resultCount == 0)
+            {
+                WriteResult(new EntityWriteResult
+                {
+                    Vendor = Plan.TargetVendor,
+                    EntityType = Plan.TargetEntityType,
+                    Action = "None",
+                    Success = true,
+                    Message = "No approved LCAT customer-scope items were eligible for batch sync."
+                });
+            }
+
+            return;
+        }
         if (!ShouldProcess($"{batchItems.Count} customer scope(s)", "Sync approved customer scopes to LCAT"))
         {
             if (IsWhatIfRequested()) WriteLcatWhatIfPreview(batchItems);
