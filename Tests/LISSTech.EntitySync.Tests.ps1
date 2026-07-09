@@ -316,6 +316,25 @@ namespace EntitySyncTests
     $ltacResults | Should -BeNullOrEmpty
   }
 
+  It 'Tests registered LCAT connections through the adapter for LCAT and LTAC requests (T008 drift regression)' {
+    foreach ($vendorName in @('LCAT', 'LTAC')) {
+      $server = [EntitySyncTests.OneShotHttpServer]::new(204, 'No Content', '')
+      $server.Start()
+      $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken "token-$vendorName")
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      try {
+        Test-EntitySyncConnection -Vendor $vendorName | Should -BeTrue
+        $server.Wait()
+        $server.RequestText | Should -Match '^GET / HTTP/1\.1'
+      }
+      finally {
+        $server.Dispose()
+        $lcatAdapter.Dispose()
+      }
+    }
+  }
+
   It 'Maps NCentral Customer display name, N-central identifier, and a valid slug into LCAT Fields (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'

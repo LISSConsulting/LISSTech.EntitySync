@@ -859,6 +859,11 @@
   exists and the PowerShell command contract includes LCAT connection testing. Validation:
   `just build` succeeds. Next incomplete task: T049 (`just build`) or resolve the open finding below
   before final polish validation.
+- Open finding resolved: removed the stale `Test-EntitySyncConnection -Vendor LCAT` guard so the
+  command now normalizes `LTAC` to `LCAT` and calls the registered adapter's `TestConnectionAsync`.
+  Added a loopback Pester regression proving both `LCAT` and `LTAC` requests issue the adapter's GET
+  connection test without external network access. Validation: `just build` succeeds; `just test`
+  reports all 88 tests passing. Next incomplete task: T049 (`just build`).
 
 ## Open Blockers
 
@@ -869,7 +874,6 @@
 
 | Priority | Finding | Evidence | Status |
 |----------|---------|----------|--------|
-| P2 | `Test-EntitySyncConnection -Vendor LCAT` still throws `NotImplementedException` instead of using the registered LCAT adapter. | `src/Commands/TestEntitySyncConnectionCommand.cs` has an explicit LCAT guard; `src/Adapters/LCAT/LCATEntityAdapter.cs` now implements `TestConnectionAsync`; `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md` documents `Test-EntitySyncConnection -Vendor LCAT`. | Open; remove the stale guard and add a regression before final polish validation. |
 
 ## Decisions To Preserve
 

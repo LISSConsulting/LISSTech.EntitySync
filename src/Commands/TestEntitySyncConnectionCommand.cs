@@ -23,11 +23,6 @@ public sealed class TestEntitySyncConnectionCommand : PSCmdlet
         try
         {
             Vendor = NormalizeVendorAlias(Vendor);
-            if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new NotImplementedException("LCAT connection testing is implemented in a later EntitySync task.");
-            }
-
             WriteObject(ConnectionRegistry.Get(Vendor).TestConnectionAsync(CancellationToken.None).GetAwaiter().GetResult());
         }
         catch (Exception ex)
