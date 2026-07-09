@@ -867,6 +867,14 @@
 - T049 done: ran `just build` for the LCAT sync adapter polish validation. Build completed
   successfully with 0 warnings and 0 errors, producing `Module/LISSTech.EntitySync.dll`.
   Next incomplete task: T050 (`just test-load`).
+- T050 done: ran `just test-load` for the LCAT sync adapter polish validation. The command rebuilt
+  the module successfully, imported `Module/LISSTech.EntitySync.psd1` in a clean PowerShell process,
+  and listed the expected 12 exported commands:
+  `Connect-EntitySyncVendor`, `Export-EntitySyncPlan`, `Get-EntitySyncConnection`,
+  `Get-EntitySyncEntity`, `Get-EntitySyncLookup`, `Import-EntitySyncPlan`,
+  `Invoke-EntitySyncChain`, `Invoke-EntitySyncNetSuiteSuiteQL`, `Invoke-EntitySyncPlan`,
+  `New-EntitySyncPlan`, `Set-EntitySyncCustomProperty`, and `Test-EntitySyncConnection`.
+  Next incomplete task: T051 (`just test`).
 
 ## Open Blockers
 
