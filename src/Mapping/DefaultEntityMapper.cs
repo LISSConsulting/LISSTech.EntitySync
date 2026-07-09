@@ -34,6 +34,21 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     {
         if (!targetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase)) return;
         if (!source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return;
+
+        if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
+        {
+            var ncentralSiteId = FirstNonEmpty(source.GetExternalId("NCentralSiteId"), source.Id);
+            var ncentralParentCustomerId = source.GetExternalId("NCentralCustomerId");
+            var parentCustomerName = source.GetCustomField("NCentralCustomerName");
+            request.Fields["display_name"] = source.Name;
+            if (!string.IsNullOrWhiteSpace(ncentralSiteId)) request.Fields["ncentral_customer_id"] = ncentralSiteId;
+            if (!string.IsNullOrWhiteSpace(ncentralParentCustomerId)) request.Fields["ncentral_parent_customer_id"] = ncentralParentCustomerId;
+            var parentContext = FirstNonEmpty(parentCustomerName, ncentralParentCustomerId);
+            var slugBasis = string.IsNullOrWhiteSpace(parentContext) ? source.Name : $"{parentContext} {source.Name}";
+            request.Fields["slug"] = DeriveLcatSlug(slugBasis, ncentralSiteId);
+            return;
+        }
+
         if (!source.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) return;
 
         var ncentralCustomerId = FirstNonEmpty(source.GetExternalId("NCentralCustomerId"), source.Id);

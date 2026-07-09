@@ -579,6 +579,26 @@
   the 1 new expected T029 failure, no regressions). Next incomplete task: T030 (extend LCAT mapping for
   NCentral Site sources with site ID, display name, slug, and parent customer ID in
   `src/Mapping/DefaultEntityMapper.cs`), the first implementation task in Phase 4 (US2).
+- T030 done: added a Site branch to `AddLcatCustomerScopeFields` in
+  `src/Mapping/DefaultEntityMapper.cs`, checked before the existing Customer branch (which now
+  returns early for any `EntityType` other than `Customer`). For Site sources it sets
+  `request.Fields["display_name"]` from `source.Name`, `request.Fields["ncentral_customer_id"]`
+  from `source.GetExternalId("NCentralSiteId")` falling back to `source.Id` (the site's own
+  effective id, matching data-model.md), and `request.Fields["ncentral_parent_customer_id"]` from
+  `source.GetExternalId("NCentralCustomerId")` with no fallback (left unset when absent — turning a
+  missing parent into a plan-time Review block is T031's job, not this task's). Slug derivation
+  reuses the existing `DeriveLcatSlug` helper (T012/T022, unchanged) but feeds it a
+  parent-qualified basis string (`"{parentName} {siteName}"`, where parentName is
+  `source.GetCustomField("NCentralCustomerName")` falling back to the parent id, or the site name
+  alone if neither is present) — this is what makes two same-named sites under different parents
+  produce different slugs (T028's contract scenario) while staying deterministic (same source
+  always reproduces the same slug). Did not add plan-time missing-parent validation (T031) or touch
+  `InvokeEntitySyncPlanCommand.cs`'s batch apply path (T032) — this task is mapping-only. `just
+  build` succeeds; `just test` now reports 72 passed / 2 failed: all three previously-red T026 tests
+  and all three previously-red T028 tests now pass with no regressions, leaving only the two T027
+  missing-parent tests still red (blocked on T031, not this task). Next incomplete task: T031 (add
+  plan-time validation reasons for missing NCentral site parent IDs in
+  `src/Commands/NewEntitySyncPlanCommand.cs`).
 
 ## Open Blockers
 
