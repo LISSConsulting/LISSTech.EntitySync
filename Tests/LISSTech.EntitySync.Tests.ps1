@@ -369,6 +369,38 @@ namespace EntitySyncTests
     $help.Name | Should -Be 'about_LISSTech.EntitySync'
   }
 
+  It 'About topic lists every exported cmdlet in SEE ALSO' {
+    $helpText = Get-Help about_LISSTech.EntitySync -Full | Out-String
+    $expectedSeeAlso = @(
+      'Connect-EntitySyncVendor'
+      'Get-EntitySyncConnection'
+      'Test-EntitySyncConnection'
+      'Get-EntitySyncLookup'
+      'Get-EntitySyncEntity'
+      'Invoke-EntitySyncNetSuiteSuiteQL'
+      'New-EntitySyncPlan'
+      'Invoke-EntitySyncPlan'
+      'Invoke-EntitySyncChain'
+      'Set-EntitySyncCustomProperty'
+      'Export-EntitySyncPlan'
+      'Import-EntitySyncPlan'
+    )
+    foreach ($cmdlet in $expectedSeeAlso) {
+      $helpText | Should -Match ("(?m)^\s+$cmdlet\s*$") -Because "about-topic SEE ALSO must list $cmdlet so operators can discover it from Get-Help"
+    }
+  }
+
+  It 'About topic N-central paragraph uses the real env-var contract' {
+    $helpText = Get-Help about_LISSTech.EntitySync -Full | Out-String
+    $helpText | Should -Match 'NCENTRAL_USER_API_TOKEN' -Because 'N-central REST auth uses NCENTRAL_USER_API_TOKEN, not a username/password pair'
+    $helpText | Should -Match 'NCENTRAL_SERVICE_ORG_ID' -Because 'N-central REST scoping requires NCENTRAL_SERVICE_ORG_ID'
+    $helpText | Should -Match 'NCENTRAL_SOAP_USERNAME' -Because 'N-central custom-property writes need SOAP credentials, which the topic must document'
+    $helpText | Should -Not -Match 'NCENTRAL_USERNAME[^_]' -Because 'NCENTRAL_USERNAME does not exist in the source and would mislead operators'
+    $helpText | Should -Not -Match 'NCENTRAL_PASSWORD' -Because 'NCENTRAL_PASSWORD is not an N-central contract env var'
+    $helpText | Should -Not -Match 'NCENTRAL_REGISTRATION_TOKEN' -Because 'NCENTRAL_REGISTRATION_TOKEN is not an N-central contract env var'
+    $helpText | Should -Not -Match 'OAuth access token' -Because 'N-central REST exchanges the User-API token at /api/auth/authenticate; there is no OAuth flow'
+  }
+
   It 'Completes only vendor-specific entity types for Get-EntitySyncEntity' {
     $haloInput = 'Get-EntitySyncEntity -Vendor HaloPSA -Type '
     $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText

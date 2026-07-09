@@ -24,10 +24,14 @@ CONFIGURATION
     parameters. The module requests the bearer token from HaloPSA and does not
     require a pre-generated access token.
 
-    N-central uses a username, password, and per-vendor registration token
-    (NCENTRAL_BASE_URL, NCENTRAL_USERNAME, NCENTRAL_PASSWORD, NCENTRAL_REGISTRATION_TOKEN),
+    N-central uses a User-API token plus the service-organization id for the
+    REST API (NCENTRAL_BASE_URL, NCENTRAL_USER_API_TOKEN, NCENTRAL_SERVICE_ORG_ID),
     or pass the matching Connect-EntitySyncVendor parameters. The module
-    derives the OAuth access token from those values.
+    exchanges the User-API token at /api/auth/authenticate and reuses the
+    returned access token for the rest of the REST session. Customer updates
+    and organization custom-property writes go through the EI2 SOAP endpoint
+    (NCENTRAL_SOAP_USERNAME, NCENTRAL_SOAP_PASSWORD) and are optional unless
+    Invoke-EntitySyncPlan or Set-EntitySyncCustomProperty needs them.
 
     LCAT uses a bearer token and only acts as a sync target for N-central
     Customer and Site sources. Set LCAT_BASE_URL and LCAT_BEARER_TOKEN, or
@@ -45,5 +49,14 @@ CONFIGURATION
 
 SEE ALSO
     Connect-EntitySyncVendor
+    Get-EntitySyncConnection
+    Test-EntitySyncConnection
+    Get-EntitySyncLookup
+    Get-EntitySyncEntity
+    Invoke-EntitySyncNetSuiteSuiteQL
     New-EntitySyncPlan
     Invoke-EntitySyncPlan
+    Invoke-EntitySyncChain
+    Set-EntitySyncCustomProperty
+    Export-EntitySyncPlan
+    Import-EntitySyncPlan
