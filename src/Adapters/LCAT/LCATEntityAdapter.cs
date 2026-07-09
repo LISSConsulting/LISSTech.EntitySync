@@ -147,12 +147,17 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     private static IReadOnlyList<LCATCustomerScopeRequest> NormalizeCustomerScopeRequests(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {
+        if (customers == null)
+        {
+            throw new InvalidOperationException("LCAT batch sync request is invalid: customers is required.");
+        }
+
         return customers.Select(customer => new LCATCustomerScopeRequest
         {
-            Slug = NormalizeRequiredValue(customer.Slug),
-            DisplayName = NormalizeRequiredValue(customer.DisplayName),
-            NCentralCustomerId = NormalizeRequiredValue(customer.NCentralCustomerId),
-            NCentralParentCustomerId = string.IsNullOrWhiteSpace(customer.NCentralParentCustomerId) ? null : customer.NCentralParentCustomerId.Trim()
+            Slug = NormalizeRequiredValue(customer?.Slug),
+            DisplayName = NormalizeRequiredValue(customer?.DisplayName),
+            NCentralCustomerId = NormalizeRequiredValue(customer?.NCentralCustomerId),
+            NCentralParentCustomerId = string.IsNullOrWhiteSpace(customer?.NCentralParentCustomerId) ? null : customer.NCentralParentCustomerId.Trim()
         }).ToArray();
     }
 
