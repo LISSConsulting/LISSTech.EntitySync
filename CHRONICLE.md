@@ -772,6 +772,16 @@
   (0 failed, up from 81). Next incomplete task: T040 (redact LCAT authorization data from adapter
   exceptions and write results in `src/Adapters/LCAT/LCATEntityAdapter.cs`), which may already be
   partially satisfied by the T039-proven error shape but still needs an implementation-state check.
+- T040 done: hardened `src/Adapters/LCAT/LCATEntityAdapter.cs` so LCAT transport failures from
+  `TestConnectionAsync` and `SyncCustomerScopesAsync` are converted to fixed `InvalidOperationException`
+  messages that include only the operation and RPC path, never authorization headers, bearer tokens,
+  request JSON, or response body text. Preserved cancellation passthrough and existing status/path-only
+  non-success HTTP reporting; moved successful response body reading after the status check so failure
+  bodies are not consumed for error construction. No `EntityWriteResult` secret path exists in the
+  adapter itself: LCAT batch apply results are composed in `InvokeEntitySyncPlanCommand.cs` from counts
+  returned by `LCATSyncResult`, which carries no credential-bearing fields. `just build` succeeds;
+  `just test` reports all 82 tests passing. Next incomplete task: T041 (ensure LCAT connection output
+  does not expose credential-bearing options in `src/Commands/ConnectEntitySyncVendorCommand.cs`).
 
 ## Open Blockers
 

@@ -73,8 +73,19 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync(string.Empty, cancellationToken).ConfigureAwait(false);
-        return response.IsSuccessStatusCode;
+        try
+        {
+            using var response = await httpClient.GetAsync(string.Empty, cancellationToken).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsTransportException(ex))
+        {
+            throw CreateRedactedAdapterException("LCAT connection test failed.", string.Empty);
+        }
     }
 
     public async Task<LCATSyncResult> SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest> customers, CancellationToken cancellationToken)
@@ -83,15 +94,46 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
         var body = BuildSyncRequestBody(customers);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         Trace?.Invoke("LCAT POST " + SyncPath);
-        using var response = await httpClient.PostAsync(SyncPath, content, cancellationToken).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"LCAT batch sync failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Path: {SyncPath}.");
-        return ParseSyncResponse(text);
+
+        try
+        {
+            using var response = await httpClient.PostAsync(SyncPath, content, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) throw CreateRedactedAdapterException($"LCAT batch sync failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}.", SyncPath);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return ParseSyncResponse(text);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (ObjectDisposedException ex) when (IsTransportException(ex))
+        {
+            throw CreateRedactedAdapterException("LCAT batch sync failed before a response was returned.", SyncPath);
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsTransportException(ex))
+        {
+            throw CreateRedactedAdapterException("LCAT batch sync failed before a response was returned.", SyncPath);
+        }
     }
 
     public void Dispose() => httpClient.Dispose();
 
     private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
+
+    private static bool IsTransportException(Exception ex)
+    {
+        return ex is HttpRequestException or IOException or ObjectDisposedException;
+    }
+
+    private static InvalidOperationException CreateRedactedAdapterException(string message, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return new InvalidOperationException(message);
+        return new InvalidOperationException($"{message} Path: {path}.");
+    }
 
     private static void EnsureUniqueCustomerIds(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {
