@@ -14,6 +14,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         AddNCentralSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
+        AddLcatCustomerScopeFields(request, source, targetVendor);
         return request;
     }
 
@@ -25,7 +26,20 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         AddNCentralSourceFields(request, source, target.Vendor);
         AddHaloNetSuiteMetadata(request, source, target.Vendor);
         AddNCentralLinkMarker(request, source, target.Vendor);
+        AddLcatCustomerScopeFields(request, source, target.Vendor);
         return request;
+    }
+
+    private static void AddLcatCustomerScopeFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)
+    {
+        if (!targetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase)) return;
+        if (!source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return;
+        if (!source.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) return;
+
+        var ncentralCustomerId = FirstNonEmpty(source.GetExternalId("NCentralCustomerId"), source.Id);
+        request.Fields["display_name"] = source.Name;
+        if (!string.IsNullOrWhiteSpace(ncentralCustomerId)) request.Fields["ncentral_customer_id"] = ncentralCustomerId;
+        request.Fields["slug"] = DeriveLcatSlug(source.Name, ncentralCustomerId);
     }
 
     private static void AddTargetCustomField(EntityWriteRequest request, ExternalEntity source, string targetVendor, MatchOptions options)
@@ -177,6 +191,17 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     // Matches the LCAT customer-scope slug contract in specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md.
     private static bool IsValidLcatSlug(string? slug) => !string.IsNullOrEmpty(slug) && LcatSlugPattern().IsMatch(slug);
 
+    private static string DeriveLcatSlug(string? displayName, string? fallbackId)
+    {
+        var basis = !string.IsNullOrWhiteSpace(displayName) ? displayName : fallbackId ?? string.Empty;
+        var slug = LcatSlugSeparatorPattern().Replace(basis, "-").Trim('-');
+        if (slug.Length > 64) slug = slug[..64].Trim('-');
+        return IsValidLcatSlug(slug) ? slug : $"customer-{fallbackId}".Trim('-');
+    }
+
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled)]
     private static partial Regex LcatSlugPattern();
+
+    [GeneratedRegex("[^A-Za-z0-9_-]+", RegexOptions.Compiled)]
+    private static partial Regex LcatSlugSeparatorPattern();
 }

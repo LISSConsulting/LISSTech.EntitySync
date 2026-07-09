@@ -388,6 +388,31 @@
   itself, so nothing needed updating). Next incomplete task: T022 (map NCentral Customer sources to
   LCAT Customer fields in `DefaultEntityMapper.cs`), which is what unblocks the currently-red T014
   mapping tests.
+- T022 done: added a private `AddLcatCustomerScopeFields` step to `MapCreate`/`MapUpdate` in
+  `src/Mapping/DefaultEntityMapper.cs`, gated on `targetVendor == LCAT` and `source.Vendor ==
+  NCentral && source.EntityType == Customer` (Site-derived mapping is explicitly out of scope —
+  that's T030/US2), setting `request.Fields["display_name"]` from `source.Name`,
+  `request.Fields["ncentral_customer_id"]` from `source.GetExternalId("NCentralCustomerId")` falling
+  back to `source.Id` (data-model.md's documented fallback), and `request.Fields["slug"]` via a new
+  `DeriveLcatSlug` helper. Deliberately left `ncentral_parent_customer_id` unset for customer-derived
+  scopes rather than writing an explicit null — data-model.md documents it as "empty for
+  customer-derived scopes" and the T014 test only conditionally asserts null/empty *if* the key is
+  present; T030 (US2 site mapping) is what will actually populate this key. `DeriveLcatSlug` reuses
+  the existing `LcatSlugPattern` (`IsValidLcatSlug`, added in T012) rather than inventing a second
+  validation regex: it replaces runs of characters outside `[A-Za-z0-9_-]` with a single `-` via a
+  new `[GeneratedRegex]`-backed `LcatSlugSeparatorPattern`, trims leading/trailing `-`, truncates to
+  64 chars (re-trimming trailing `-` after truncation), and falls back to `customer-{id}` only if the
+  result still fails `IsValidLcatSlug` (e.g. an empty/all-punctuation name) — this is deterministic
+  (same input always produces the same slug, as T014's two-call comparison test requires) without
+  attempting cleanco-style legal-suffix stripping like `EntityNormalizer.NormalizeName` does for
+  matching (that normalizer lowercases and drops suffix words for fuzzy-match comparison, which is a
+  different job than producing a *display-preserving* LCAT slug). Did not touch
+  `NewEntitySyncPlanCommand.cs` (T023) or `InvokeEntitySyncPlanCommand.cs` (T024) — this task is
+  mapping-only. `just build` succeeds; `just test` now reports 60 passed / 4 failed, i.e. all four
+  previously-red T014 tests now pass with no regressions, leaving only the pre-existing T016 (2) and
+  T017 (2) failures that are blocked on T023/T024, not this task. Next incomplete task: T023
+  (preserve LCAT target candidates and Customer-only target defaults during NCentral Customer
+  planning in `NewEntitySyncPlanCommand.cs`), which is what unblocks the currently-red T016 tests.
 
 ## Open Blockers
 
