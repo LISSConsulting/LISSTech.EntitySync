@@ -182,6 +182,11 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
             throw new InvalidOperationException("LCAT batch sync request is invalid: " + string.Join("; ", errors) + ".");
         }
 
+        if (customers.Count == 0)
+        {
+            throw new InvalidOperationException("LCAT batch sync request is invalid: at least one customer-scope row is required.");
+        }
+
         EnsureUniqueCustomerIds(customers);
         EnsureUniqueSlugs(customers);
     }

@@ -1143,6 +1143,20 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects empty LCAT customer-scope batches before HTTP send' {
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+
+      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*at least one customer-scope row is required*'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Excludes LCATBearerToken from the Connect-EntitySyncVendor LCAT connection object (T035, US3)' {
     $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
     $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken
