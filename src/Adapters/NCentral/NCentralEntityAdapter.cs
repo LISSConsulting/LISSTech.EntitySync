@@ -21,7 +21,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     public NCentralEntityAdapter(NCentralOptions options)
     {
         this.options = options;
-        httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(options.BaseUrl)) };
+        httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)) };
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
@@ -904,6 +904,4 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         var oneLine = string.Join(" ", text.Replace("\r", " ").Replace("\n", " ").Split(' ', StringSplitOptions.RemoveEmptyEntries));
         return oneLine.Length <= 500 ? oneLine : oneLine[..500] + "...";
     }
-
-    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 }

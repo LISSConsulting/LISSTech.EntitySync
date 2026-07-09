@@ -29,7 +29,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     public HaloEntityAdapter(HaloOptions options)
     {
         this.options = options;
-        httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(options.BaseUrl)) };
+        httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)) };
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.AccessToken);
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -1324,7 +1324,5 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     private static readonly HashSet<string> CanadianCodes = new(StringComparer.OrdinalIgnoreCase) { "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT" };
     private static readonly Dictionary<string, string> StateCodes = StateNames.ToDictionary(pair => pair.Value, pair => pair.Key, StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> UnitedStatesCodes = StateNames.Keys.Where(code => code.Length == 2 && !CanadianCodes.Contains(code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 
 }

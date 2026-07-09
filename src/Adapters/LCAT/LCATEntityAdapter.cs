@@ -36,7 +36,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     public LCATEntityAdapter(LCATOptions options)
     {
         this.options = options;
-        httpClient.BaseAddress = new Uri(EnsureTrailingSlash(options.BaseUrl));
+        httpClient.BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.BearerToken);
     }
@@ -130,8 +130,6 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     }
 
     public void Dispose() => httpClient.Dispose();
-
-    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 
     private static bool IsTransportException(Exception ex)
     {

@@ -3,6 +3,7 @@ using System.Management.Automation;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
+using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NetSuite;
@@ -266,7 +267,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)
     {
-        using var httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(baseUrl)) };
+        using var httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)) };
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
@@ -292,7 +293,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope, string tokenPath)
     {
-        using var httpClient = new HttpClient { BaseAddress = new Uri(EnsureTrailingSlash(baseUrl)) };
+        using var httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)) };
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
@@ -323,6 +324,4 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("HaloPSA token response included an empty access_token.");
         return token;
     }
-
-    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 }

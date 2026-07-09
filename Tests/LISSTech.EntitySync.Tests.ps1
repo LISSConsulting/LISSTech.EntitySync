@@ -4711,4 +4711,44 @@ namespace EntitySyncTests
     { [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::new('') } | Should -Throw -ErrorId 'ArgumentException'
     { [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::new('   ') } | Should -Throw -ErrorId 'ArgumentException'
   }
+
+  It 'UrlHelpers.EnsureTrailingSlash shares the trailing-slash rule used by every base-URL HttpClient so it cannot drift' -ForEach @(
+    @{ Url = 'https://halopsa.example.com'; Expected = 'https://halopsa.example.com/' }
+    @{ Url = 'https://halopsa.example.com/'; Expected = 'https://halopsa.example.com/' }
+    @{ Url = 'https://ncentral.example.com/api/v2'; Expected = 'https://ncentral.example.com/api/v2/' }
+    @{ Url = 'https://ncentral.example.com/api/v2/'; Expected = 'https://ncentral.example.com/api/v2/' }
+    @{ Url = 'https://lcat.example.com'; Expected = 'https://lcat.example.com/' }
+    @{ Url = 'http://127.0.0.1:65535'; Expected = 'http://127.0.0.1:65535/' }
+    @{ Url = 'http://127.0.0.1:65535/'; Expected = 'http://127.0.0.1:65535/' }
+  ) {
+    # Halo / N-central / LCAT adapters and Connect-EntitySyncVendor all previously carried a
+    # byte-for-byte private copy of this exact expression; the consolidated surface replaces them.
+    [LISSTech.EntitySync.Adapters.UrlHelpers]::EnsureTrailingSlash($Url) | Should -Be $Expected
+  }
+
+  It 'UrlHelpers.EnsureTrailingSlash is the single source of truth across Halo, NCentral, LCAT, and Connect-EntitySyncVendor' {
+    $type = [LISSTech.EntitySync.Adapters.UrlHelpers]
+    $type.IsPublic | Should -BeTrue
+    $type.IsAbstract | Should -BeTrue  # static class -> IsAbstract = true, IsSealed = true
+
+    $ensure = $type.GetMethod('EnsureTrailingSlash', [System.Reflection.BindingFlags]'Public, Static')
+    $ensure | Should -Not -BeNullOrEmpty
+    $ensure.IsStatic | Should -BeTrue
+    $ensure.GetParameters().Count | Should -Be 1
+    ($ensure.GetParameters() | ForEach-Object { $_.ParameterType }) | Should -Be @([string])
+    $ensure.ReturnType | Should -Be ([string])
+
+    # Halo / N-central / LCAT adapters and Connect-EntitySyncVendor used to each carry a private
+    # copy; the consolidation removed them, so reflection against each type must not find the
+    # member anymore.
+    foreach ($t in @(
+      [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter],
+      [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter],
+      [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter],
+      [LISSTech.EntitySync.Commands.ConnectEntitySyncVendorCommand]
+    )) {
+      $flag = [System.Reflection.BindingFlags]'NonPublic, Static'
+      $t.GetMethod('EnsureTrailingSlash', $flag) | Should -BeNullOrEmpty -Because "EnsureTrailingSlash must live on UrlHelpers, not be re-declared per type"
+    }
+  }
 }
