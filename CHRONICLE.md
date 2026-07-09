@@ -458,6 +458,26 @@
   failed), i.e. both previously-red T017 tests now pass with no regressions. Next incomplete task:
   T025 (update public command help for the customer sync flow in `docs/Connect-EntitySyncVendor.md`,
   `docs/New-EntitySyncPlan.md`, and `docs/Invoke-EntitySyncPlan.md`), the last task in Phase 3 (US1).
+- T025 done: replaced the three "(planned)"/future-tense LCAT sections written in T002 with
+  present-tense docs matching what T018-T024 actually shipped. `docs/Connect-EntitySyncVendor.md`
+  gains a real `Connect-EntitySyncVendor -Vendor LCAT [-LCATBaseUrl <String>] [-LCATBearerToken <String>]`
+  SYNTAX line and an Example 2 showing the env-var fallback pattern; the DESCRIPTION paragraph drops
+  "will" wording and notes the `LTAC` alias normalizes on the returned connection.
+  `docs/New-EntitySyncPlan.md`'s Example 4 now shows only the NCentral Customer -> LCAT Customer
+  case with `-CreateMissing` (dropped the Site line from the old planned example — site-derived
+  mapping is still T030/US2, not yet implemented, so documenting it now would be inaccurate) and
+  explains LCAT never returns target candidates (no customer-scope read endpoint), so every source
+  plans as `Create`/`NoMatch`. `docs/Invoke-EntitySyncPlan.md`'s "NCentral to LCAT (planned)" section
+  is now "## NCentral to LCAT" and describes the actual `ApplyLcatBatch` behavior verified by reading
+  `InvokeEntitySyncPlanCommand.cs`: single `ShouldProcess` confirmation for the whole batch, `None`
+  skipped, `Review` written as its own unsuccessful result outside the batch, `-PassThru` returning
+  one `EntityWriteResult` per batched item all sharing the same aggregate inserted/updated/retired/
+  active counts (`Raw` = full `LCATSyncResult`), plus a new Example 4. Did not touch
+  `docs/Get-EntitySyncEntity.md` (that LCAT read-behavior doc update is T046, Phase 6 Polish, not
+  this task) or `README.md` (T034/T047 own the README LCAT sections). `just build` and `just test`
+  both pass (64/64, no regressions — docs-only change). Phase 3 (User Story 1 / MVP) is now complete.
+  Next incomplete task: T026 (Phase 4 / US2 — Pester tests for NCentral Site to LCAT payload mapping
+  with `ncentral_parent_customer_id`).
 
 ## Open Blockers
 

@@ -55,8 +55,16 @@ Confirmed N-central behavior:
 
 Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.
 
-## NCentral to LCAT (planned)
+## NCentral to LCAT
 
-`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT` plans will apply as one batch request per reviewed plan instead of one write per item. Approved N-central customer and site items will be sent together to `POST /rpc/sync_ncentral_customers`; review, reject, no-update, none, invalid, and incomplete items are skipped. `-WhatIf` will report the planned batch without writing. Pass-through output will report inserted/updated/retired/active counts and an audit event ID; non-success responses will include status and endpoint path without authorization headers or credentials. See `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`.
+`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT` plans apply as one batch request per reviewed plan instead of one write per item. All approved items (Create/Update/Link, mapped to LCAT customer-scope fields `slug`/`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`) are sent together in a single call to `POST /rpc/sync_ncentral_customers`; `None` items are skipped and `Review` items are written as their own unsuccessful result without joining the batch. `-Apply -WhatIf` reports a single `ShouldProcess` confirmation for the whole batch (`"{count} customer scope(s)"`) and performs no write. Without `-Apply`, every item is reported as "Planned only" and no batch call is made. With `-PassThru`, one `EntityWriteResult` per batched item is returned, each carrying the same aggregate inserted/updated/retired/active counts from the single LCAT response (`Raw` holds the full sync result). See `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`.
+
+### Example 4
+```powershell
+$plan | Invoke-EntitySyncPlan -Apply -WhatIf
+$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru
+```
+
+Dry-runs then applies an N-central Customer to LCAT plan as a single batched customer-scope sync.
 
 Applies the plan and returns EntityWriteResult objects.
