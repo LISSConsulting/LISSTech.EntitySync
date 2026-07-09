@@ -262,8 +262,8 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     private static int ReadOptionalCount(JsonElement root, string name)
     {
         if (!root.TryGetPropertyIgnoreCase(name, out var property)) return 0;
-        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var numeric)) return numeric;
-        if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var textNumeric)) return textNumeric;
-        throw new JsonException($"LCAT batch sync response field '{name}' must be an integer.");
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var numeric) && numeric >= 0) return numeric;
+        if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var textNumeric) && textNumeric >= 0) return textNumeric;
+        throw new JsonException($"LCAT batch sync response field '{name}' must be a non-negative integer.");
     }
 }

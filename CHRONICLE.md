@@ -18,6 +18,7 @@
 - Empty Queue sweep done: LCAT adapter now treats successful non-object batch responses as malformed redacted errors instead of zero-count successes; `just test` passes.
 - Empty Queue sweep done: LCAT adapter now treats present but non-numeric batch count fields as malformed redacted errors; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: LCAT adapter now treats present but non-string audit event IDs as malformed redacted errors; `just build`, `just test-load`, and `just test` pass.
+- Empty Queue sweep done: LCAT adapter now treats negative batch response counts as malformed instead of reporting impossible sync totals; `just build`, `just test-load`, and `just test` pass.
 
 ## Open Blockers
 

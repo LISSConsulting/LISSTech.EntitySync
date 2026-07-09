@@ -499,6 +499,15 @@ namespace EntitySyncTests
     $result.AuditEventId | Should -BeNullOrEmpty
   }
 
+  It 'Rejects negative LCAT batch sync response counts as malformed' {
+    $responseJson = '{"inserted_count":-1,"updated_count":0,"retired_count":0,"active_count":1}'
+
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+
+    { $method.Invoke($null, @($responseJson)) } |
+      Should -Throw "*field 'inserted_count' must be a non-negative integer*"
+  }
+
   It 'Creates an NCentral Customer to LCAT plan from pipeline sources without any LCAT vendor write (T016, US1)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
