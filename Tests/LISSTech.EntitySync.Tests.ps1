@@ -764,6 +764,183 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Retries NCentral rate-limited authenticate requests with the user API token preserved when Retry-After honors the override' {
+    $secretToken = 'ncentral-ratelimit-usertoken-1b2c3d4e'
+    $authBody = '{"tokens":{"access":{"token":"derived-access-token-aaaa1111","expirySeconds":3600}}}'
+    $validateBody = '{}'
+    $retry429 = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'do not echo this body')
+    $retry429.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      $retry429,
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $validateBody)
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $result = $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait(3)
+      $server.Requests.Count | Should -Be 3
+      $server.Requests[0] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[2] | Should -Match '^GET /api/auth/validate HTTP/1\.1'
+      $server.Requests[2] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-aaaa1111'))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Retries NCentral rate-limited validate requests with the access token preserved when Retry-After honors the override' {
+    $secretToken = 'ncentral-ratelimit-validate-usertoken-2c3d4e5f'
+    $authBody = '{"tokens":{"access":{"token":"derived-access-token-bbbb2222","expirySeconds":3600}}}'
+    $retry429 = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'do not echo this body')
+    $retry429.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
+      $retry429,
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{}')
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $result = $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result | Should -BeTrue
+      $server.Wait(3)
+      $server.Requests.Count | Should -Be 3
+      $server.Requests[0] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^GET /api/auth/validate HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-bbbb2222'))
+      $server.Requests[2] | Should -Match '^GET /api/auth/validate HTTP/1\.1'
+      $server.Requests[2] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-bbbb2222'))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Stops retrying NCentral rate-limited authenticate requests after MaxRateLimitRetries without leaking the user API token' {
+    $secretToken = 'ncentral-ratelimit-exhaust-usertoken-3d4e5f6a'
+    $responses = @()
+    # One initial attempt + 6 retries (MaxRateLimitRetries = 6 in NCentralEntityAdapter) = 7 requests
+    # before the adapter raises the authentication failure. Use Retry-After: 1 so each iteration stays
+    # bounded to ~1.5s (1s delay + 500ms MinimumRequestIntervalMs); a zero Retry-After falls through
+    # to the 15s exponential backoff and would balloon the test past a minute.
+    for ($i = 0; $i -lt 7; $i++) {
+      $spec = [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(429, 'Too Many Requests', 'still rate limited')
+      $spec.ExtraHeaders.Add([System.Collections.Generic.KeyValuePair[string, string]]::new('Retry-After', '1'))
+      $responses += $spec
+    }
+    $server = [EntitySyncTests.MultiShotHttpServer]::new($responses)
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $caught = $null
+      try {
+        $ncAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      # Inner exception is the adapter's InvalidOperationException (PowerShell wraps it in a
+      # MethodInvocationException when surfacing Task.GetAwaiter().GetResult() failures); walk the
+      # InnerException chain to reach the underlying type and message.
+      $inner = $caught.Exception
+      while ($null -ne $inner -and $inner.GetType().FullName -ne 'System.InvalidOperationException') {
+        $inner = $inner.InnerException
+      }
+      $inner | Should -Not -BeNullOrEmpty
+      $inner.Message | Should -Match 'HTTP 429'
+
+      $server.Wait(7)
+      $server.Requests.Count | Should -Be 7
+      foreach ($request in $server.Requests) {
+        $request | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+        $request | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      }
+      $inner.Message | Should -Not -Match ([regex]::Escape($secretToken))
+      ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Returns the Retry-After delta-seconds value from NCentral RateLimitDelay when the override is positive' {
+    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+    $response.Headers.TryAddWithoutValidation('Retry-After', '7') | Out-Null
+
+    $delay = $method.Invoke($null, @($response, 0))
+    [int]$delay.TotalSeconds | Should -Be 7
+  }
+
+  It 'Returns the Retry-After future-date delta from NCentral RateLimitDelay and falls through to exponential backoff for past dates' {
+    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+
+    # Future date: subtracts now so the result is somewhere between 4 and 5 seconds.
+    $futureResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $futureDate = [DateTimeOffset]::UtcNow.AddSeconds(5).ToString('r')
+    $futureResponse.Headers.TryAddWithoutValidation('Retry-After', $futureDate) | Out-Null
+    $futureDelay = $method.Invoke($null, @($futureResponse, 0))
+    [int]$futureDelay.TotalSeconds | Should -BeGreaterOrEqual 4
+    [int]$futureDelay.TotalSeconds | Should -BeLessOrEqual 5
+
+    # Past date: should not return a non-positive delta; must fall through to exponential backoff
+    # (attempt 0 yields the 15s floor from 15 * 2^0).
+    $pastResponse = [System.Net.Http.HttpResponseMessage]::new()
+    $pastDate = [DateTimeOffset]::UtcNow.AddSeconds(-30).ToString('r')
+    $pastResponse.Headers.TryAddWithoutValidation('Retry-After', $pastDate) | Out-Null
+    $pastDelay = $method.Invoke($null, @($pastResponse, 0))
+    [int]$pastDelay.TotalSeconds | Should -Be 15
+  }
+
+  It 'Returns exponential backoff from NCentral RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+    $method = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter].GetMethod(
+      'RateLimitDelay',
+      [System.Reflection.BindingFlags]'NonPublic, Static'
+    )
+    $method | Should -Not -BeNullOrEmpty
+    $response = [System.Net.Http.HttpResponseMessage]::new()
+
+    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
+    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    $expectations = @{
+      0 = 15
+      1 = 30
+      2 = 60
+      3 = 120
+      4 = 240
+      5 = 300
+      6 = 300
+      7 = 300
+    }
+    foreach ($entry in $expectations.GetEnumerator()) {
+      $delay = $method.Invoke($null, @($response, [int]$entry.Key))
+      [int]$delay.TotalSeconds | Should -Be ([int]$entry.Value)
+    }
+  }
+
   It 'Reports NetSuite connection test results as true for successful SuiteQL probes with the OAuth header sent' {
     $consumerKey = 'netsuite-connection-ok-consumer-key-a1b2c3d4'
     $tokenId = 'netsuite-connection-ok-token-id-e5f6a7b8'
