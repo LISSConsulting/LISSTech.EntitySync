@@ -13,6 +13,14 @@ Returns vendor-specific lookup values used to configure sync connections.
 ## DESCRIPTION
 Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.
 
+## SYNTAX
+
+```powershell
+Get-EntitySyncLookup [-Vendor] <HaloPSA|NetSuite|NCentral|LCAT|LTAC> [[-Type] <String>] [<CommonParameters>]
+```
+
+`-Type` is a dynamic parameter exposed only when the chosen `-Vendor` has at least one supported lookup type; for `LCAT`/`LTAC` (and any future vendor without a lookup catalog) the parameter is omitted entirely and the cmdlet returns no records.
+
 Supported lookups:
 
 | Vendor | Type |

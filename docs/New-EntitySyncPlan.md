@@ -15,6 +15,14 @@ Retrieves target entities, performs explainable fuzzy matching, and emits an Ent
 
 When HaloPSA is the target, planning reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Pass `-FullTargetObjects` only when every HaloPSA client must also be enriched with site details for address/postal matching; this can be slower on large tenants.
 
+## SYNTAX
+
+```powershell
+New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral> [-TargetVendor] <HaloPSA|NetSuite|NCentral|LCAT|LTAC> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
+```
+
+`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendor (`Customer` for NetSuite and LCAT; `Client`/`Site` for HaloPSA; `Customer`/`Site` for N-central). `-InputObject` accepts pipeline input by value so a pre-filtered list of source records can flow in. `-TargetVendor` accepts the `LTAC` alias, which is normalized to `LCAT` for every artifact and contract check.
+
 ## EXAMPLES
 
 ### Example 1

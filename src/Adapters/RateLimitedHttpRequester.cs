@@ -2,9 +2,11 @@ namespace LISSTech.EntitySync.Adapters;
 
 /// <summary>
 /// Throttles outbound HTTP requests to honour Retry-After responses and a
-/// minimum inter-request interval. Shared across HaloPSA, N-central, and
-/// NetSuite adapters so they cannot drift out of sync on the retry policy or
-/// throttle behaviour. The Retry-After parsing itself lives in
+/// minimum inter-request interval. Shared across every adapter that issues
+/// outbound HTTP so they cannot drift out of sync on the retry policy or
+/// throttle behaviour; currently used by HaloPSA, N-central, and NetSuite.
+/// LCAT is intentionally excluded because its customer-scope write endpoint
+/// does not require outbound HTTP. The Retry-After parsing itself lives in
 /// <see cref="RateLimitHelper.RateLimitDelay"/>.
 /// </summary>
 public sealed class RateLimitedHttpRequester : IDisposable

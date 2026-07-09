@@ -424,6 +424,46 @@ namespace EntitySyncTests
     $helpText | Should -Not -Match 'OAuth access token' -Because 'N-central REST exchanges the User-API token at /api/auth/authenticate; there is no OAuth flow'
   }
 
+  It 'About topic CONFIGURATION section documents every shipped vendor' {
+    # Split the CONFIGURATION section off the rendered help so a missing vendor paragraph
+    # fails with a focused message instead of polluting the rest of the topic.
+    $helpText = Get-Help about_LISSTech.EntitySync -Full | Out-String
+    $configMatch = [regex]::Match($helpText, '(?ms)CONFIGURATION\s*\r?\n(?<body>.*?)(?:\r?\n\r?\nSEE ALSO|\r?\n\r?\nKEYWORDS|\z)')
+    $configBody = if ($configMatch.Success) { $configMatch.Groups['body'].Value } else { '' }
+    $configBody | Should -Not -BeNullOrEmpty -Because 'about-topic CONFIGURATION section must exist so operators can find the env-var contract'
+
+    $expectedVendorKeys = @{
+      'NetSuite' = 'NETSUITE_ACCOUNT_ID'
+      'HaloPSA'  = 'HALO_BASE_URL'
+      'N-central' = 'NCENTRAL_USER_API_TOKEN'
+      'LCAT'     = 'LCAT_BASE_URL'
+    }
+    foreach ($entry in $expectedVendorKeys.GetEnumerator()) {
+      $vendor = $entry.Key
+      $envVar = $entry.Value
+      $configBody | Should -Match ("(?m)\b{0}\b" -f [regex]::Escape($vendor)) -Because "about-topic CONFIGURATION must name $vendor so operators know which env-var block applies"
+      $configBody | Should -Match ("\b{0}\b" -f [regex]::Escape($envVar)) -Because "about-topic CONFIGURATION must document $envVar as the primary $vendor env var"
+    }
+  }
+
+  It 'Every cmdlet doc has a SYNTAX block' {
+    # Find the repo root by walking up from the test file's location until a Module/ folder shows up.
+    $testPath = $PSCommandPath
+    if (-not $testPath) { $testPath = Join-Path $PSScriptRoot 'LISSTech.EntitySync.Tests.ps1' }
+    $repoRoot = Split-Path -Parent $testPath
+    while ($repoRoot -and -not (Test-Path (Join-Path $repoRoot 'Module'))) { $repoRoot = Split-Path -Parent $repoRoot }
+    $docsDir = Join-Path $repoRoot 'docs'
+    Test-Path $docsDir | Should -BeTrue -Because 'docs/ directory must exist for cmdlet external help'
+
+    $cmdletDocs = Get-ChildItem -Path $docsDir -Filter '*.md' -File
+    $cmdletDocs.Count | Should -BeGreaterOrEqual 12 -Because 'every exported cmdlet needs an external-help markdown file'
+
+    foreach ($doc in $cmdletDocs) {
+      $content = Get-Content -LiteralPath $doc.FullName -Raw
+      $content | Should -Match "(?m)^##\s+SYNTAX\s*$" -Because "$($doc.Name) must declare a ## SYNTAX block so Get-Help renders the parameter shape"
+    }
+  }
+
   It 'Completes only vendor-specific entity types for Get-EntitySyncEntity' {
     $haloInput = 'Get-EntitySyncEntity -Vendor HaloPSA -Type '
     $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
@@ -4413,7 +4453,7 @@ namespace EntitySyncTests
     [LISSTech.EntitySync.Core.EntityNormalizer]::NormalizeName('The Limited Company Shop LLC') | Should -Be 'limited company shop'
   }
 
-  It 'Shares the throttle/retry helper constants across vendors so HaloPSA, N-central, and NetSuite cannot drift' {
+  It 'Shares the throttle/retry helper constants across the three HTTP-retry adapters (HaloPSA, N-central, NetSuite) so they cannot drift' {
     $haloConst = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MinimumRequestIntervalMs
     $haloMax = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MaxRateLimitRetries
     $haloConst | Should -Be 500
@@ -4436,7 +4476,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'RateLimitedHttpRequester accepts the same public surface that HaloPSA, N-central, and NetSuite adapters call' {
+  It 'RateLimitedHttpRequester accepts the same public surface that the HaloPSA, N-central, and NetSuite adapters call through' {
     # The retry/throttle behavior is exercised end-to-end by the per-adapter rate-limit suites
     # (HaloPSA / N-central / NetSuite). This test locks in the public surface the adapters rely
     # on so a future signature drift cannot silently break all three vendors at once.

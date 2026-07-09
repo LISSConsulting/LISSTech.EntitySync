@@ -16,6 +16,24 @@ Creates review workbooks for a chained sync and applies only reviewed workbooks.
 Creates one review workbook per sync edge during planning, then applies only reviewed workbooks when
 `-ReviewedPlanPath` and `-Apply` are supplied. The default chain is `NetSuite -> HaloPSA -> NCentral`.
 
+## SYNTAX
+
+### Plan parameter set (default)
+
+```powershell
+Invoke-EntitySyncChain [-Path] <String> [-RootVendor <String>] [-HubVendor <String>] [-LeafVendors <String[]>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [-PassThru] [-WhatIf] [-Confirm] [<CommonParameters>]
+```
+
+`-RootVendor` defaults to `NetSuite`, `-HubVendor` defaults to `HaloPSA`, and `-LeafVendors` defaults to `@('NCentral')`. `-Path` accepts a directory; one workbook is written per edge.
+
+### Apply parameter set
+
+```powershell
+Invoke-EntitySyncChain [-ReviewedPlanPath] <String[]> [-Apply] [-PassThru] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-WhatIf] [-Confirm] [<CommonParameters>]
+```
+
+`-ReviewedPlanPath` accepts one or more `.xlsx` workbooks from a previous `Invoke-EntitySyncChain -Path` run. Items still marked `Review` are skipped.
+
 ## EXAMPLES
 
 ### Example 1

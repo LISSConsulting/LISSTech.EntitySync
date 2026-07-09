@@ -409,8 +409,12 @@ just clean        # remove compiled output
 
 ## 🧾 Status
 
-Initial target: **NetSuite customers → HaloPSA clients**.
+Shipped adapters:
 
-Also implemented: **N-central customers/sites → LCAT customer scopes**, applied as one authoritative batch per approved plan (see `specs/001-lcat-sync-adapter/`).
+- **NetSuite → HaloPSA**: NetSuite customers sync into HaloPSA clients (initial sync flow).
+- **HaloPSA → N-central**: HaloPSA clients and sites sync into N-central customers and sites, maintaining both sides of the client relationship via `externalId` and `client_links`/`site_links`.
+- **N-central → LCAT**: N-central customers and sites sync into LCAT customer scopes, applied as one authoritative batch per approved plan (see `specs/001-lcat-sync-adapter/`).
+
+NetSuite is a source-only adapter; LCAT is a sync target only. HaloPSA and N-central participate as both source and target.
 
 The core is intentionally vendor-neutral. Add the next vendor by implementing the adapter port, mapping into `ExternalEntity`, and leaving matching/planning alone.

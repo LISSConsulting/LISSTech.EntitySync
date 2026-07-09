@@ -24,6 +24,14 @@ CONFIGURATION
     parameters. The module requests the bearer token from HaloPSA and does not
     require a pre-generated access token.
 
+    NetSuite uses OAuth 1.0a credentials for the SuiteQL REST endpoint. Set
+    NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, NETSUITE_CONSUMER_SECRET,
+    NETSUITE_TOKEN_ID, and NETSUITE_TOKEN_SECRET, or pass the matching
+    Connect-EntitySyncVendor parameters. The module signs every SuiteQL
+    request with a fresh nonce and HMAC-SHA1 signature per attempt and never
+    caches the OAuth header. NetSuite is a source-only adapter in this
+    module; target writes go through HaloPSA, N-central, or LCAT.
+
     N-central uses a User-API token plus the service-organization id for the
     REST API (NCENTRAL_BASE_URL, NCENTRAL_USER_API_TOKEN, NCENTRAL_SERVICE_ORG_ID),
     or pass the matching Connect-EntitySyncVendor parameters. The module
