@@ -24,6 +24,7 @@
 - Empty Queue sweep done: LCAT apply now skips tampered approved plan items whose source is not an N-central Customer or Site before HTTP send; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: LCAT adapter duplicate-slug coverage now includes whitespace-hidden duplicates before HTTP send; `just test` passes.
 - Empty Queue sweep done: LCAT response parsing now explicitly covers explicit-null and empty-string `audit_event_id` per the contract's "preserved when present" rule; `just test` passes.
+- Empty Queue sweep done: LCAT response parsing now explicitly covers non-string `audit_event_id` shapes (number, boolean, object, array) at the unit level, mirroring the secret-leak integration guard; `just test` passes.
 
 ## Open Blockers
 

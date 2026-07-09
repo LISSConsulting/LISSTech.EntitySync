@@ -524,6 +524,19 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects non-string LCAT audit event ids from the sync response as malformed (ParseSyncResponse unit-level mirror of the integration secret-leak guard)' -ForEach @(
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":12345}'; Label = 'Number' },
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":true}'; Label = 'True' },
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":false}'; Label = 'False' },
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":{"secret":"do not echo"}}'; Label = 'Object' },
+    @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":["do not echo"]}'; Label = 'Array' }
+  ) {
+    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+
+    { $method.Invoke($null, @($Response)) } |
+      Should -Throw "*field 'audit_event_id' must be a string*"
+  }
+
   It 'Creates an NCentral Customer to LCAT plan from pipeline sources without any LCAT vendor write (T016, US1)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
