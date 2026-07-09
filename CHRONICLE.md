@@ -878,6 +878,13 @@
 - T051 done: ran `just test` for the LCAT sync adapter polish validation. The command rebuilt the
   module successfully and Pester reported all 88 tests passing with 0 failures. Next incomplete task:
   T052 (run the LCAT quickstart dry-run validation from `specs/001-lcat-sync-adapter/quickstart.md`).
+- T052 done: ran the LCAT quickstart dry-run path with local sample N-central Customer/Site entities
+  because no `NCENTRAL_*` or `LCAT_*` environment variables were present for live discovery. The
+  module built successfully, dummy `NCentral` and `LCAT` connections registered, Customer and Site
+  plans each produced one `Create` item, and `Invoke-EntitySyncPlan -Apply -WhatIf -PassThru`
+  reached the single LCAT batch `WhatIf` boundary without calling the adapter. Full regression
+  validation after the dry-run check: `just test` reports all 88 tests passing. Next incomplete task:
+  T053 (regenerate external help from `docs/` into `en-US/` using `justfile` if platyPS is available).
 
 ## Open Blockers
 
@@ -888,6 +895,7 @@
 
 | Priority | Finding | Evidence | Status |
 |----------|---------|----------|--------|
+| P2 | Quickstart says `Invoke-EntitySyncPlan -Apply -WhatIf -PassThru` output identifies the approved LCAT batch, but current behavior emits only the PowerShell `What if:` confirmation and returns no pass-through objects for approved batch items. | Local T052 dry-run with sample Customer/Site plans reached `What if: Performing the operation "Sync approved customer scopes to LCAT"` for each batch and produced zero pass-through results; existing T037 regression also asserts null output for this path. | Open; decide whether to update quickstart wording or implement structured WhatIf pass-through without adding duplicate output to real `-Apply -PassThru` runs. |
 
 ## Decisions To Preserve
 
