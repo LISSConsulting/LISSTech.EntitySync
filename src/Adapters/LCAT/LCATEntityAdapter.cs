@@ -236,6 +236,11 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     {
         using var document = JsonDocument.Parse(responseBody);
         var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("LCAT batch sync response must be a JSON object.");
+        }
+
         return new LCATSyncResult
         {
             InsertedCount = root.GetInt("inserted_count") ?? 0,
