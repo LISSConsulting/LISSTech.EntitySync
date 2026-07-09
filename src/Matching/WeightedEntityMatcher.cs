@@ -160,30 +160,6 @@ public sealed class WeightedEntityMatcher : IEntityMatcher
         };
     }
 
-    private static EntityMatchCandidate Score(ExternalEntity source, ExternalEntity target, MatchOptions options)
-    {
-        var sourceExternalId = source.GetExternalId(options.SourceExternalIdName);
-        var targetExternalId = target.GetExternalId(options.TargetExternalIdName) ?? target.GetCustomField(options.TargetCustomFieldName);
-
-        if (!string.IsNullOrWhiteSpace(sourceExternalId) && string.Equals(sourceExternalId, targetExternalId, StringComparison.OrdinalIgnoreCase))
-        {
-            var externalIdName = !string.IsNullOrWhiteSpace(target.GetExternalId(options.TargetExternalIdName)) ? options.TargetExternalIdName : options.TargetCustomFieldName;
-            return Linked(source, target, externalIdName, sourceExternalId);
-        }
-
-        return Score(new SourceInfo(source, options), new TargetInfo(target, options), options);
-    }
-
-    private static IReadOnlyList<EntityMatchCandidate> LegacyFindMatches(ExternalEntity source, IReadOnlyList<ExternalEntity> targets, MatchOptions options)
-    {
-        return targets.Select(target => Score(source, target, options))
-            .Where(candidate => candidate.Score > 0)
-            .OrderByDescending(candidate => candidate.Score)
-            .ThenBy(candidate => candidate.Target.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(10)
-            .ToArray();
-    }
-
     private static int Similarity(string left, string right)
     {
         if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return 0;
