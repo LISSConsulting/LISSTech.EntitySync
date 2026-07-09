@@ -470,6 +470,29 @@ namespace EntitySyncTests
     }
   }
 
+  It 'New-EntitySyncPlan help uses LcatSourceInvalid for every LCAT safe-failure and never the obsolete LcatSiteParentMissing' {
+    # Find the repo root by walking up from the test file's location until a Module/ folder shows up.
+    $testPath = $PSCommandPath
+    if (-not $testPath) { $testPath = Join-Path $PSScriptRoot 'LISSTech.EntitySync.Tests.ps1' }
+    $repoRoot = Split-Path -Parent $testPath
+    while ($repoRoot -and -not (Test-Path (Join-Path $repoRoot 'Module'))) { $repoRoot = Split-Path -Parent $repoRoot }
+
+    # Source of truth: docs/New-EntitySyncPlan.md
+    $docPath = Join-Path $repoRoot 'docs' 'New-EntitySyncPlan.md'
+    $docContent = Get-Content -LiteralPath $docPath -Raw
+    $docContent | Should -Match 'LcatSourceInvalid' -Because 'New-EntitySyncPlan.md must advertise LcatSourceInvalid - the code emits one unified MatchType for every LCAT source-validation failure'
+    $docContent | Should -Not -Match 'LcatSiteParentMissing' -Because 'LcatSiteParentMissing is an obsolete per-cause variant the code never emitted'
+
+    # Both committed external-help copies must mirror the doc - operators read these via Get-Help.
+    foreach ($relativeHelp in @('en-US/LISSTech.EntitySync.dll-Help.xml', 'Module/en-US/LISSTech.EntitySync.dll-Help.xml')) {
+      $helpPath = Join-Path $repoRoot $relativeHelp
+      Test-Path $helpPath | Should -BeTrue -Because "$relativeHelp must exist alongside the doc so the module renders external help"
+      $helpContent = Get-Content -LiteralPath $helpPath -Raw
+      $helpContent | Should -Match 'LcatSourceInvalid' -Because "$relativeHelp must mirror the doc and advertise LcatSourceInvalid for the LCAT site-to-customer example"
+      $helpContent | Should -Not -Match 'LcatSiteParentMissing' -Because "$relativeHelp must not advertise the obsolete LcatSiteParentMissing match type"
+    }
+  }
+
   It 'Completes only vendor-specific entity types for Get-EntitySyncEntity' {
     $haloInput = 'Get-EntitySyncEntity -Vendor HaloPSA -Type '
     $haloTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($haloInput, $haloInput.Length, $null).CompletionMatches.CompletionText
