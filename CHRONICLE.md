@@ -16,6 +16,7 @@
 - Empty Queue sweep done: LCAT apply now returns a non-secret no-op result when a plan has no approved customer-scope items; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: LCAT adapter now reports malformed successful batch responses as redacted path-scoped errors without echoing raw response bodies; `just test` passes.
 - Empty Queue sweep done: LCAT adapter now treats successful non-object batch responses as malformed redacted errors instead of zero-count successes; `just test` passes.
+- Empty Queue sweep done: LCAT adapter now treats present but non-numeric batch count fields as malformed redacted errors; `just build`, `just test-load`, and `just test` pass.
 
 ## Open Blockers
 

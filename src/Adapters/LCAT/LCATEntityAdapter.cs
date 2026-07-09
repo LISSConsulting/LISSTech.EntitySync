@@ -243,11 +243,19 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
         return new LCATSyncResult
         {
-            InsertedCount = root.GetInt("inserted_count") ?? 0,
-            UpdatedCount = root.GetInt("updated_count") ?? 0,
-            RetiredCount = root.GetInt("retired_count") ?? 0,
-            ActiveCount = root.GetInt("active_count") ?? 0,
+            InsertedCount = ReadOptionalCount(root, "inserted_count"),
+            UpdatedCount = ReadOptionalCount(root, "updated_count"),
+            RetiredCount = ReadOptionalCount(root, "retired_count"),
+            ActiveCount = ReadOptionalCount(root, "active_count"),
             AuditEventId = root.GetString("audit_event_id")
         };
+    }
+
+    private static int ReadOptionalCount(JsonElement root, string name)
+    {
+        if (!root.TryGetPropertyIgnoreCase(name, out var property)) return 0;
+        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var numeric)) return numeric;
+        if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var textNumeric)) return textNumeric;
+        throw new JsonException($"LCAT batch sync response field '{name}' must be an integer.");
     }
 }
