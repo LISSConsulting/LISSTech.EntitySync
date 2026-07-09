@@ -999,6 +999,26 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects malformed LCAT customer-scope requests before sending the batch' {
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = '###'
+      $customerScope.DisplayName = ''
+      $customerScope.NCentralCustomerId = ''
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+
+      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*customers`[0`].slug must match the LCAT customer-scope contract*display_name is required*ncentral_customer_id is required*'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Excludes LCATBearerToken from the Connect-EntitySyncVendor LCAT connection object (T035, US3)' {
     $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
     $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken

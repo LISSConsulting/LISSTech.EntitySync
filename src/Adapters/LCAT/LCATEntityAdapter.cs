@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
@@ -28,6 +29,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 {
     private const string SyncReason = "EntitySync N-central to LCAT sync";
     private const string SyncPath = "rpc/sync_ncentral_customers";
+    private static readonly Regex LcatSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled);
 
     private readonly LCATOptions options;
     private readonly HttpClient httpClient = new();
@@ -90,7 +92,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<LCATSyncResult> SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest> customers, CancellationToken cancellationToken)
     {
-        EnsureUniqueCustomerIds(customers);
+        EnsureCustomerScopeContract(customers);
         var body = BuildSyncRequestBody(customers);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         Trace?.Invoke("LCAT POST " + SyncPath);
@@ -133,6 +135,27 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     {
         if (string.IsNullOrWhiteSpace(path)) return new InvalidOperationException(message);
         return new InvalidOperationException($"{message} Path: {path}.");
+    }
+
+    private static void EnsureCustomerScopeContract(IReadOnlyList<LCATCustomerScopeRequest> customers)
+    {
+        var errors = new List<string>();
+        for (var i = 0; i < customers.Count; i++)
+        {
+            var customer = customers[i];
+            var prefix = $"customers[{i}]";
+            if (string.IsNullOrWhiteSpace(customer.Slug)) errors.Add($"{prefix}.slug is required");
+            else if (!LcatSlugPattern.IsMatch(customer.Slug)) errors.Add($"{prefix}.slug must match the LCAT customer-scope contract");
+            if (string.IsNullOrWhiteSpace(customer.DisplayName)) errors.Add($"{prefix}.display_name is required");
+            if (string.IsNullOrWhiteSpace(customer.NCentralCustomerId)) errors.Add($"{prefix}.ncentral_customer_id is required");
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new InvalidOperationException("LCAT batch sync request is invalid: " + string.Join("; ", errors) + ".");
+        }
+
+        EnsureUniqueCustomerIds(customers);
     }
 
     private static void EnsureUniqueCustomerIds(IReadOnlyList<LCATCustomerScopeRequest> customers)
