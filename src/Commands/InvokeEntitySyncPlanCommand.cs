@@ -1,5 +1,6 @@
 using System.Management.Automation;
 using LISSTech.EntitySync.Adapters.Halo;
+using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
@@ -30,6 +31,14 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions { TargetCustomFieldName = TargetCustomFieldName };
+
+            if (Plan.TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyLcatBatch(mapper, options);
+                WriteProgress(new ProgressRecord(1, "Invoke EntitySync plan", "Complete") { RecordType = ProgressRecordType.Completed });
+                return;
+            }
+
             for (var i = 0; i < Plan.Items.Count; i++)
             {
                 var item = Plan.Items[i];
@@ -88,6 +97,67 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         {
             ThrowTerminatingError(new ErrorRecord(ex, "InvokeEntitySyncPlanFailed", ErrorCategory.WriteError, Plan));
         }
+    }
+
+    private void ApplyLcatBatch(DefaultEntityMapper mapper, MatchOptions options)
+    {
+        var batchItems = new List<(EntitySyncPlanItem Item, LCATCustomerScopeRequest Request)>();
+
+        for (var i = 0; i < Plan.Items.Count; i++)
+        {
+            var item = Plan.Items[i];
+            var percent = (int)Math.Round((double)(i + 1) / Math.Max(1, Plan.Items.Count) * 100);
+            WriteProgress(new ProgressRecord(1, "Invoke EntitySync plan", $"{item.Action} {i + 1}/{Plan.Items.Count}: {item.Source.Name}") { PercentComplete = percent });
+
+            if (item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)) continue;
+            if (item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
+            {
+                WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = "Review", Success = false, Message = "Item requires review before apply." });
+                continue;
+            }
+            if (!Apply)
+            {
+                WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = true, Message = "Planned only; pass -Apply to write." });
+                continue;
+            }
+
+            var request = item.Target != null
+                ? mapper.MapUpdate(item.Source, item.Target, options)
+                : mapper.MapCreate(item.Source, Plan.TargetVendor, Plan.TargetEntityType, options);
+            batchItems.Add((item, ToLcatCustomerScopeRequest(request)));
+        }
+
+        if (batchItems.Count == 0) return;
+        if (!ShouldProcess($"{batchItems.Count} customer scope(s)", "Sync approved customer scopes to LCAT")) return;
+
+        var adapter = ConnectionRegistry.Get(Plan.TargetVendor) as LCATEntityAdapter
+            ?? throw new InvalidOperationException("LCAT adapter is required to apply an LCAT customer scope batch.");
+        var syncResult = adapter.SyncCustomerScopesAsync(batchItems.Select(b => b.Request).ToList(), CancellationToken.None).GetAwaiter().GetResult();
+
+        foreach (var (item, _) in batchItems)
+        {
+            WriteResult(new EntityWriteResult
+            {
+                Vendor = Plan.TargetVendor,
+                EntityType = Plan.TargetEntityType,
+                Id = item.Target?.Id,
+                Action = item.Action,
+                Success = true,
+                Message = $"LCAT batch sync applied (inserted {syncResult.InsertedCount}, updated {syncResult.UpdatedCount}, retired {syncResult.RetiredCount}, active {syncResult.ActiveCount}).",
+                Raw = syncResult
+            });
+        }
+    }
+
+    private static LCATCustomerScopeRequest ToLcatCustomerScopeRequest(EntityWriteRequest request)
+    {
+        return new LCATCustomerScopeRequest
+        {
+            Slug = request.Fields.TryGetValue("slug", out var slug) ? slug as string ?? string.Empty : string.Empty,
+            DisplayName = request.Fields.TryGetValue("display_name", out var displayName) ? displayName as string ?? string.Empty : string.Empty,
+            NCentralCustomerId = request.Fields.TryGetValue("ncentral_customer_id", out var ncId) ? ncId as string ?? string.Empty : string.Empty,
+            NCentralParentCustomerId = request.Fields.TryGetValue("ncentral_parent_customer_id", out var parentId) ? parentId as string : null
+        };
     }
 
     private void WriteResult(EntityWriteResult result)

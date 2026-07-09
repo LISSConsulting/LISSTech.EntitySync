@@ -431,6 +431,33 @@
   blocked on T024, not this task. Next incomplete task: T024 (LCAT customer batch apply branch with
   `-Apply`/`-WhatIf`/`ShouldProcess`/`-PassThru` support in `InvokeEntitySyncPlanCommand.cs`), which
   is what unblocks the currently-red T017 tests.
+- T024 done: added an `ApplyLcatBatch` branch to `InvokeEntitySyncPlanCommand.ProcessRecord` in
+  `src/Commands/InvokeEntitySyncPlanCommand.cs`, taken whenever `Plan.TargetVendor` is `LCAT`, that
+  replaces the generic per-item write loop entirely for that plan (matching plan.md's "LCAT-specific
+  batch branch... over per-item adapter writes" structure decision). The branch still honors the
+  existing None/Review/`!Apply` per-item short-circuits (Review is written as its own
+  `Success = false` result and never joins the batch; `!Apply` still writes "Planned only" per item),
+  then maps every remaining Create/Update/Link item via `mapper.MapCreate`/`MapUpdate` (branching on
+  `item.Target != null`, same convention as the generic loop), converts each `EntityWriteRequest`'s
+  snake_case `Fields` (`slug`/`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`,
+  set by T022) into an `LCATCustomerScopeRequest` via a new `ToLcatCustomerScopeRequest` helper, and
+  issues exactly one `ShouldProcess("{count} customer scope(s)", "Sync approved customer scopes to
+  LCAT")` call for the whole batch before calling `LCATEntityAdapter.SyncCustomerScopesAsync` (T020)
+  once — this is what the T017 tests lock in (one `What if:` line mentioning `LCAT` regardless of
+  item count, and a Review item never counted toward or blocking that single confirmation). On
+  `-WhatIf`, `ShouldProcess` returns false and the method returns before ever touching the adapter,
+  so no `SyncCustomerScopesAsync` call happens in dry-run mode, matching every other vendor's
+  `-WhatIf` behavior in this command. On a real apply, one `EntityWriteResult` per batched item is
+  written (all sharing the same aggregate inserted/updated/retired/active counts from the single
+  LCAT response, with `Raw` set to the full `LCATSyncResult`) since LCAT's sync endpoint returns
+  batch-wide counts, not a per-item outcome. Deliberately did not add Status-based filtering
+  (Reject/NoUpdate/unsafe/duplicate item exclusion) — confirmed via `EntitySyncPlanWorkbook.cs:384-388`
+  that Reject/No Update decisions already convert to `Action = "None"` before reaching this command,
+  so the existing None-skip covers them for now; explicit safe-failure-reason filtering is T042/T043
+  (US3), not this task. `just build` succeeds; `just test` now reports all 64 tests passing (0
+  failed), i.e. both previously-red T017 tests now pass with no regressions. Next incomplete task:
+  T025 (update public command help for the customer sync flow in `docs/Connect-EntitySyncVendor.md`,
+  `docs/New-EntitySyncPlan.md`, and `docs/Invoke-EntitySyncPlan.md`), the last task in Phase 3 (US1).
 
 ## Open Blockers
 
