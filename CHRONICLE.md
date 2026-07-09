@@ -413,6 +413,24 @@
   T017 (2) failures that are blocked on T023/T024, not this task. Next incomplete task: T023
   (preserve LCAT target candidates and Customer-only target defaults during NCentral Customer
   planning in `NewEntitySyncPlanCommand.cs`), which is what unblocks the currently-red T016 tests.
+- T023 done: removed the `NotImplementedException` guard for `TargetVendor LCAT` from
+  `NewEntitySyncPlanCommand.EndProcessing` in `src/Commands/NewEntitySyncPlanCommand.cs` (added in
+  T007) and let the existing generic plan pipeline run unchanged. No other change was needed: T019's
+  `LCATEntityAdapter.GetEntitiesAsync` already returns an empty Customer set (preserving
+  `TargetCandidates.Count == 0` for LCAT targets by construction, since no LCAT read endpoint
+  exists), and `EntityTypesForVendor`'s existing catch-all fallback (`return new[] { "Customer" }`,
+  predating this feature) already gives LCAT its Customer-only default/completion with no new
+  branch required. Confirmed no other command-surface change was needed by tracing the full
+  `EndProcessing` path for a pipeline-sourced NCentral Customer -> LCAT plan: `ConnectionRegistry.Get`
+  now succeeds for both vendors, `usingHaloNCentralLinks`/`usingHaloNCentralSiteLinks` stay false
+  (source adapter isn't `HaloEntityAdapter`), and unmatched sources fall through to the generic
+  `NoMatch`/`Create`-if-`-CreateMissing` branch already present in `CreatePlanItem`. `just build`
+  succeeds; `just test` now reports 62 passed / 2 failed, i.e. both previously-red T016 tests
+  (`Creates an NCentral Customer to LCAT plan...`, `Normalizes the LTAC target alias...`) now pass
+  with no regressions, leaving only the pre-existing T017 batch-confirmation-count failures that are
+  blocked on T024, not this task. Next incomplete task: T024 (LCAT customer batch apply branch with
+  `-Apply`/`-WhatIf`/`ShouldProcess`/`-PassThru` support in `InvokeEntitySyncPlanCommand.cs`), which
+  is what unblocks the currently-red T017 tests.
 
 ## Open Blockers
 

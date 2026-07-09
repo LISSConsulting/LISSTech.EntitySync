@@ -81,11 +81,6 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         try
         {
             TargetVendor = NormalizeVendorAlias(TargetVendor);
-            if (TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new NotImplementedException("LCAT sync plan targets are implemented in a later EntitySync task.");
-            }
-
             var sourceAdapter = ConnectionRegistry.Get(SourceVendor);
             var targetAdapter = ConnectionRegistry.Get(TargetVendor);
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
