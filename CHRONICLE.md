@@ -22,6 +22,7 @@
 - Empty Queue sweep done: LCAT adapter now rejects null customer-scope batch rows before HTTP send; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: LCAT adapter now rejects empty customer-scope batches before HTTP send; `just build`, `just test-load`, and `just test` pass.
 - Empty Queue sweep done: LCAT apply now skips tampered approved plan items whose source is not an N-central Customer or Site before HTTP send; `just build`, `just test-load`, and `just test` pass.
+- Empty Queue sweep done: LCAT adapter duplicate-slug coverage now includes whitespace-hidden duplicates before HTTP send; `just test` passes.
 
 ## Open Blockers
 

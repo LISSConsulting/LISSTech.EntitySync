@@ -1585,6 +1585,40 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects whitespace-hidden duplicate LCAT customer-scope slugs before HTTP send' {
+    $lcatAdapter = New-TestLCATAdapter
+    try {
+      $customerOne = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerOne.Slug = ' duplicate-scope '
+      $customerOne.DisplayName = 'Duplicate Scope A'
+      $customerOne.NCentralCustomerId = '1301'
+
+      $customerTwo = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerTwo.Slug = 'duplicate-scope'
+      $customerTwo.DisplayName = 'Duplicate Scope B'
+      $customerTwo.NCentralCustomerId = '1302'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerOne)
+      $customers.Add($customerTwo)
+
+      $caught = $null
+      try {
+        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      }
+      catch {
+        $caught = $_
+      }
+
+      $caught | Should -Not -BeNullOrEmpty
+      $caught.Exception.Message | Should -Match 'duplicate slug'
+      $caught.Exception.Message | Should -Match 'duplicate-scope'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Marks invalid LCAT source records for review during planning with non-secret safe-failure reasons (T043, US3)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
