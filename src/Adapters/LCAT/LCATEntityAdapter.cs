@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
@@ -32,6 +33,9 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
     public LCATEntityAdapter(LCATOptions options)
     {
         this.options = options;
+        httpClient.BaseAddress = new Uri(EnsureTrailingSlash(options.BaseUrl));
+        httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.BearerToken);
     }
 
     public string Vendor => "LCAT";
@@ -42,7 +46,12 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException("LCAT Customer reads are implemented in a later EntitySync task.");
+        if (!query.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("LCAT adapter currently supports EntityType Customer.");
+
+        // No LCAT customer-scope list/read endpoint is defined in the sync RPC contract
+        // (contracts/lcat-sync-rpc.md); returning an empty set lets N-central sources plan as
+        // create/sync candidates per contracts/powershell-command-contract.md.
+        return Task.FromResult<IReadOnlyList<ExternalEntity>>(Array.Empty<ExternalEntity>());
     }
 
     public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(string type, CancellationToken cancellationToken)
@@ -60,12 +69,15 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
         throw new NotSupportedException("LCAT does not support per-item update. Apply an approved plan through the LCAT batch sync path.");
     }
 
-    public Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
+    public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
     {
-        throw new NotImplementedException("LCAT connection testing is implemented in a later EntitySync task.");
+        using var response = await httpClient.GetAsync(string.Empty, cancellationToken).ConfigureAwait(false);
+        return response.IsSuccessStatusCode;
     }
 
     public void Dispose() => httpClient.Dispose();
+
+    private static string EnsureTrailingSlash(string value) => value.EndsWith("/", StringComparison.Ordinal) ? value : value + "/";
 
     private static string BuildSyncRequestBody(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {

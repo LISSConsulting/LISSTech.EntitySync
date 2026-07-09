@@ -296,8 +296,47 @@
   LCAT-specific batch branch exists in `InvokeEntitySyncPlanCommand` yet —
   that's T024). `just build` succeeds; `just test` reports 56 passed / 8
   failed (the same 6 pre-existing T014/T016 failures, now joined by 2 new
-  expected T017 failures). Next incomplete task: T018 (LCAT connection
-  options with base URL and bearer credential).
+  expected T017 failures).
+- T018 assessed as already satisfied: `LCATOptions.cs` has carried plain `BaseUrl`/`BearerToken`
+  string properties since T001, matching the exact shape of every other vendor's Options POCO
+  (`NCentralOptions.BaseUrl`/`UserApiToken`, `HaloOptions.BaseUrl`/`AccessToken`) — none of which
+  hold validation logic. Confirmed via `ConnectEntitySyncVendorCommand.cs` that URL/credential
+  validation (`Require`, `ValidateAbsoluteHttpsUrl`) universally lives in the Connect command
+  (T021), never in the Options class itself. `git log` confirms `LCATOptions.cs` has had no
+  commits since T001. No code change made for T018; moved directly to T019.
+- T019 done: implemented `LCATEntityAdapter`'s connection validation, Customer reads, and
+  confirmed no per-item create/update path in `src/Adapters/LCAT/LCATEntityAdapter.cs`. Wired the
+  constructor to set `httpClient.BaseAddress` (from `options.BaseUrl`, trailing-slash normalized
+  like `NCentralEntityAdapter`), an `Accept: application/json` header, and
+  `Authorization: Bearer <options.BearerToken>` (matching `contracts/lcat-sync-rpc.md`'s
+  "LCAT operator credential in the authorization header"), so both `TestConnectionAsync` and the
+  future T020 batch-send reuse the same authenticated client. `GetEntitiesAsync` now throws
+  `NotSupportedException` for any `EntityType` other than `Customer` (matching the
+  NetSuite/NCentral adapter precedent) and otherwise returns an empty list — no LCAT
+  customer-scope list/read endpoint exists in the sync RPC contract, and
+  `contracts/powershell-command-contract.md` explicitly allows "reads may return an empty set so
+  N-central sources plan as create/sync candidates" when no read surface exists. This empty-list
+  behavior is what the still-pending T016 plan-creation tests (`TargetCandidates.Count` asserted
+  as `0`) already lock in for whenever T023 wires real LCAT target reads into
+  `NewEntitySyncPlanCommand`. `TestConnectionAsync` sends a real `GET` to the LCAT base URL root
+  (PostgREST convention: root returns the service's OpenAPI schema) and returns
+  `response.IsSuccessStatusCode`, mirroring the lightweight-endpoint pattern used by
+  `NCentralEntityAdapter.TestConnectionAsync` (`GET api/auth/validate`) and
+  `HaloEntityAdapter.TestConnectionAsync` (`GET api/client?count=1`). `CreateEntityAsync`/
+  `UpdateEntityAsync` were already `NotSupportedException` from T001/T011 and needed no change —
+  verified they still throw before any HTTP call, so per-item LCAT writes remain impossible by
+  construction. Did not touch `TestEntitySyncConnectionCommand.cs` (still throws
+  `NotImplementedException` for LCAT per T008, since wiring `Test-EntitySyncConnection -Vendor
+  LCAT` through to this adapter is part of T021/US1 connection registration, not this task) or add
+  a Pester test (T019 has no dedicated test entry in `tasks.md`, matching the T009/T011/T012
+  Foundational-task precedent of manual-only verification for adapter-shell tasks without an
+  explicit test task). Verified manually via a standalone PowerShell session: `GetEntitiesAsync`
+  with `EntityType 'Customer'` returns an empty array with no network call, and `EntityType 'Site'`
+  throws `NotSupportedException` with a clear message. `just build`, `just test-load`, and `just
+  test` all succeed; `just test` reports the same 56 passed / 8 failed as before (the pre-existing
+  T014/T016/T017 failures, unchanged — confirms no regression and no accidental fix of
+  still-pending US1 work). Next incomplete task: T020 (LCAT batch sync method for approved
+  customer-scope requests).
 
 ## Open Blockers
 
