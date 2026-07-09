@@ -882,6 +882,59 @@ Describe 'LISSTech.EntitySync' {
     ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
   }
 
+  It 'Excludes N-central registration tokens and other custom field metadata from LCAT customer mapping (T036, US3)' {
+    $registrationToken = 'ncentral-reg-token-4f3e2d1c'
+
+    $customerSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $customerSource.Vendor = 'NCentral'
+    $customerSource.EntityType = 'Customer'
+    $customerSource.Id = '701'
+    $customerSource.Name = 'Arista Air Conditioning Corp.'
+    $customerSource.ExternalIds['NCentralCustomerId'] = '701'
+    $customerSource.CustomFields['NCentralRegistrationToken'] = $registrationToken
+    $customerSource.CustomFields['NCentralOrgUnitType'] = 'customer'
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $customerRequest = $mapper.MapCreate($customerSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $customerRequest.Fields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
+    $customerRequest.Fields.Keys | Should -Not -Contain 'registration_token'
+    $customerRequest.CustomFields.Count | Should -Be 0
+    ($customerRequest.Fields.Values -join '|') | Should -Not -Match ([regex]::Escape($registrationToken))
+  }
+
+  It 'Excludes N-central registration tokens from LCAT site-derived mapping and the serialized batch request (T036, US3)' {
+    $registrationToken = 'ncentral-site-reg-token-9a8b7c6d'
+
+    $siteSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $siteSource.Vendor = 'NCentral'
+    $siteSource.EntityType = 'Site'
+    $siteSource.Id = '702'
+    $siteSource.Name = 'Main Office'
+    $siteSource.ExternalIds['NCentralSiteId'] = '702'
+    $siteSource.ExternalIds['NCentralCustomerId'] = '701'
+    $siteSource.CustomFields['NCentralCustomerName'] = 'Arista Air Conditioning Corp.'
+    $siteSource.CustomFields['NCentralRegistrationToken'] = $registrationToken
+
+    $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
+    $siteRequest = $mapper.MapCreate($siteSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+
+    $siteRequest.Fields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
+    $siteRequest.CustomFields.Count | Should -Be 0
+    ($siteRequest.Fields.Values -join '|') | Should -Not -Match ([regex]::Escape($registrationToken))
+
+    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $siteScope = $toScopeMethod.Invoke($null, @($siteRequest))
+
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers.Add($siteScope)
+
+    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $bodyJson = $buildMethod.Invoke($null, @(, $customers))
+
+    $bodyJson | Should -Not -Match ([regex]::Escape($registrationToken))
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

@@ -706,6 +706,27 @@
   pre-existing correct behavior. `just build` succeeds; `just test` reports all 77 tests passing (0
   failed, up from 75 — no regressions). Next incomplete task: T036 (Pester tests proving N-central
   registration tokens are not mapped into LCAT requests).
+- T036 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T035
+  error-message test, before `Declares object output for Get-EntitySyncConnection`). Both give an
+  NCentral `ExternalEntity` source (one Customer, one Site) a `CustomFields['NCentralRegistrationToken']`
+  entry simulating an N-central agent registration/deployment secret, then call
+  `DefaultEntityMapper.MapCreate` targeting `LCAT`/`Customer` and assert `request.Fields` never
+  contains the token key or value and `request.CustomFields.Count` is `0` — confirming
+  `AddLcatCustomerScopeFields` (T022/T030) only ever writes its four known keys
+  (`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`/`slug`) and never copies
+  `source.CustomFields` wholesale, and that no other `targetVendor == "LCAT"`-gated helper in
+  `DefaultEntityMapper.cs` exists to leak it. The Site test additionally reflects on
+  `InvokeEntitySyncPlanCommand.ToLcatCustomerScopeRequest` (T024) and
+  `LCATEntityAdapter.BuildSyncRequestBody` (T011/T015) — the same production helpers T029's test
+  already exercises — to serialize the mapped request into the actual batch JSON and assert the
+  registration token string does not appear anywhere in it, extending the "no secret leak" guarantee
+  all the way to the wire payload, not just the intermediate `EntityWriteRequest`. Both tests passed
+  immediately with no product code changes, matching the T013/T029/T032/T035 precedent where a test
+  locks in pre-existing correct behavior rather than driving new implementation — confirmed via
+  `git log` that none of `DefaultEntityMapper.cs`/`InvokeEntitySyncPlanCommand.cs`/
+  `LCATEntityAdapter.cs` needed edits. `just build` succeeds; `just test` reports all 79 tests
+  passing (0 failed, up from 77 — no regressions). Next incomplete task: T037 (Pester tests for
+  `Invoke-EntitySyncPlan -WhatIf` producing no LCAT writes).
 
 ## Open Blockers
 
