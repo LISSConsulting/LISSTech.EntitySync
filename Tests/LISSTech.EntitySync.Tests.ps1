@@ -935,6 +935,42 @@ Describe 'LISSTech.EntitySync' {
     $bodyJson | Should -Not -Match ([regex]::Escape($registrationToken))
   }
 
+  It 'Performs no LCAT batch sync when Invoke-EntitySyncPlan is called with -WhatIf, even with -Apply (T037, US3)' {
+    $lcatAdapter = New-TestLCATAdapter
+    # Dispose the adapter's HttpClient up front so any attempt to actually send the batch
+    # request throws ObjectDisposedException, giving a deterministic, network-free proof that
+    # -WhatIf blocked the write: if the ShouldProcess guard in ApplyLcatBatch were ever bypassed,
+    # SyncCustomerScopesAsync's httpClient.PostAsync call would fail loudly instead of silently
+    # succeeding against a real endpoint.
+    $lcatAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'NCentral'
+    $source.EntityType = 'Customer'
+    $source.Id = '801'
+    $source.Name = 'Whatif Widgets Inc.'
+    $source.ExternalIds['NCentralCustomerId'] = '801'
+
+    $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
+    $item.Action = 'Create'
+    $item.Source = $source
+    $item.MatchType = 'NoMatch'
+    [void]$item.Reasons.Add('No target candidate found')
+
+    $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+    $plan.SourceVendor = 'NCentral'
+    $plan.SourceEntityType = 'Customer'
+    $plan.TargetVendor = 'LCAT'
+    $plan.TargetEntityType = 'Customer'
+    [void]$plan.Items.Add($item)
+
+    $results = $null
+    { $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru } | Should -Not -Throw
+
+    $results | Should -BeNullOrEmpty
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

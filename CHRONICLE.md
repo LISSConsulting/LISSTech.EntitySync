@@ -727,6 +727,26 @@
   `LCATEntityAdapter.cs` needed edits. `just build` succeeds; `just test` reports all 79 tests
   passing (0 failed, up from 77 — no regressions). Next incomplete task: T037 (Pester tests for
   `Invoke-EntitySyncPlan -WhatIf` producing no LCAT writes).
+- T037 done: added one Pester test to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T036
+  registration-token tests, before `Declares object output for Get-EntitySyncConnection`) proving
+  `Invoke-EntitySyncPlan -Apply -WhatIf -PassThru` performs no LCAT batch sync. Registers an LCAT
+  adapter whose `HttpClient` is disposed *before* registration, so if the `ShouldProcess` guard in
+  `InvokeEntitySyncPlanCommand.ApplyLcatBatch` (`src/Commands/InvokeEntitySyncPlanCommand.cs:131`)
+  were ever bypassed, `SyncCustomerScopesAsync`'s `httpClient.PostAsync` call would throw
+  `ObjectDisposedException` and the command would terminate — a deterministic, network-free proof
+  that avoids relying on DNS failure against the `lcat.example.test` placeholder domain the way the
+  existing T017 WhatIf tests do. Asserts both no exception and that `-PassThru` produced no output
+  (`$results | Should -BeNullOrEmpty`), confirming the early `return` at line 131 fires before any
+  `WriteResult` call for the batch. Hit one authoring bug while writing this: `@($results).Count`
+  is `1` even when `$results` is `$null`, because wrapping `$null` in `@()` produces a one-element
+  array containing `$null` — classic PowerShell gotcha. Switched to `Should -BeNullOrEmpty`, which
+  handles `$null` correctly. No product code changes; this test locks in behavior that
+  `ApplyLcatBatch`'s existing `ShouldProcess` call already provided, same precedent as T013/T029/
+  T035/T036. Left `tasks.md`'s T037 checkbox unchecked per the read-only-specs rule (T030-T036 were
+  also never checked off there; this file is the actual progress record). `just build` succeeds;
+  `just test` reports all 80 tests passing (0 failed, up from 79 — no regressions). Next incomplete
+  task: T038 (Pester tests for Review, Reject, No Update, None, unsafe, duplicate, and incomplete
+  items being skipped).
 
 ## Open Blockers
 
