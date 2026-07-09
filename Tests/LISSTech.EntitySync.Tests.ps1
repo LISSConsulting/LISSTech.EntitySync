@@ -1026,6 +1026,64 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Rejects whitespace-hidden duplicate LCAT ncentral_customer_id values before HTTP send' {
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope.Slug = 'whitespace-duplicate-customer'
+      $customerScope.DisplayName = 'Whitespace Duplicate Customer'
+      $customerScope.NCentralCustomerId = '701'
+
+      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope.Slug = 'whitespace-duplicate-site'
+      $siteScope.DisplayName = 'Whitespace Duplicate Site'
+      $siteScope.NCentralCustomerId = ' 701 '
+      $siteScope.NCentralParentCustomerId = '701'
+
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers.Add($customerScope)
+      $customers.Add($siteScope)
+
+      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*duplicate ncentral_customer_id*'
+    }
+    finally {
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Trims LCAT customer-scope values before serializing the batch request' {
+    $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $customerScope.Slug = ' arista-air-conditioning '
+    $customerScope.DisplayName = ' Arista Air Conditioning Corp. '
+    $customerScope.NCentralCustomerId = ' 701 '
+    $customerScope.NCentralParentCustomerId = ' '
+
+    $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $siteScope.Slug = ' arista-air-conditioning-main-office '
+    $siteScope.DisplayName = ' Main Office '
+    $siteScope.NCentralCustomerId = ' 702 '
+    $siteScope.NCentralParentCustomerId = ' 701 '
+
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers.Add($customerScope)
+    $customers.Add($siteScope)
+
+    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $bodyJson = $buildMethod.Invoke($null, @(, $customers))
+    $body = $bodyJson | ConvertFrom-Json
+
+    $body.customers[0].slug | Should -Be 'arista-air-conditioning'
+    $body.customers[0].display_name | Should -Be 'Arista Air Conditioning Corp.'
+    $body.customers[0].ncentral_customer_id | Should -Be '701'
+    $body.customers[0].ncentral_parent_customer_id | Should -BeNullOrEmpty
+    $body.customers[1].slug | Should -Be 'arista-air-conditioning-main-office'
+    $body.customers[1].display_name | Should -Be 'Main Office'
+    $body.customers[1].ncentral_customer_id | Should -Be '702'
+    $body.customers[1].ncentral_parent_customer_id | Should -Be '701'
+  }
+
   It 'Rejects malformed LCAT customer-scope requests before sending the batch' {
     $lcatAdapter = New-TestLCATAdapter
 

@@ -92,8 +92,9 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<LCATSyncResult> SyncCustomerScopesAsync(IReadOnlyList<LCATCustomerScopeRequest> customers, CancellationToken cancellationToken)
     {
-        EnsureCustomerScopeContract(customers);
-        var body = BuildSyncRequestBody(customers);
+        var normalizedCustomers = NormalizeCustomerScopeRequests(customers);
+        EnsureCustomerScopeContract(normalizedCustomers);
+        var body = BuildSyncRequestBody(normalizedCustomers);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         Trace?.Invoke("LCAT POST " + SyncPath);
 
@@ -137,8 +138,22 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
         return new InvalidOperationException($"{message} Path: {path}.");
     }
 
+    private static IReadOnlyList<LCATCustomerScopeRequest> NormalizeCustomerScopeRequests(IReadOnlyList<LCATCustomerScopeRequest> customers)
+    {
+        return customers.Select(customer => new LCATCustomerScopeRequest
+        {
+            Slug = NormalizeRequiredValue(customer.Slug),
+            DisplayName = NormalizeRequiredValue(customer.DisplayName),
+            NCentralCustomerId = NormalizeRequiredValue(customer.NCentralCustomerId),
+            NCentralParentCustomerId = string.IsNullOrWhiteSpace(customer.NCentralParentCustomerId) ? null : customer.NCentralParentCustomerId.Trim()
+        }).ToArray();
+    }
+
+    private static string NormalizeRequiredValue(string? value) => value?.Trim() ?? string.Empty;
+
     private static void EnsureCustomerScopeContract(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {
+        customers = NormalizeCustomerScopeRequests(customers);
         var errors = new List<string>();
         for (var i = 0; i < customers.Count; i++)
         {
@@ -193,6 +208,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 
     private static string BuildSyncRequestBody(IReadOnlyList<LCATCustomerScopeRequest> customers)
     {
+        customers = NormalizeCustomerScopeRequests(customers);
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["customers"] = customers.Select(customer => new Dictionary<string, object?>(StringComparer.Ordinal)
