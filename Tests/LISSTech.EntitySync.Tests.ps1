@@ -846,6 +846,42 @@ Describe 'LISSTech.EntitySync' {
     }
   }
 
+  It 'Excludes LCATBearerToken from the Connect-EntitySyncVendor LCAT connection object (T035, US3)' {
+    $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
+    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken
+
+    try {
+      $connection.Vendor | Should -Be 'LCAT'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'LCATBearerToken'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'BearerToken'
+
+      $renderedConnection = $connection | Format-List -Property * | Out-String
+      $renderedConnection | Should -Not -Match ([regex]::Escape($secretToken))
+
+      $renderedAdapter = $connection.Adapter | Format-List -Property * | Out-String
+      $renderedAdapter | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      ($connection.Adapter -as [IDisposable])?.Dispose()
+    }
+  }
+
+  It 'Excludes LCATBearerToken from Connect-EntitySyncVendor error messages (T035, US3)' {
+    $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
+    $caught = $null
+
+    try {
+      Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'http://lcat.example.test' -LCATBearerToken $secretToken -ErrorAction Stop
+    }
+    catch {
+      $caught = $_
+    }
+
+    $caught | Should -Not -BeNullOrEmpty
+    $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
+    ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }

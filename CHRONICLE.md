@@ -683,6 +683,29 @@
   and parent relationship notes" scope. `just build` succeeds; `just test` reports all 75 tests passing
   (0 failed, docs-only change, no regressions). Next incomplete task: T035 (Phase 5 / US3 — Pester
   tests proving `LCATBearerToken` is absent from connection objects and common error messages).
+- T035 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T033
+  duplicate-id test, before `Declares object output for Get-EntitySyncConnection`). One calls the
+  real `Connect-EntitySyncVendor -Vendor LCAT` cmdlet with a fake secret bearer token (safe without
+  HTTP-mocking infra, per the T003/T021 precedent: T021's chronicle note already established this
+  path never makes an eager network round-trip) and asserts the returned `EntitySyncConnection` has
+  no `LCATBearerToken`/`BearerToken` property, and that `Format-List * | Out-String` on both the
+  connection and its `Adapter` never contains the secret value — this already passed with no product
+  code changes, since `EntitySyncConnection` only carries `Vendor`/`Adapter` (`src/Runtime/EntitySyncConnection.cs`)
+  and `LCATEntityAdapter` never exposes its private `LCATOptions` as a public property. The other test
+  forces an HTTPS-validation failure (`-LCATBaseUrl 'http://...'`, an intentionally invalid scheme)
+  while still supplying the secret bearer token, and asserts neither the caught exception's `Message`
+  nor its full `Out-String` rendering contains the secret — covering the "common error messages" half
+  of the task without needing a real HTTP round trip, since `ValidateAbsoluteHttpsUrl`/`Require` in
+  `ConnectEntitySyncVendorCommand.cs` never echo parameter values back into thrown messages. Did not
+  add a test for `SyncCustomerScopesAsync`'s non-success-response error message (that needs a live
+  HTTP round trip and is T039's job, not this task) or for N-central registration-token exclusion
+  (T036, a separate task). Both new tests passed immediately with no product code changes — T040/T041
+  (the actual redaction *implementation* tasks) still lie ahead, but the current shape of
+  `EntitySyncConnection`/`LCATEntityAdapter`/`ConnectEntitySyncVendorCommand` already satisfies what
+  T035 pins down, mirroring the T013/T029(-first-test)/T032 precedent where a test locks in
+  pre-existing correct behavior. `just build` succeeds; `just test` reports all 77 tests passing (0
+  failed, up from 75 — no regressions). Next incomplete task: T036 (Pester tests proving N-central
+  registration tokens are not mapped into LCAT requests).
 
 ## Open Blockers
 
