@@ -424,6 +424,12 @@ namespace EntitySyncTests
     $helpText | Should -Not -Match 'OAuth access token' -Because 'N-central REST exchanges the User-API token at /api/auth/authenticate; there is no OAuth flow'
   }
 
+  It 'About topic NetSuite paragraph names the real OAuth signature method' {
+    $helpText = Get-Help about_LISSTech.EntitySync -Full | Out-String
+    $helpText | Should -Match 'HMAC-SHA256' -Because 'NetSuiteEntityAdapter signs every SuiteQL request with HMAC-SHA256; the about-topic must match the actual code'
+    $helpText | Should -Not -Match 'HMAC-SHA1' -Because 'NetSuiteEntityAdapter does not use HMAC-SHA1; a stale claim here would mislead operators auditing the OAuth contract'
+  }
+
   It 'About topic CONFIGURATION section documents every shipped vendor' {
     # Split the CONFIGURATION section off the rendered help so a missing vendor paragraph
     # fails with a focused message instead of polluting the rest of the topic.

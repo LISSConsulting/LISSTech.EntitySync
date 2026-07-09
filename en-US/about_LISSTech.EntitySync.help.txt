@@ -28,7 +28,7 @@ CONFIGURATION
     NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, NETSUITE_CONSUMER_SECRET,
     NETSUITE_TOKEN_ID, and NETSUITE_TOKEN_SECRET, or pass the matching
     Connect-EntitySyncVendor parameters. The module signs every SuiteQL
-    request with a fresh nonce and HMAC-SHA1 signature per attempt and never
+    request with a fresh nonce and HMAC-SHA256 signature per attempt and never
     caches the OAuth header. NetSuite is a source-only adapter in this
     module; target writes go through HaloPSA, N-central, or LCAT.
 
