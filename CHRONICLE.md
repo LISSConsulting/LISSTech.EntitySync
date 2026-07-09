@@ -497,6 +497,31 @@
   succeeds; `just test` reports 64 passed / 3 failed (the 3 new expected T026 failures, no regressions
   in the previously-passing 64). Next incomplete task: T027 (Pester tests for missing site parent
   N-central customer ID safe failure).
+- T027 done: added two Pester tests to `Tests/LISSTech.EntitySync.Tests.ps1` (after the T026 mapping
+  tests, before `Declares object output for Get-EntitySyncConnection`) that call the real
+  `New-EntitySyncPlan` cmdlet end-to-end (same registered-adapter/pipeline pattern as T016) with an
+  NCentral Site source that has `NCentralSiteId` but no `NCentralCustomerId` external id (i.e. no
+  parent), targeting `LCAT`/`Customer`. Both assert the resulting plan item is blocked with `Action
+  'Review'` and a `Reasons` entry matching `parent N-central customer identifier` rather than being
+  silently created — one with `-CreateMissing` set (proving the missing-parent safe failure overrides
+  `-CreateMissing`, since spec.md's edge case says the item must be blocked regardless) and one without
+  it. Chose `Action 'Review'` (not a terminating error) to match spec.md's "blocked for review or fails
+  safely with a clear non-secret reason" wording and the existing `IntegrationLinkConflict`/
+  `IntegrationLinkTargetMissing` precedent in `NewEntitySyncPlanCommand.CreatePlanItem`, which already
+  returns `Action 'Review'` with a descriptive `Reasons` entry for other plan-time safety problems
+  rather than throwing. Did not pin an exact `MatchType` value (e.g. a new `MissingParent` type) since
+  `tasks.md` leaves that to T031's implementation and only the `Reasons` text is part of this task's
+  contract; whoever implements T031 should add the missing-parent check in `CreatePlanItem` (or a
+  helper it calls) gated on `TargetVendor == LCAT` and `source.EntityType == Site` with no
+  `NCentralCustomerId`/`source.Id` fallback present, consistent with data-model.md's site validation
+  rule. As expected for a test-first US2 task, both tests currently fail — one on `Action` (`Review`
+  expected, `Create` returned because `-CreateMissing` currently drives NoMatch sources straight to
+  `Create` with no LCAT-specific parent check), the other on the `Reasons` regex (currently just "No
+  target candidate found") — since no plan-time LCAT parent validation exists yet (T031 implements it).
+  This is on top of the still-red T026 failures (blocked on T030, a separate task). `just build`
+  succeeds; `just test` reports 64 passed / 5 failed (the 3 pre-existing T026 failures plus the 2 new
+  expected T027 failures, no regressions in the previously-passing 64). Next incomplete task: T028
+  (Pester tests for site-derived slug generation using parent customer and site names).
 
 ## Open Blockers
 

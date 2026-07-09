@@ -610,6 +610,69 @@ Describe 'LISSTech.EntitySync' {
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
+  It 'Blocks an NCentral Site with no parent N-central customer identifier for review instead of creating an LCAT scope (T027, US2)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $orphanSite = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $orphanSite.Vendor = 'NCentral'
+      $orphanSite.EntityType = 'Site'
+      $orphanSite.Id = '888'
+      $orphanSite.Name = 'Orphaned Site Without Parent'
+      $orphanSite.ExternalIds['NCentralSiteId'] = '888'
+
+      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+
+      $plan.Items.Count | Should -Be 1
+      $plan.Items[0].Action | Should -Be 'Review'
+      $plan.Items[0].Target | Should -BeNullOrEmpty
+      $plan.Items[0].Reasons -join '; ' | Should -Match 'parent N-central customer identifier'
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
+  It 'Still blocks an NCentral Site with no parent N-central customer identifier for review even without -CreateMissing (T027, US2)' {
+    $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
+    $ncOptions.BaseUrl = 'https://ncentral.example.test/'
+    $ncOptions.UserApiToken = 'token'
+    $ncOptions.ServiceOrgId = '50'
+    $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
+    $lcatAdapter = New-TestLCATAdapter
+
+    try {
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+
+      $orphanSite = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+      $orphanSite.Vendor = 'NCentral'
+      $orphanSite.EntityType = 'Site'
+      $orphanSite.Id = '999'
+      $orphanSite.Name = 'Another Orphaned Site'
+      $orphanSite.ExternalIds['NCentralSiteId'] = '999'
+
+      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer
+
+      $plan.Items.Count | Should -Be 1
+      $plan.Items[0].Action | Should -Be 'Review'
+      $plan.Items[0].Reasons -join '; ' | Should -Match 'parent N-central customer identifier'
+    }
+    finally {
+      $ncAdapter.Dispose()
+      $lcatAdapter.Dispose()
+    }
+  }
+
   It 'Declares object output for Get-EntitySyncConnection' {
     (Get-Command Get-EntitySyncConnection).OutputType.Type.Name | Should -Contain 'EntitySyncConnection'
   }
