@@ -1,9 +1,9 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.LCAT;
@@ -29,7 +29,6 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
 {
     private const string SyncReason = "EntitySync N-central to LCAT sync";
     private const string SyncPath = "rpc/sync_ncentral_customers";
-    private static readonly Regex LcatSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled);
 
     private readonly LCATOptions options;
     private readonly HttpClient httpClient = new();
@@ -172,7 +171,7 @@ public sealed class LCATEntityAdapter : IEntityAdapter, IDisposable
             var customer = customers[i];
             var prefix = $"customers[{i}]";
             if (string.IsNullOrWhiteSpace(customer.Slug)) errors.Add($"{prefix}.slug is required");
-            else if (!LcatSlugPattern.IsMatch(customer.Slug)) errors.Add($"{prefix}.slug must match the LCAT customer-scope contract");
+            else if (!DefaultEntityMapper.IsValidLcatSlug(customer.Slug)) errors.Add($"{prefix}.slug must match the LCAT customer-scope contract");
             if (string.IsNullOrWhiteSpace(customer.DisplayName)) errors.Add($"{prefix}.display_name is required");
             if (string.IsNullOrWhiteSpace(customer.NCentralCustomerId)) errors.Add($"{prefix}.ncentral_customer_id is required");
         }

@@ -1,5 +1,4 @@
 using System.Management.Automation;
-using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LCAT;
 using LISSTech.EntitySync.Adapters.NCentral;
@@ -13,8 +12,6 @@ namespace LISSTech.EntitySync.Commands;
 [OutputType(typeof(EntityWriteResult))]
 public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 {
-    private static readonly Regex LcatSlugPattern = new("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled);
-
     [Parameter(Mandatory = true, ValueFromPipeline = true, Position = 0)]
     public EntitySyncPlan Plan { get; set; } = default!;
 
@@ -255,7 +252,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         if (string.IsNullOrWhiteSpace(request.DisplayName)) errors.Add("display_name is required");
         if (string.IsNullOrWhiteSpace(request.NCentralCustomerId)) errors.Add("ncentral_customer_id is required");
         if (string.IsNullOrWhiteSpace(request.Slug)) errors.Add("slug is required");
-        else if (!LcatSlugPattern.IsMatch(request.Slug)) errors.Add("slug must match the LCAT customer-scope contract");
+        else if (!DefaultEntityMapper.IsValidLcatSlug(request.Slug)) errors.Add("slug must match the LCAT customer-scope contract");
         if (item.Source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(request.NCentralParentCustomerId))
         {
             errors.Add("ncentral_parent_customer_id is required for N-central site sources");

@@ -492,6 +492,31 @@ namespace EntitySyncTests
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
+  It 'Validates LCAT customer-scope slugs centrally through DefaultEntityMapper.IsValidLcatSlug so the adapter and apply command share one contract' {
+    $type = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]
+    $method = $type.GetMethod('IsValidLcatSlug', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method | Should -Not -BeNullOrEmpty
+
+    $cases = @(
+      @{ Slug = 'Arista-Air-Conditioning'; Expected = $true },
+      @{ Slug = 'ab'; Expected = $true },
+      @{ Slug = ('a' * 64); Expected = $true },
+      @{ Slug = ('a' * 65); Expected = $false },
+      @{ Slug = 'a'; Expected = $false },
+      @{ Slug = ''; Expected = $false },
+      @{ Slug = $null; Expected = $false },
+      @{ Slug = 'Under_Score-1'; Expected = $true },
+      @{ Slug = 'bad slug with spaces'; Expected = $false },
+      @{ Slug = '-leading-dash'; Expected = $false },
+      @{ Slug = 'trailing-dash-'; Expected = $false }
+    )
+
+    foreach ($case in $cases) {
+      $result = $method.Invoke($null, @($case.Slug))
+      $result | Should -Be $case.Expected -Because ("DefaultEntityMapper.IsValidLcatSlug('{0}') should be {1} per the LCAT customer-scope contract" -f $case.Slug, $case.Expected)
+    }
+  }
+
   It 'Builds an LCAT batch sync request body matching the customer scope contract shape (T015, US1)' {
     $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
     $customerScope.Slug = 'Arista-Air-Conditioning'
