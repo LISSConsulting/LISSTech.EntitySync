@@ -5,9 +5,10 @@ using System.Security;
 using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.Halo;
-using LISSTech.EntitySync.Adapters.LCAT;
+using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
@@ -19,21 +20,24 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
     [Parameter(Mandatory = true, ParameterSetName = "NCentral")]
-    [Parameter(Mandatory = true, ParameterSetName = "LCAT")]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerToken")]
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSecureToken")]
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
+    [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
 
-    [Parameter(ParameterSetName = "LCAT")]
-    public SecureString? LCATSecureBearer { get; set; }
+    [Parameter(ParameterSetName = "AgentControllerSecureToken")]
+    public SecureString? SecureToken { get; set; }
+
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
+    public PSObject? Session { get; set; }
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
     /// <summary>
-    /// LCAT connections may be registered with the `LTAC` alias, but every plan and artifact
-    /// produced afterwards must still identify the vendor as `LCAT` (spec FR-002).
+    /// LTAC values are normalized to the cmdlet-facing AgentController vendor name.
     /// </summary>
-    private static string NormalizeVendorAlias(string vendor) =>
-        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+    private static string NormalizeVendorAlias(string vendor) => EntitySyncVendors.Normalize(vendor);
 
     public object? GetDynamicParameters()
     {
@@ -79,10 +83,10 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             AddDynamicParameter<string>("NCentralNetSuiteIdPropertyLabel", "NetSuite Customer ID");
             AddDynamicParameter<string>("NCentralNetSuiteNamePropertyLabel", "NetSuite Customer Name");
         }
-        else if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+        else if (EntitySyncVendors.IsAgentController(Vendor))
         {
-            AddDynamicParameter<string>("LCATBaseUrl");
-            AddDynamicParameter<string>("LCATBearerToken");
+            AddDynamicParameter<string>("Url", parameterSetNames: new[] { "AgentControllerToken", "AgentControllerSecureToken" });
+            AddDynamicParameter<string>("Token", parameterSetNames: new[] { "AgentControllerToken" });
         }
 
         return dynamicParameters;
@@ -94,30 +98,46 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         {
             Vendor = NormalizeVendorAlias(Vendor);
 
-            if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+            if (EntitySyncVendors.IsAgentController(Vendor))
             {
-                var stringTokenExplicit = DynamicValue<string?>("LCATBearerToken", null);
-                var hasSecure = LCATSecureBearer != null;
+                if (ParameterSetName.Equals("AgentControllerSession", StringComparison.OrdinalIgnoreCase))
+                {
+                    var session = Session ?? throw new InvalidOperationException("Session is required.");
+                    var sessionToken = GetSessionSecureToken(session);
+                    var sessionOpsBaseUrl = GetSessionStringProperty(session, "OpsBaseUrl", "Uri");
+                    var sessionOptions = new LTACOptions
+                    {
+                        BaseUrl = ValidateAbsoluteHttpsUrl(sessionOpsBaseUrl, "Session.OpsBaseUrl"),
+                        BearerToken = UnwrapSecureString(sessionToken, "Session.Token")
+                    };
+                    var sessionAdapter = new LTACEntityAdapter(sessionOptions);
+                    ConnectionRegistry.Set(sessionAdapter);
+                    WriteObject(new EntitySyncConnection { Vendor = sessionAdapter.Vendor, Adapter = sessionAdapter });
+                    return;
+                }
+
+                var stringTokenExplicit = DynamicValue<string?>("Token", null);
+                var hasSecure = SecureToken != null;
                 var hasStringExplicit = !string.IsNullOrWhiteSpace(stringTokenExplicit);
 
                 if (hasSecure && hasStringExplicit)
                 {
                     throw new InvalidOperationException(
-                        "-LCATBearerToken and -LCATSecureBearer are mutually exclusive. Pass exactly one.");
+                        "-Token and -SecureToken are mutually exclusive. Pass exactly one.");
                 }
 
                 var bearerToken = hasSecure
-                    ? UnwrapSecureString(LCATSecureBearer, "LCATSecureBearer")
-                    : Require(stringTokenExplicit, "LCAT_BEARER_TOKEN", "LCATBearerToken");
+                    ? UnwrapSecureString(SecureToken, "SecureToken")
+                    : Require(stringTokenExplicit, "LTAC_BEARER_TOKEN", "Token");
 
-                var lcatOptions = new LCATOptions
+                var ltacOptions = new LTACOptions
                 {
-                    BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("LCATBaseUrl", null), "LCAT_BASE_URL", "LCATBaseUrl"), "LCATBaseUrl"),
+                    BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("Url", null), "LTAC_BASE_URL", "Url"), "Url"),
                     BearerToken = bearerToken
                 };
-                var lcatAdapter = new LCATEntityAdapter(lcatOptions);
-                ConnectionRegistry.Set(lcatAdapter);
-                WriteObject(new EntitySyncConnection { Vendor = lcatAdapter.Vendor, Adapter = lcatAdapter });
+                var ltacAdapter = new LTACEntityAdapter(ltacOptions);
+                ConnectionRegistry.Set(ltacAdapter);
+                WriteObject(new EntitySyncConnection { Vendor = ltacAdapter.Vendor, Adapter = ltacAdapter });
                 return;
             }
 
@@ -179,6 +199,8 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 return;
             }
 
+            if (!Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException($"Vendor '{Vendor}' is not supported.");
+
             var ncOptions = new NCentralOptions
             {
                 BaseUrl = ValidateAbsoluteHttpsUrl(Require(DynamicValue<string?>("NCentralBaseUrl", null), "NCENTRAL_BASE_URL", "NCentralBaseUrl"), "NCentralBaseUrl"),
@@ -202,10 +224,21 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         }
     }
 
-    private void AddDynamicParameter<T>(string name, T? defaultValue = default)
+    private void AddDynamicParameter<T>(string name, T? defaultValue = default, IReadOnlyList<string>? parameterSetNames = null)
     {
         if (dynamicParameters == null) return;
-        var attributes = new Collection<Attribute> { new ParameterAttribute() };
+        var attributes = new Collection<Attribute>();
+        if (parameterSetNames == null || parameterSetNames.Count == 0)
+        {
+            attributes.Add(new ParameterAttribute());
+        }
+        else
+        {
+            foreach (var parameterSetName in parameterSetNames)
+            {
+                attributes.Add(new ParameterAttribute { ParameterSetName = parameterSetName });
+            }
+        }
         var parameter = new RuntimeDefinedParameter(name, typeof(T), attributes) { Value = defaultValue };
         dynamicParameters.Add(name, parameter);
     }
@@ -263,6 +296,28 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) throw new InvalidOperationException($"{parameterName} must be an absolute HTTPS URL.");
         if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException($"{parameterName} must use HTTPS.");
         return value.TrimEnd('/');
+    }
+
+    private static string GetSessionStringProperty(PSObject session, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var property = session.Properties[name];
+            if (property?.Value is string value && !string.IsNullOrWhiteSpace(value)) return value;
+        }
+
+        throw new InvalidOperationException($"Session must include {string.Join(" or ", names)}.");
+    }
+
+    private static SecureString GetSessionSecureToken(PSObject session)
+    {
+        var token = session.Properties["Token"]?.Value as SecureString;
+        if (token == null)
+        {
+            token = session.Properties["SecureToken"]?.Value as SecureString;
+        }
+
+        return token ?? throw new InvalidOperationException("Session must include a SecureString Token.");
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)

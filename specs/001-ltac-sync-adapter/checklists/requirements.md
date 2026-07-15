@@ -1,4 +1,4 @@
-# Specification Quality Checklist: LCAT Customer Scope Sync
+# Specification Quality Checklist: LTAC Customer Scope Sync
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-07-08

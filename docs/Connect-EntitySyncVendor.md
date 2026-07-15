@@ -16,7 +16,9 @@ Creates an in-session connection to a supported vendor adapter.
 Connect-EntitySyncVendor -Vendor HaloPSA [-HaloBaseUrl <String>] [-HaloClientId <String>] [-HaloClientSecret <String>] [-HaloScope <String>] [-HaloTopLevelId <Int32>] [-HaloDefaultColour <String>] [-HaloNetSuiteCustomerIdField <String>] [-HaloNetSuiteCustomerIdFieldId <String>] [-HaloNetSuiteCustomerNameField <String>] [-HaloCustomerRelationshipId <Int32>] [-HaloCustomerRelationshipName <String>] [-HaloCustomerTypeId <Int32>] [-HaloCustomerTypeName <String>] [-HaloAccountManagerEmail <String>] [-HaloAccountManagerField <String>] [-HaloNCentralIntegrationId <Int32>]
 Connect-EntitySyncVendor -Vendor NetSuite [-NetSuiteAccountId <String>] [-NetSuiteConsumerKey <String>] [-NetSuiteConsumerSecret <String>] [-NetSuiteTokenId <String>] [-NetSuiteTokenSecret <String>]
 Connect-EntitySyncVendor -Vendor NCentral [-NCentralBaseUrl <String>] [-NCentralUserApiToken <String>] [-NCentralServiceOrgId <String>] [-NCentralSoapUsername <String>] [-NCentralSoapPassword <String>] [-NCentralSoapEndpointPath <String>] [-NCentralSoapNamespace <String>] [-NCentralHaloPsaIdPropertyLabel <String>] [-NCentralNetSuiteIdPropertyLabel <String>] [-NCentralNetSuiteNamePropertyLabel <String>]
-Connect-EntitySyncVendor -Vendor LCAT [-LCATBaseUrl <String>] [-LCATBearerToken <String>] [-LCATSecureBearer <SecureString>]
+Connect-EntitySyncVendor -Vendor AgentController [-Url <String>] [-Token <String>]
+Connect-EntitySyncVendor -Vendor AgentController [-Url <String>] [-SecureToken <SecureString>]
+Connect-EntitySyncVendor -Vendor AgentController -Session <Object>
 ```
 
 ## DESCRIPTION
@@ -30,7 +32,9 @@ N-central connections use a User-API token for REST discovery and creation. The 
 
 N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.
 
-`Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl <String> -LCATBearerToken <String>` connects an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `-Vendor LTAC` is accepted as an alias and normalizes to `LCAT` in the returned connection. `LCATBearerToken` never appears in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; LCAT HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+`Connect-EntitySyncVendor -Vendor AgentController -Session <Object>` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). EntitySync calls exactly `POST /rpc/sync_ncentral_customers` relative to that ops base URL; it does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.
+
+Manual break-glass mode remains available with `-Url <String> -Token <String>` or `-Url <String> -SecureToken <SecureString>`. In those parameter sets, `-Url` means the AgentController ops/PostgREST OpenAPI base URL, for example `https://ops-agent-controller.clfy-b.lissonline.com`, not the API/auth base URL `https://api-agent-controller.clfy-b.lissonline.com`. `-Vendor LTAC` is accepted and normalizes to `AgentController` in the returned connection. Tokens never appear in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; Agent Controller HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.
 
 ## EXAMPLES
 
@@ -47,17 +51,15 @@ Use `Get-EntitySyncLookup -Vendor HaloPSA -Type TopLevel` to discover values for
 
 ### Example 2
 ```powershell
-Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -LCATBearerToken $env:LCAT_BEARER_TOKEN
+Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ops-agent-controller.clfy-b.lissonline.com' -Token $env:LTAC_BEARER_TOKEN
 ```
 
-Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters; the bearer token is used only for the LCAT authorization header and is not serialized into returned connection objects or plan artifacts.
+Connects the Agent Controller adapter in manual break-glass mode. `LTAC_BASE_URL`/`LTAC_BEARER_TOKEN` environment variables can be used instead of the parameters; `-Url` must point at the AgentController ops/PostgREST OpenAPI endpoint, not the API/auth host. The bearer token is used only for the Agent Controller authorization header and is not serialized into returned connection objects or plan artifacts.
 
 ### Example 3
 ```powershell
-$token = Get-DeviceAssetOpsAccessToken   # from LISSTech.DeviceAssetOps
-Connect-EntitySyncVendor -Vendor LCAT `
-    -LCATBaseUrl 'https://api-agent-controller-prd-ewr-1.clfy-b.lissonline.com' `
-    -LCATSecureBearer $token
+$session = Get-DeviceAssetOpsAccessToken -AsSession   # from LISSTech.DeviceAssetOps
+Connect-EntitySyncVendor -Vendor AgentController -Session $session
 ```
 
-Reuses an active `LISSTech.DeviceAssetOps` operator session JWT without writing the cleartext token to a script transcript. The SecureString is unwrapped in-process and used only for the LCAT authorization header. `-LCATBearerToken` and `-LCATSecureBearer` are mutually exclusive; pass exactly one.
+Reuses an active `LISSTech.DeviceAssetOps` operator session without writing the cleartext token or manually copying endpoint URLs. EntitySync uses the session's `OpsBaseUrl` for the AgentController ops/PostgREST OpenAPI and sends `POST /rpc/sync_ncentral_customers` there. The SecureString is unwrapped in-process and used only for the Agent Controller authorization header. `-Session`, `-Token`, and `-SecureToken` are separate parameter sets; pass exactly one.

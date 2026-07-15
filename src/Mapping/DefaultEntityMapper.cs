@@ -8,31 +8,33 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
 {
     public EntityWriteRequest MapCreate(ExternalEntity source, string targetVendor, string targetEntityType, MatchOptions options)
     {
+        targetVendor = EntitySyncVendors.Normalize(targetVendor);
         var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = targetEntityType, Name = source.Name };
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
-        AddLcatCustomerScopeFields(request, source, targetVendor);
+        AddLtacCustomerScopeFields(request, source, targetVendor);
         return request;
     }
 
     public EntityWriteRequest MapUpdate(ExternalEntity source, ExternalEntity target, MatchOptions options)
     {
-        var request = new EntityWriteRequest { Vendor = target.Vendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = target.Name };
+        var targetVendor = EntitySyncVendors.Normalize(target.Vendor);
+        var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = target.Name };
         AddCommonHaloFields(request, source);
-        AddTargetCustomField(request, source, target.Vendor, options);
-        AddNCentralSourceFields(request, source, target.Vendor);
-        AddHaloNetSuiteMetadata(request, source, target.Vendor);
-        AddNCentralLinkMarker(request, source, target.Vendor);
-        AddLcatCustomerScopeFields(request, source, target.Vendor);
+        AddTargetCustomField(request, source, targetVendor, options);
+        AddNCentralSourceFields(request, source, targetVendor);
+        AddHaloNetSuiteMetadata(request, source, targetVendor);
+        AddNCentralLinkMarker(request, source, targetVendor);
+        AddLtacCustomerScopeFields(request, source, targetVendor);
         return request;
     }
 
-    private static void AddLcatCustomerScopeFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)
+    private static void AddLtacCustomerScopeFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)
     {
-        if (!targetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase)) return;
+        if (!EntitySyncVendors.IsAgentController(targetVendor)) return;
         if (!source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return;
 
         if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
@@ -45,7 +47,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
             if (!string.IsNullOrWhiteSpace(ncentralParentCustomerId)) request.Fields["ncentral_parent_customer_id"] = ncentralParentCustomerId;
             var parentContext = FirstNonEmpty(parentCustomerName, ncentralParentCustomerId);
             var slugBasis = string.IsNullOrWhiteSpace(parentContext) ? source.Name : $"{parentContext} {source.Name}";
-            request.Fields["slug"] = DeriveLcatSlug(slugBasis, ncentralSiteId);
+            request.Fields["slug"] = DeriveLtacSlug(slugBasis, ncentralSiteId);
             return;
         }
 
@@ -54,7 +56,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         var ncentralCustomerId = FirstNonEmpty(source.GetExternalId("NCentralCustomerId"), source.Id);
         request.Fields["display_name"] = source.Name;
         if (!string.IsNullOrWhiteSpace(ncentralCustomerId)) request.Fields["ncentral_customer_id"] = ncentralCustomerId;
-        request.Fields["slug"] = DeriveLcatSlug(source.Name, ncentralCustomerId);
+        request.Fields["slug"] = DeriveLtacSlug(source.Name, ncentralCustomerId);
     }
 
     private static void AddTargetCustomField(EntityWriteRequest request, ExternalEntity source, string targetVendor, MatchOptions options)
@@ -203,31 +205,31 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         return separator > 0 ? value[..separator].Trim() : value;
     }
 
-    // Matches the LCAT customer-scope slug contract in specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md.
-    internal static bool IsValidLcatSlug(string? slug) => !string.IsNullOrEmpty(slug) && LcatSlugPattern().IsMatch(slug);
+    // Matches the LTAC customer-scope slug contract in specs/001-ltac-sync-adapter/contracts/ltac-sync-rpc.md.
+    internal static bool IsValidLtacSlug(string? slug) => !string.IsNullOrEmpty(slug) && LtacSlugPattern().IsMatch(slug);
 
-    internal static string DeriveLcatSlug(string? displayName, string? fallbackId)
+    internal static string DeriveLtacSlug(string? displayName, string? fallbackId)
     {
         var basis = !string.IsNullOrWhiteSpace(displayName) ? displayName : fallbackId ?? string.Empty;
-        var slug = ToLcatSlugCandidate(basis);
-        if (IsValidLcatSlug(slug)) return slug;
+        var slug = ToLtacSlugCandidate(basis);
+        if (IsValidLtacSlug(slug)) return slug;
 
-        var fallbackIdSlug = ToLcatSlugCandidate(fallbackId);
-        if (!IsValidLcatSlug(fallbackIdSlug)) return $"customer-{fallbackId}".Trim('-');
-        var fallbackSlug = ToLcatSlugCandidate($"customer {fallbackIdSlug}");
-        return IsValidLcatSlug(fallbackSlug) ? fallbackSlug : $"customer-{fallbackId}".Trim('-');
+        var fallbackIdSlug = ToLtacSlugCandidate(fallbackId);
+        if (!IsValidLtacSlug(fallbackIdSlug)) return $"customer-{fallbackId}".Trim('-');
+        var fallbackSlug = ToLtacSlugCandidate($"customer {fallbackIdSlug}");
+        return IsValidLtacSlug(fallbackSlug) ? fallbackSlug : $"customer-{fallbackId}".Trim('-');
     }
 
-    private static string ToLcatSlugCandidate(string? value)
+    private static string ToLtacSlugCandidate(string? value)
     {
-        var slug = LcatSlugSeparatorPattern().Replace(value ?? string.Empty, "-").Trim('-');
+        var slug = LtacSlugSeparatorPattern().Replace(value ?? string.Empty, "-").Trim('-');
         if (slug.Length > 64) slug = slug[..64].Trim('-');
         return slug;
     }
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled)]
-    private static partial Regex LcatSlugPattern();
+    private static partial Regex LtacSlugPattern();
 
     [GeneratedRegex("[^A-Za-z0-9_-]+", RegexOptions.Compiled)]
-    private static partial Regex LcatSlugSeparatorPattern();
+    private static partial Regex LtacSlugSeparatorPattern();
 }

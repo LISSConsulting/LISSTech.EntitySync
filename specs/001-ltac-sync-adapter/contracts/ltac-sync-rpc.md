@@ -1,14 +1,14 @@
-# Contract: LCAT N-central Customer Sync
+# Contract: LTAC N-central Customer Sync
 
 ## Purpose
 
-Defines the external LCAT sync contract used when applying an approved N-central customer/site plan.
+Defines the external LTAC sync contract used when applying an approved N-central customer/site plan.
 
 ## Request
 
 - Method: `POST`
-- Path: `/rpc/sync_ncentral_customers`
-- Authentication: LCAT operator credential in the authorization header
+- Path: `/rpc/sync_ncentral_customers` on the AgentController ops/PostgREST OpenAPI endpoint
+- Authentication: LTAC operator credential in the authorization header
 - Content type: `application/json`
 
 ```json
@@ -27,7 +27,7 @@ Defines the external LCAT sync contract used when applying an approved N-central
       "ncentral_parent_customer_id": "111"
     }
   ],
-  "reason": "EntitySync N-central to LCAT sync",
+  "reason": "EntitySync N-central to LTAC sync",
   "ticket": null
 }
 ```
@@ -42,7 +42,7 @@ Defines the external LCAT sync contract used when applying an approved N-central
   scopes.
 - `reason` identifies the EntitySync run.
 - `ticket` is optional and null unless a future operator workflow supplies a change ticket.
-- N-central registration tokens and LCAT credentials must never appear in the request body.
+- N-central registration tokens and LTAC credentials must never appear in the request body.
 
 ## Response
 
@@ -66,6 +66,6 @@ Defines the external LCAT sync contract used when applying an approved N-central
 
 ## Batch Semantics
 
-- The request is authoritative for N-central-sourced LCAT customer scopes.
-- Previously synced N-central rows absent from the `customers` payload may be retired by LCAT.
+- The request is authoritative for N-central-sourced LTAC customer scopes.
+- Previously synced N-central rows absent from the `customers` payload may be retired by LTAC.
 - EntitySync must not use one request per normal plan item.

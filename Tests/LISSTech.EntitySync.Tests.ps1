@@ -250,26 +250,26 @@ namespace EntitySyncTests
 '@
     }
 
-    # These helpers build valid LCAT options/adapters so LCAT tests can override only the fields
+    # These helpers build valid LTAC options/adapters so LTAC tests can override only the fields
     # they exercise instead of repeating adapter setup. Defined in BeforeAll (not directly in the
     # Describe body) so they are still in scope when Pester v5 invokes It blocks during the run
     # phase rather than only during discovery.
-    function New-TestLCATOptions {
+    function New-TestLTACOptions {
       param(
-        [string]$BaseUrl = 'https://lcat.example.test/',
+        [string]$BaseUrl = 'https://ltac.example.test/',
         [string]$BearerToken = 'token'
       )
-      $options = [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]::new()
+      $options = [LISSTech.EntitySync.Adapters.LTAC.LTACOptions]::new()
       $options.BaseUrl = $BaseUrl
       $options.BearerToken = $BearerToken
       return $options
     }
 
-    function New-TestLCATAdapter {
+    function New-TestLTACAdapter {
       param(
-        [LISSTech.EntitySync.Adapters.LCAT.LCATOptions]$Options = (New-TestLCATOptions)
+        [LISSTech.EntitySync.Adapters.LTAC.LTACOptions]$Options = (New-TestLTACOptions)
       )
-      return [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter]::new($Options)
+      return [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter]::new($Options)
     }
 
     function New-TestHaloOptions {
@@ -371,10 +371,10 @@ namespace EntitySyncTests
     $releaseNotes | Should -Match 'NetSuite' -Because 'NetSuite adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'HaloPSA' -Because 'HaloPSA adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'N-central' -Because 'N-central adapter is shipped and must appear in operator-facing release notes'
-    $releaseNotes | Should -Match 'LCAT' -Because 'LCAT adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'AgentController' -Because 'AgentController adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Retry-After' -Because 'rate-limit/backoff is a load-bearing reliability feature and must be advertised'
     $releaseNotes | Should -Match 'redacted' -Because 'credential redaction across plan artifacts and error paths is a load-bearing safety guarantee'
-    $releaseNotes | Should -Match 'SecureString' -Because '-LCATSecureBearer is the operator-session JWT entry point and must be advertised'
+    $releaseNotes | Should -Match 'SecureString' -Because '-SecureToken is the operator-session JWT entry point and must be advertised'
   }
 
   It 'Manifest PSData.Tags advertises every shipped vendor for PowerShell Gallery discovery' {
@@ -384,7 +384,8 @@ namespace EntitySyncTests
     $tags | Should -Contain 'netsuite' -Because 'NetSuite adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'halopsa' -Because 'HaloPSA adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'ncentral' -Because 'N-central adapter is shipped and must be discoverable on PowerShell Gallery'
-    $tags | Should -Contain 'lcat' -Because 'LCAT adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'agentcontroller' -Because 'AgentController adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'ltac' -Because 'LTAC should be discoverable as the corrected LISSTech Agent Controller abbreviation'
   }
 
   It 'Has an about topic' {
@@ -442,7 +443,7 @@ namespace EntitySyncTests
       'NetSuite' = 'NETSUITE_ACCOUNT_ID'
       'HaloPSA'  = 'HALO_BASE_URL'
       'N-central' = 'NCENTRAL_USER_API_TOKEN'
-      'LCAT'     = 'LCAT_BASE_URL'
+      'AgentController' = 'LTAC_BASE_URL'
     }
     foreach ($entry in $expectedVendorKeys.GetEnumerator()) {
       $vendor = $entry.Key
@@ -470,7 +471,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'New-EntitySyncPlan help uses LcatSourceInvalid for every LCAT safe-failure and never the obsolete LcatSiteParentMissing' {
+  It 'New-EntitySyncPlan help uses LtacSourceInvalid for every LTAC safe-failure and never the obsolete LtacSiteParentMissing' {
     # Find the repo root by walking up from the test file's location until a Module/ folder shows up.
     $testPath = $PSCommandPath
     if (-not $testPath) { $testPath = Join-Path $PSScriptRoot 'LISSTech.EntitySync.Tests.ps1' }
@@ -480,16 +481,16 @@ namespace EntitySyncTests
     # Source of truth: docs/New-EntitySyncPlan.md
     $docPath = Join-Path $repoRoot 'docs' 'New-EntitySyncPlan.md'
     $docContent = Get-Content -LiteralPath $docPath -Raw
-    $docContent | Should -Match 'LcatSourceInvalid' -Because 'New-EntitySyncPlan.md must advertise LcatSourceInvalid - the code emits one unified MatchType for every LCAT source-validation failure'
-    $docContent | Should -Not -Match 'LcatSiteParentMissing' -Because 'LcatSiteParentMissing is an obsolete per-cause variant the code never emitted'
+    $docContent | Should -Match 'LtacSourceInvalid' -Because 'New-EntitySyncPlan.md must advertise LtacSourceInvalid - the code emits one unified MatchType for every LTAC source-validation failure'
+    $docContent | Should -Not -Match 'LtacSiteParentMissing' -Because 'LtacSiteParentMissing is an obsolete per-cause variant the code never emitted'
 
     # Both committed external-help copies must mirror the doc - operators read these via Get-Help.
     foreach ($relativeHelp in @('en-US/LISSTech.EntitySync.dll-Help.xml', 'Module/en-US/LISSTech.EntitySync.dll-Help.xml')) {
       $helpPath = Join-Path $repoRoot $relativeHelp
       Test-Path $helpPath | Should -BeTrue -Because "$relativeHelp must exist alongside the doc so the module renders external help"
       $helpContent = Get-Content -LiteralPath $helpPath -Raw
-      $helpContent | Should -Match 'LcatSourceInvalid' -Because "$relativeHelp must mirror the doc and advertise LcatSourceInvalid for the LCAT site-to-customer example"
-      $helpContent | Should -Not -Match 'LcatSiteParentMissing' -Because "$relativeHelp must not advertise the obsolete LcatSiteParentMissing match type"
+      $helpContent | Should -Match 'LtacSourceInvalid' -Because "$relativeHelp must mirror the doc and advertise LtacSourceInvalid for the LTAC site-to-customer example"
+      $helpContent | Should -Not -Match 'LtacSiteParentMissing' -Because "$relativeHelp must not advertise the obsolete LtacSiteParentMissing match type"
     }
   }
 
@@ -557,24 +558,25 @@ namespace EntitySyncTests
     $nCentralTypes | Should -Contain 'ServiceOrganization'
     $nCentralTypes | Should -Not -Contain 'TopLevel'
 
-    $lcatParameterInput = 'Get-EntitySyncLookup -Vendor LCAT -'
-    $lcatParameters = [System.Management.Automation.CommandCompletion]::CompleteInput($lcatParameterInput, $lcatParameterInput.Length, $null).CompletionMatches.CompletionText
-    $lcatParameters | Should -Not -Contain '-Type'
+    $ltacParameterInput = 'Get-EntitySyncLookup -Vendor AgentController -'
+    $ltacParameters = [System.Management.Automation.CommandCompletion]::CompleteInput($ltacParameterInput, $ltacParameterInput.Length, $null).CompletionMatches.CompletionText
+    $ltacParameters | Should -Not -Contain '-Type'
   }
 
-  It 'Exposes no lookup types for the LCAT target adapter and public lookup command' {
-    $lookupTypes = [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ForVendor('LCAT')
+  It 'Exposes no lookup types for the AgentController target adapter and public lookup command' {
+    $lookupTypes = [LISSTech.EntitySync.Core.EntitySyncLookupTypes]::ForVendor('AgentController')
     $lookupTypes | Should -BeNullOrEmpty
 
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
     try {
-      $lcatAdapter.LookupTypes | Should -BeNullOrEmpty
+      $ltacAdapter.LookupTypes | Should -BeNullOrEmpty
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
 
-    @(Get-EntitySyncLookup -Vendor LCAT) | Should -BeNullOrEmpty
+    @(Get-EntitySyncLookup -Vendor AgentController) | Should -BeNullOrEmpty
+    @(Get-EntitySyncLookup -Vendor LTAC) | Should -BeNullOrEmpty
     @(Get-EntitySyncLookup -Vendor LTAC) | Should -BeNullOrEmpty
   }
 
@@ -611,35 +613,34 @@ namespace EntitySyncTests
     $nCentral | Should -Not -Contain '-NetSuiteAccountId'
   }
 
-  It 'Completes LCAT and LTAC as vendors on command surfaces that support LCAT (T013, US1)' {
+  It 'Completes AgentController as the visible vendor on command surfaces that support AgentController (T013, US1)' {
     $getEntityInput = 'Get-EntitySyncEntity -Vendor '
     $getEntityVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityInput, $getEntityInput.Length, $null).CompletionMatches.CompletionText
-    $getEntityVendors | Should -Contain 'LCAT'
-    $getEntityVendors | Should -Contain 'LTAC'
+    $getEntityVendors | Should -Contain 'AgentController'
+    $getEntityVendors | Should -Not -Contain 'LTAC'
 
     $connectInput = 'Connect-EntitySyncVendor -Vendor '
     $connectVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($connectInput, $connectInput.Length, $null).CompletionMatches.CompletionText
-    $connectVendors | Should -Contain 'LCAT'
-    $connectVendors | Should -Contain 'LTAC'
+    $connectVendors | Should -Contain 'AgentController'
+    $connectVendors | Should -Not -Contain 'LTAC'
 
     $testConnectionInput = 'Test-EntitySyncConnection -Vendor '
     $testConnectionVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($testConnectionInput, $testConnectionInput.Length, $null).CompletionMatches.CompletionText
-    $testConnectionVendors | Should -Contain 'LCAT'
-    $testConnectionVendors | Should -Contain 'LTAC'
+    $testConnectionVendors | Should -Contain 'AgentController'
+    $testConnectionVendors | Should -Not -Contain 'LTAC'
 
     $targetInput = 'New-EntitySyncPlan -TargetVendor '
     $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
-    $targetVendors | Should -Contain 'LCAT'
-    $targetVendors | Should -Contain 'LTAC'
+    $targetVendors | Should -Contain 'AgentController'
+    $targetVendors | Should -Not -Contain 'LTAC'
 
     $sourceInput = 'New-EntitySyncPlan -SourceVendor '
     $sourceVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($sourceInput, $sourceInput.Length, $null).CompletionMatches.CompletionText
-    $sourceVendors | Should -Not -Contain 'LCAT'
     $sourceVendors | Should -Not -Contain 'LTAC'
   }
 
-  It 'Completes only Customer as the LCAT/LTAC entity type (T013, US1)' {
-    $getEntityInput = 'Get-EntitySyncEntity -Vendor LCAT -Type '
+  It 'Completes only Customer as the AgentController entity type (T013, US1)' {
+    $getEntityInput = 'Get-EntitySyncEntity -Vendor AgentController -Type '
     $getEntityTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityInput, $getEntityInput.Length, $null).CompletionMatches.CompletionText
     $getEntityTypes | Should -Be @('Customer')
 
@@ -647,7 +648,7 @@ namespace EntitySyncTests
     $getEntityLtacTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($getEntityLtacInput, $getEntityLtacInput.Length, $null).CompletionMatches.CompletionText
     $getEntityLtacTypes | Should -Be @('Customer')
 
-    $targetInput = 'New-EntitySyncPlan -TargetVendor LCAT -TargetEntityType '
+    $targetInput = 'New-EntitySyncPlan -TargetVendor AgentController -TargetEntityType '
     $targetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
     $targetTypes | Should -Be @('Customer')
 
@@ -656,23 +657,23 @@ namespace EntitySyncTests
     $targetLtacTypes | Should -Be @('Customer')
   }
 
-  It 'Returns an empty Customer read set for LCAT and LTAC when no LCAT read surface exists (T046, Polish)' {
-    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken 'token'
-    $connection.Vendor | Should -Be 'LCAT'
+  It 'Returns an empty Customer read set for AgentController when no read surface exists (T046, Polish)' {
+    $connection = Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ltac.example.test' -Token 'token'
+    $connection.Vendor | Should -Be 'AgentController'
 
-    $lcatResults = Get-EntitySyncEntity -Vendor LCAT -Type Customer
+    $ltacResults = Get-EntitySyncEntity -Vendor AgentController -Type Customer
     $ltacResults = Get-EntitySyncEntity -Vendor LTAC -Type Customer
 
-    $lcatResults | Should -BeNullOrEmpty
+    $ltacResults | Should -BeNullOrEmpty
     $ltacResults | Should -BeNullOrEmpty
   }
 
-  It 'Tests registered LCAT connections through the adapter for LCAT and LTAC requests (T008 drift regression)' {
-    foreach ($vendorName in @('LCAT', 'LTAC')) {
+  It 'Tests registered LTAC connections through the adapter for AgentController and LTAC requests (T008 drift regression)' {
+    foreach ($vendorName in @('AgentController', 'LTAC')) {
       $server = [EntitySyncTests.OneShotHttpServer]::new(204, 'No Content', '')
       $server.Start()
-      $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken "token-$vendorName")
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken "token-$vendorName")
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       try {
         Test-EntitySyncConnection -Vendor $vendorName | Should -BeTrue
@@ -681,13 +682,13 @@ namespace EntitySyncTests
       }
       finally {
         $server.Dispose()
-        $lcatAdapter.Dispose()
+        $ltacAdapter.Dispose()
       }
     }
   }
 
-  It 'Reports LCAT connection test transport failures as redacted errors without leaking credentials' {
-    $secretToken = 'lcat-connection-refused-bearer-9f8e7d6c'
+  It 'Reports LTAC connection test transport failures as redacted errors without leaking credentials' {
+    $secretToken = 'ltac-connection-refused-bearer-9f8e7d6c'
 
     # Reserve a loopback port and immediately stop listening so the adapter's HTTP request
     # is refused, exercising the IsTransportException -> CreateRedactedAdapterException path.
@@ -697,36 +698,36 @@ namespace EntitySyncTests
     $probe.Stop()
 
     $deadBaseUrl = "http://127.0.0.1:$deadPort/"
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
 
     try {
       $caught = $null
       try {
-        $lcatAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+        $ltacAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
       }
       catch {
         $caught = $_
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT connection test failed'
+      $caught.Exception.Message | Should -Match 'LTAC connection test failed'
       $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
       $caught.Exception.Message | Should -Not -Match 'Authorization'
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Reports LCAT connection test results as false for non-success status codes without leaking credentials' {
-    $secretToken = 'lcat-connection-unauthorized-bearer-1a2b3c4d'
+  It 'Reports LTAC connection test results as false for non-success status codes without leaking credentials' {
+    $secretToken = 'ltac-connection-unauthorized-bearer-1a2b3c4d'
     $server = [EntitySyncTests.OneShotHttpServer]::new(401, 'Unauthorized', 'do not echo this body')
     $server.Start()
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken)
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken)
 
     try {
-      $result = $lcatAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result = $ltacAdapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       $result | Should -BeFalse
       $server.Wait()
       $server.RequestText | Should -Match '^GET / HTTP/1\.1'
@@ -734,7 +735,7 @@ namespace EntitySyncTests
     }
     finally {
       $server.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
@@ -1733,7 +1734,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Maps NCentral Customer display name, N-central identifier, and a valid slug into LCAT Fields (T014, US1)' {
+  It 'Maps NCentral Customer display name, N-central identifier, and a valid slug into LTAC Fields (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Customer'
@@ -1742,9 +1743,9 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '111'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $request = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
-    $request.Vendor | Should -Be 'LCAT'
+    $request.Vendor | Should -Be 'AgentController'
     $request.EntityType | Should -Be 'Customer'
     $request.Fields['display_name'] | Should -Be 'Arista Air Conditioning Corp.'
     $request.Fields['ncentral_customer_id'] | Should -Be '111'
@@ -1762,12 +1763,12 @@ namespace EntitySyncTests
     $source.Name = 'Fallback Metals LLC'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $request = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $request.Fields['ncentral_customer_id'] | Should -Be '222'
   }
 
-  It 'Derives a valid, deterministic LCAT slug from unsafe N-central customer names (T014, US1)' {
+  It 'Derives a valid, deterministic LTAC slug from unsafe N-central customer names (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Customer'
@@ -1776,14 +1777,14 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '333'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $requestA = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
-    $requestB = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $requestA = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $requestB = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $requestA.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
     $requestA.Fields['slug'] | Should -Be $requestB.Fields['slug']
   }
 
-  It 'Sanitizes the fallback source identifier when an LCAT slug cannot come from the display name' {
+  It 'Sanitizes the fallback source identifier when an LTAC slug cannot come from the display name' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Customer'
@@ -1792,13 +1793,13 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = 'cust 12/34'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $request = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $request.Fields['slug'] | Should -Be 'customer-cust-12-34'
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
-  It 'Maps NCentral Customer fields into LCAT on update, preserving the existing LCAT customer scope id (T014, US1)' {
+  It 'Maps NCentral Customer fields into LTAC on update, preserving the existing LTAC customer scope id (T014, US1)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Customer'
@@ -1807,23 +1808,23 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '444'
 
     $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
-    $target.Vendor = 'LCAT'
+    $target.Vendor = 'LTAC'
     $target.EntityType = 'Customer'
-    $target.Id = 'lcat-scope-99'
+    $target.Id = 'ltac-scope-99'
     $target.Name = 'Northshore Plumbing'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
     $request = $mapper.MapUpdate($source, $target, [LISSTech.EntitySync.Core.MatchOptions]::new())
 
-    $request.Id | Should -Be 'lcat-scope-99'
+    $request.Id | Should -Be 'ltac-scope-99'
     $request.Fields['display_name'] | Should -Be 'Northshore Plumbing'
     $request.Fields['ncentral_customer_id'] | Should -Be '444'
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
-  It 'Validates LCAT customer-scope slugs centrally through DefaultEntityMapper.IsValidLcatSlug so the adapter and apply command share one contract' {
+  It 'Validates LTAC customer-scope slugs centrally through DefaultEntityMapper.IsValidLtacSlug so the adapter and apply command share one contract' {
     $type = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]
-    $method = $type.GetMethod('IsValidLcatSlug', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = $type.GetMethod('IsValidLtacSlug', [System.Reflection.BindingFlags]'NonPublic, Static')
     $method | Should -Not -BeNullOrEmpty
 
     $cases = @(
@@ -1842,27 +1843,27 @@ namespace EntitySyncTests
 
     foreach ($case in $cases) {
       $result = $method.Invoke($null, @($case.Slug))
-      $result | Should -Be $case.Expected -Because ("DefaultEntityMapper.IsValidLcatSlug('{0}') should be {1} per the LCAT customer-scope contract" -f $case.Slug, $case.Expected)
+      $result | Should -Be $case.Expected -Because ("DefaultEntityMapper.IsValidLtacSlug('{0}') should be {1} per the LTAC customer-scope contract" -f $case.Slug, $case.Expected)
     }
   }
 
-  It 'Builds an LCAT batch sync request body matching the customer scope contract shape (T015, US1)' {
-    $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+  It 'Builds an LTAC batch sync request body matching the customer scope contract shape (T015, US1)' {
+    $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
     $customerScope.Slug = 'Arista-Air-Conditioning'
     $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
     $customerScope.NCentralCustomerId = '111'
 
-    $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $siteScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
     $siteScope.Slug = 'Arista-Air-Conditioning-Main-Office'
     $siteScope.DisplayName = 'Main Office'
     $siteScope.NCentralCustomerId = '9001'
     $siteScope.NCentralParentCustomerId = '111'
 
-    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
     $customers.Add($customerScope)
     $customers.Add($siteScope)
 
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
     $bodyJson = $method.Invoke($null, @(, $customers))
     $body = $bodyJson | ConvertFrom-Json
 
@@ -1874,15 +1875,15 @@ namespace EntitySyncTests
     $body.customers[1].slug | Should -Be 'Arista-Air-Conditioning-Main-Office'
     $body.customers[1].ncentral_customer_id | Should -Be '9001'
     $body.customers[1].ncentral_parent_customer_id | Should -Be '111'
-    $body.reason | Should -Be 'EntitySync N-central to LCAT sync'
+    $body.reason | Should -Be 'EntitySync N-central to LTAC sync'
     $body.PSObject.Properties.Name | Should -Contain 'ticket'
     $body.ticket | Should -BeNullOrEmpty
   }
 
-  It 'Parses inserted, updated, retired, and active counts and the audit event id from an LCAT batch sync response (T015, US1)' {
+  It 'Parses inserted, updated, retired, and active counts and the audit event id from an LTAC batch sync response (T015, US1)' {
     $responseJson = '{"inserted_count":1,"updated_count":1,"retired_count":0,"active_count":2,"audit_event_id":"00000000-0000-0000-0000-000000000000"}'
 
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
     $result = $method.Invoke($null, @($responseJson))
 
     $result.InsertedCount | Should -Be 1
@@ -1892,10 +1893,10 @@ namespace EntitySyncTests
     $result.AuditEventId | Should -Be '00000000-0000-0000-0000-000000000000'
   }
 
-  It 'Defaults LCAT batch sync response counts to zero and audit event id to null when absent (T015, US1)' {
+  It 'Defaults LTAC batch sync response counts to zero and audit event id to null when absent (T015, US1)' {
     $responseJson = '{}'
 
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
     $result = $method.Invoke($null, @($responseJson))
 
     $result.InsertedCount | Should -Be 0
@@ -1905,20 +1906,20 @@ namespace EntitySyncTests
     $result.AuditEventId | Should -BeNullOrEmpty
   }
 
-  It 'Rejects negative LCAT batch sync response counts as malformed' {
+  It 'Rejects negative LTAC batch sync response counts as malformed' {
     $responseJson = '{"inserted_count":-1,"updated_count":0,"retired_count":0,"active_count":1}'
 
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
 
     { $method.Invoke($null, @($responseJson)) } |
       Should -Throw "*field 'inserted_count' must be a non-negative integer*"
   }
 
-  It 'Preserves explicit-null and empty-string LCAT audit event ids from the sync response (contract: audit_event_id is preserved when present)' -ForEach @(
+  It 'Preserves explicit-null and empty-string LTAC audit event ids from the sync response (contract: audit_event_id is preserved when present)' -ForEach @(
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":null}'; Label = 'Null' },
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":""}'; Label = 'EmptyString' }
   ) {
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
     $result = $method.Invoke($null, @($Response))
 
     $result.ActiveCount | Should -Be 0
@@ -1930,30 +1931,30 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Rejects non-string LCAT audit event ids from the sync response as malformed (ParseSyncResponse unit-level mirror of the integration secret-leak guard)' -ForEach @(
+  It 'Rejects non-string LTAC audit event ids from the sync response as malformed (ParseSyncResponse unit-level mirror of the integration secret-leak guard)' -ForEach @(
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":12345}'; Label = 'Number' },
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":true}'; Label = 'True' },
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":false}'; Label = 'False' },
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":{"secret":"do not echo"}}'; Label = 'Object' },
     @{ Response = '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0,"audit_event_id":["do not echo"]}'; Label = 'Array' }
   ) {
-    $method = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('ParseSyncResponse', [System.Reflection.BindingFlags]'NonPublic, Static')
 
     { $method.Invoke($null, @($Response)) } |
       Should -Throw "*field 'audit_event_id' must be a string*"
   }
 
-  It 'Creates an NCentral Customer to LCAT plan from pipeline sources without any LCAT vendor write (T016, US1)' {
+  It 'Creates an NCentral Customer to LTAC plan from pipeline sources without any LTAC vendor write (T016, US1)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $sourceOne.Vendor = 'NCentral'
@@ -1969,11 +1970,11 @@ namespace EntitySyncTests
       $sourceTwo.Name = 'Fallback Metals LLC'
       $sourceTwo.ExternalIds['NCentralCustomerId'] = '222'
 
-      $plan = @($sourceOne, $sourceTwo) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+      $plan = @($sourceOne, $sourceTwo) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
       $plan.SourceVendor | Should -Be 'NCentral'
       $plan.SourceEntityType | Should -Be 'Customer'
-      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetVendor | Should -Be 'AgentController'
       $plan.TargetEntityType | Should -Be 'Customer'
       $plan.TargetCandidates.Count | Should -Be 0
       $plan.Items.Count | Should -Be 2
@@ -1986,21 +1987,21 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Normalizes the LTAC target alias to LCAT throughout a plan created from NCentral Customer sources (T016, US1)' {
+  It 'Normalizes the LTAC target alias to AgentController throughout a plan created from NCentral Customer sources (T016, US1)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $source.Vendor = 'NCentral'
@@ -2011,19 +2012,19 @@ namespace EntitySyncTests
 
       $plan = @($source) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
-      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetVendor | Should -Be 'AgentController'
       $plan.Items.Count | Should -Be 1
       $plan.Items[0].Action | Should -Be 'Create'
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Sends approved NCentral Customer to LCAT create items as one authoritative batch confirmation rather than one per item (T017, US1)' {
-    $lcatAdapter = New-TestLCATAdapter
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+  It 'Sends approved NCentral Customer to LTAC create items as one authoritative batch confirmation rather than one per item (T017, US1)' {
+    $ltacAdapter = New-TestLTACAdapter
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $sourceOne.Vendor = 'NCentral'
@@ -2054,12 +2055,12 @@ namespace EntitySyncTests
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NCentral'
     $plan.SourceEntityType = 'Customer'
-    $plan.TargetVendor = 'LCAT'
+    $plan.TargetVendor = 'LTAC'
     $plan.TargetEntityType = 'Customer'
     [void]$plan.Items.Add($itemOne)
     [void]$plan.Items.Add($itemTwo)
 
-    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-batch-whatif-{0}.txt" -f [guid]::NewGuid())
+    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-ltac-batch-whatif-{0}.txt" -f [guid]::NewGuid())
     try {
       Start-Transcript -Path $transcriptPath -Force | Out-Null
       $results = $null
@@ -2072,23 +2073,23 @@ namespace EntitySyncTests
 
       $confirmations = Get-Content -LiteralPath $transcriptPath | Where-Object { $_ -match 'What if:' }
       $confirmations.Count | Should -Be 1
-      $confirmations | Should -Match 'LCAT'
+      $confirmations | Should -Match 'LTAC'
 
       $results.Count | Should -Be 2
       $results.Success | Should -Not -Contain $false
-      $results.Message | Should -Match 'LCAT batch sync preview'
+      $results.Message | Should -Match 'LTAC batch sync preview'
       $results.Raw.NCentralCustomerId | Should -Contain '111'
       $results.Raw.NCentralCustomerId | Should -Contain '222'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       Remove-Item -LiteralPath $transcriptPath -Force -ErrorAction SilentlyContinue
     }
   }
 
-  It 'Excludes a Review item from the LCAT batch confirmation while still reporting it separately (T017, US1)' {
-    $lcatAdapter = New-TestLCATAdapter
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+  It 'Excludes a Review item from the LTAC batch confirmation while still reporting it separately (T017, US1)' {
+    $ltacAdapter = New-TestLTACAdapter
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     $sourceOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $sourceOne.Vendor = 'NCentral'
@@ -2132,13 +2133,13 @@ namespace EntitySyncTests
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NCentral'
     $plan.SourceEntityType = 'Customer'
-    $plan.TargetVendor = 'LCAT'
+    $plan.TargetVendor = 'LTAC'
     $plan.TargetEntityType = 'Customer'
     [void]$plan.Items.Add($itemOne)
     [void]$plan.Items.Add($itemTwo)
     [void]$plan.Items.Add($itemReview)
 
-    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-batch-review-{0}.txt" -f [guid]::NewGuid())
+    $transcriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-ltac-batch-review-{0}.txt" -f [guid]::NewGuid())
     try {
       Start-Transcript -Path $transcriptPath -Force | Out-Null
       $results = $null
@@ -2157,12 +2158,12 @@ namespace EntitySyncTests
       $reviewResults[0].Success | Should -BeFalse
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       Remove-Item -LiteralPath $transcriptPath -Force -ErrorAction SilentlyContinue
     }
   }
 
-  It 'Maps NCentral Site display name, site identifier, and parent N-central customer identifier into LCAT Fields (T026, US2)' {
+  It 'Maps NCentral Site display name, site identifier, and parent N-central customer identifier into LTAC Fields (T026, US2)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Site'
@@ -2172,9 +2173,9 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '444'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $request = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
-    $request.Vendor | Should -Be 'LCAT'
+    $request.Vendor | Should -Be 'AgentController'
     $request.EntityType | Should -Be 'Customer'
     $request.Fields['display_name'] | Should -Be 'Northshore Plumbing - Warehouse'
     $request.Fields['ncentral_customer_id'] | Should -Be '555'
@@ -2191,13 +2192,13 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '222'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $request = $mapper.MapCreate($source, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $request = $mapper.MapCreate($source, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $request.Fields['ncentral_customer_id'] | Should -Be '666'
     $request.Fields['ncentral_parent_customer_id'] | Should -Be '222'
   }
 
-  It 'Maps NCentral Site fields into LCAT on update, preserving the existing LCAT customer scope id and parent id (T026, US2)' {
+  It 'Maps NCentral Site fields into LTAC on update, preserving the existing LTAC customer scope id and parent id (T026, US2)' {
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
     $source.EntityType = 'Site'
@@ -2207,32 +2208,32 @@ namespace EntitySyncTests
     $source.ExternalIds['NCentralCustomerId'] = '111'
 
     $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
-    $target.Vendor = 'LCAT'
+    $target.Vendor = 'LTAC'
     $target.EntityType = 'Customer'
-    $target.Id = 'lcat-scope-42'
+    $target.Id = 'ltac-scope-42'
     $target.Name = 'Arista Air Conditioning Corp. - East'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
     $request = $mapper.MapUpdate($source, $target, [LISSTech.EntitySync.Core.MatchOptions]::new())
 
-    $request.Id | Should -Be 'lcat-scope-42'
+    $request.Id | Should -Be 'ltac-scope-42'
     $request.Fields['display_name'] | Should -Be 'Arista Air Conditioning Corp. - East'
     $request.Fields['ncentral_customer_id'] | Should -Be '777'
     $request.Fields['ncentral_parent_customer_id'] | Should -Be '111'
     $request.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
   }
 
-  It 'Blocks an NCentral Site with no parent N-central customer identifier for review instead of creating an LCAT scope (T027, US2)' {
+  It 'Blocks an NCentral Site with no parent N-central customer identifier for review instead of creating an LTAC scope (T027, US2)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $orphanSite = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $orphanSite.Vendor = 'NCentral'
@@ -2241,7 +2242,7 @@ namespace EntitySyncTests
       $orphanSite.Name = 'Orphaned Site Without Parent'
       $orphanSite.ExternalIds['NCentralSiteId'] = '888'
 
-      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
       $plan.Items.Count | Should -Be 1
       $plan.Items[0].Action | Should -Be 'Review'
@@ -2250,7 +2251,7 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
@@ -2260,11 +2261,11 @@ namespace EntitySyncTests
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $orphanSite = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $orphanSite.Vendor = 'NCentral'
@@ -2273,7 +2274,7 @@ namespace EntitySyncTests
       $orphanSite.Name = 'Another Orphaned Site'
       $orphanSite.ExternalIds['NCentralSiteId'] = '999'
 
-      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer
+      $plan = @($orphanSite) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer
 
       $plan.Items.Count | Should -Be 1
       $plan.Items[0].Action | Should -Be 'Review'
@@ -2281,11 +2282,11 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Derives different LCAT slugs for two N-central Sites with the same site name under different parent customers (T028, US2)' {
+  It 'Derives different LTAC slugs for two N-central Sites with the same site name under different parent customers (T028, US2)' {
     $siteUnderParentOne = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $siteUnderParentOne.Vendor = 'NCentral'
     $siteUnderParentOne.EntityType = 'Site'
@@ -2305,15 +2306,15 @@ namespace EntitySyncTests
     $siteUnderParentTwo.CustomFields['NCentralCustomerName'] = 'Fallback Metals LLC'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $requestOne = $mapper.MapCreate($siteUnderParentOne, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
-    $requestTwo = $mapper.MapCreate($siteUnderParentTwo, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $requestOne = $mapper.MapCreate($siteUnderParentOne, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $requestTwo = $mapper.MapCreate($siteUnderParentTwo, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $requestOne.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
     $requestTwo.Fields['slug'] | Should -Match '^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$'
     $requestOne.Fields['slug'] | Should -Not -Be $requestTwo.Fields['slug']
   }
 
-  It 'Derives the same LCAT slug each time for the same N-central Site source (T028, US2)' {
+  It 'Derives the same LTAC slug each time for the same N-central Site source (T028, US2)' {
     $site = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $site.Vendor = 'NCentral'
     $site.EntityType = 'Site'
@@ -2324,14 +2325,14 @@ namespace EntitySyncTests
     $site.CustomFields['NCentralCustomerName'] = 'Northshore Plumbing'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $slugFirst = $mapper.MapCreate($site, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
-    $slugSecond = $mapper.MapCreate($site, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $slugFirst = $mapper.MapCreate($site, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $slugSecond = $mapper.MapCreate($site, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
 
     $slugFirst | Should -Not -BeNullOrEmpty
     $slugFirst | Should -Be $slugSecond
   }
 
-  It 'Changes the derived LCAT slug when only the parent customer name differs for an otherwise identical N-central Site (T028, US2)' {
+  It 'Changes the derived LTAC slug when only the parent customer name differs for an otherwise identical N-central Site (T028, US2)' {
     $siteWithParentName = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $siteWithParentName.Vendor = 'NCentral'
     $siteWithParentName.EntityType = 'Site'
@@ -2351,23 +2352,23 @@ namespace EntitySyncTests
     $siteWithRenamedParent.CustomFields['NCentralCustomerName'] = 'Renamed Parent Name'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $originalSlug = $mapper.MapCreate($siteWithParentName, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
-    $renamedSlug = $mapper.MapCreate($siteWithRenamedParent, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $originalSlug = $mapper.MapCreate($siteWithParentName, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
+    $renamedSlug = $mapper.MapCreate($siteWithRenamedParent, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new()).Fields['slug']
 
     $originalSlug | Should -Not -Be $renamedSlug
   }
 
-  It 'Creates an NCentral Site to LCAT plan producing a Create action when the site has a valid parent (T029, US2)' {
+  It 'Creates an NCentral Site to LTAC plan producing a Create action when the site has a valid parent (T029, US2)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $site = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $site.Vendor = 'NCentral'
@@ -2377,9 +2378,9 @@ namespace EntitySyncTests
       $site.ExternalIds['NCentralSiteId'] = '605'
       $site.ExternalIds['NCentralCustomerId'] = '444'
 
-      $plan = @($site) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+      $plan = @($site) | New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
-      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetVendor | Should -Be 'AgentController'
       $plan.TargetCandidates.Count | Should -Be 0
       $plan.Items.Count | Should -Be 1
       $plan.Items[0].Action | Should -Be 'Create'
@@ -2388,11 +2389,11 @@ namespace EntitySyncTests
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Composes an LCAT batch payload carrying the site''s own id and parent customer id alongside a customer item (T029, US2)' {
+  It 'Composes an LTAC batch payload carrying the site''s own id and parent customer id alongside a customer item (T029, US2)' {
     $customerSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $customerSource.Vendor = 'NCentral'
     $customerSource.EntityType = 'Customer'
@@ -2409,18 +2410,18 @@ namespace EntitySyncTests
     $siteSource.ExternalIds['NCentralCustomerId'] = '701'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $customerRequest = $mapper.MapCreate($customerSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
-    $siteRequest = $mapper.MapCreate($siteSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $customerRequest = $mapper.MapCreate($customerSource, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $siteRequest = $mapper.MapCreate($siteSource, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
-    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLtacCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
     $customerScope = $toScopeMethod.Invoke($null, @($customerRequest))
     $siteScope = $toScopeMethod.Invoke($null, @($siteRequest))
 
-    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
     $customers.Add($customerScope)
     $customers.Add($siteScope)
 
-    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $buildMethod = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
     $bodyJson = $buildMethod.Invoke($null, @(, $customers))
     $body = $bodyJson | ConvertFrom-Json
 
@@ -2431,105 +2432,105 @@ namespace EntitySyncTests
     $body.customers[1].ncentral_parent_customer_id | Should -Be '701'
   }
 
-  It 'Rejects an LCAT batch sync request carrying duplicate ncentral_customer_id values across customer and site items (T033, US2)' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects an LTAC batch sync request carrying duplicate ncentral_customer_id values across customer and site items (T033, US2)' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $siteScope.Slug = 'arista-air-conditioning-main-office'
       $siteScope.DisplayName = 'Main Office'
       $siteScope.NCentralCustomerId = '701'
       $siteScope.NCentralParentCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
       $customers.Add($siteScope)
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
         Should -Throw '*duplicate ncentral_customer_id*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Rejects case-only duplicate LCAT ncentral_customer_id values before HTTP send' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects case-only duplicate LTAC ncentral_customer_id values before HTTP send' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'case-duplicate-customer'
       $customerScope.DisplayName = 'Case Duplicate Customer'
       $customerScope.NCentralCustomerId = 'ABC-701'
 
-      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $siteScope.Slug = 'case-duplicate-site'
       $siteScope.DisplayName = 'Case Duplicate Site'
       $siteScope.NCentralCustomerId = 'abc-701'
       $siteScope.NCentralParentCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
       $customers.Add($siteScope)
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
         Should -Throw '*duplicate ncentral_customer_id*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Rejects whitespace-hidden duplicate LCAT ncentral_customer_id values before HTTP send' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects whitespace-hidden duplicate LTAC ncentral_customer_id values before HTTP send' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'whitespace-duplicate-customer'
       $customerScope.DisplayName = 'Whitespace Duplicate Customer'
       $customerScope.NCentralCustomerId = '701'
 
-      $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $siteScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $siteScope.Slug = 'whitespace-duplicate-site'
       $siteScope.DisplayName = 'Whitespace Duplicate Site'
       $siteScope.NCentralCustomerId = ' 701 '
       $siteScope.NCentralParentCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
       $customers.Add($siteScope)
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
         Should -Throw '*duplicate ncentral_customer_id*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Trims LCAT customer-scope values before serializing the batch request' {
-    $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+  It 'Trims LTAC customer-scope values before serializing the batch request' {
+    $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
     $customerScope.Slug = ' arista-air-conditioning '
     $customerScope.DisplayName = ' Arista Air Conditioning Corp. '
     $customerScope.NCentralCustomerId = ' 701 '
     $customerScope.NCentralParentCustomerId = ' '
 
-    $siteScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $siteScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
     $siteScope.Slug = ' arista-air-conditioning-main-office '
     $siteScope.DisplayName = ' Main Office '
     $siteScope.NCentralCustomerId = ' 702 '
     $siteScope.NCentralParentCustomerId = ' 701 '
 
-    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
     $customers.Add($customerScope)
     $customers.Add($siteScope)
 
-    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $buildMethod = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
     $bodyJson = $buildMethod.Invoke($null, @(, $customers))
     $body = $bodyJson | ConvertFrom-Json
 
@@ -2543,62 +2544,62 @@ namespace EntitySyncTests
     $body.customers[1].ncentral_parent_customer_id | Should -Be '701'
   }
 
-  It 'Rejects malformed LCAT customer-scope requests before sending the batch' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects malformed LTAC customer-scope requests before sending the batch' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = '###'
       $customerScope.DisplayName = ''
       $customerScope.NCentralCustomerId = ''
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
-        Should -Throw '*customers`[0`].slug must match the LCAT customer-scope contract*display_name is required*ncentral_customer_id is required*'
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+        Should -Throw '*customers`[0`].slug must match the LTAC customer-scope contract*display_name is required*ncentral_customer_id is required*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Rejects null LCAT customer-scope request rows before sending the batch' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects null LTAC customer-scope request rows before sending the batch' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($null)
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
         Should -Throw '*customers`[0`].slug is required*display_name is required*ncentral_customer_id is required*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Rejects empty LCAT customer-scope batches before HTTP send' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects empty LTAC customer-scope batches before HTTP send' {
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
 
-      { $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
+      { $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() } |
         Should -Throw '*at least one customer-scope row is required*'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Excludes LCATBearerToken from the Connect-EntitySyncVendor LCAT connection object (T035, US3)' {
-    $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
-    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken
+  It 'Excludes Token from the Connect-EntitySyncVendor LTAC connection object (T035, US3)' {
+    $secretToken = 'super-secret-ltac-bearer-9f8e7d6c'
+    $connection = Connect-EntitySyncVendor -Vendor LTAC -Url 'https://ltac.example.test' -Token $secretToken
 
     try {
-      $connection.Vendor | Should -Be 'LCAT'
-      $connection.PSObject.Properties.Name | Should -Not -Contain 'LCATBearerToken'
+      $connection.Vendor | Should -Be 'AgentController'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'Token'
       $connection.PSObject.Properties.Name | Should -Not -Contain 'BearerToken'
 
       $renderedConnection = $connection | Format-List -Property * | Out-String
@@ -2612,12 +2613,12 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Excludes LCATBearerToken from Connect-EntitySyncVendor error messages (T035, US3)' {
-    $secretToken = 'super-secret-lcat-bearer-9f8e7d6c'
+  It 'Excludes Token from Connect-EntitySyncVendor error messages (T035, US3)' {
+    $secretToken = 'super-secret-ltac-bearer-9f8e7d6c'
     $caught = $null
 
     try {
-      Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'http://lcat.example.test' -LCATBearerToken $secretToken -ErrorAction Stop
+      Connect-EntitySyncVendor -Vendor LTAC -Url 'http://ltac.example.test' -Token $secretToken -ErrorAction Stop
     }
     catch {
       $caught = $_
@@ -2628,20 +2629,20 @@ namespace EntitySyncTests
     ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
   }
 
-  It 'Accepts an LCAT bearer supplied as a SecureString and registers a working LCAT connection' {
-    $secretToken = 'secure-string-lcat-bearer-1a2b3c4d'
+  It 'Accepts an LTAC bearer supplied as a SecureString and registers a working LTAC connection' {
+    $secretToken = 'secure-string-ltac-bearer-1a2b3c4d'
     $secure = [securestring]::new()
     foreach ($char in $secretToken.ToCharArray()) { $secure.AppendChar($char) }
     $secure.MakeReadOnly()
 
     $connection = $null
     try {
-      $connection = Connect-EntitySyncVendor -Vendor LCAT `
-        -LCATBaseUrl 'https://lcat.example.test' `
-        -LCATSecureBearer $secure
+      $connection = Connect-EntitySyncVendor -Vendor LTAC `
+        -Url 'https://ltac.example.test' `
+        -SecureToken $secure
 
-      $connection.Vendor | Should -Be 'LCAT'
-      $connection.PSObject.Properties.Name | Should -Not -Contain 'LCATSecureBearer'
+      $connection.Vendor | Should -Be 'AgentController'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'SecureToken'
 
       # The unwrapped token is the one the adapter actually carries; verify it
       # by inspecting the underlying HttpClient authorization header via the
@@ -2661,8 +2662,8 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Keeps the LCAT SecureString cleartext out of Connect-EntitySyncVendor output and error messages' {
-    $secretToken = 'must-never-render-lcat-bearer-9d8c7b6a'
+  It 'Keeps the LTAC SecureString cleartext out of Connect-EntitySyncVendor output and error messages' {
+    $secretToken = 'must-never-render-ltac-bearer-9d8c7b6a'
     $secure = [securestring]::new()
     foreach ($char in $secretToken.ToCharArray()) { $secure.AppendChar($char) }
     $secure.MakeReadOnly()
@@ -2670,9 +2671,9 @@ namespace EntitySyncTests
     $rendered = $null
     $connection = $null
     try {
-      $connection = Connect-EntitySyncVendor -Vendor LCAT `
-        -LCATBaseUrl 'https://lcat.example.test' `
-        -LCATSecureBearer $secure
+      $connection = Connect-EntitySyncVendor -Vendor LTAC `
+        -Url 'https://ltac.example.test' `
+        -SecureToken $secure
 
       $rendered = @(
         ($connection | Format-List -Property * | Out-String)
@@ -2690,73 +2691,124 @@ namespace EntitySyncTests
     $rendered | Should -Not -Match ([regex]::Escape($secretToken))
   }
 
-  It 'Rejects an empty LCATSecureBearer SecureString with a non-leaking error' {
+  It 'Rejects an empty SecureToken SecureString with a non-leaking error' {
     $empty = [securestring]::new()
     $empty.MakeReadOnly()
 
     $caught = $null
     try {
-      Connect-EntitySyncVendor -Vendor LCAT `
-        -LCATBaseUrl 'https://lcat.example.test' `
-        -LCATSecureBearer $empty -ErrorAction Stop
+      Connect-EntitySyncVendor -Vendor LTAC `
+        -Url 'https://ltac.example.test' `
+        -SecureToken $empty -ErrorAction Stop
     }
     catch {
       $caught = $_
     }
 
     $caught | Should -Not -BeNullOrEmpty
-    $caught.Exception.Message | Should -Match 'LCATSecureBearer'
+    $caught.Exception.Message | Should -Match 'SecureToken'
   }
 
-  It 'Rejects simultaneous -LCATBearerToken and -LCATSecureBearer' {
+  It 'Rejects simultaneous -Token and -SecureToken' {
     $secure = [securestring]::new()
     foreach ($char in 'secure-bearer-9z8y7x'.ToCharArray()) { $secure.AppendChar($char) }
     $secure.MakeReadOnly()
 
     $caught = $null
     try {
-      Connect-EntitySyncVendor -Vendor LCAT `
-        -LCATBaseUrl 'https://lcat.example.test' `
-        -LCATBearerToken 'string-bearer-1234' `
-        -LCATSecureBearer $secure -ErrorAction Stop
+      Connect-EntitySyncVendor -Vendor LTAC `
+        -Url 'https://ltac.example.test' `
+        -Token 'string-bearer-1234' `
+        -SecureToken $secure -ErrorAction Stop
     }
     catch {
       $caught = $_
     }
 
     $caught | Should -Not -BeNullOrEmpty
-    $caught.Exception.Message | Should -Match 'mutually exclusive'
+    $caught.Exception.Message | Should -Match 'parameter set|mutually exclusive'
   }
 
-  It 'Declares -LCATSecureBearer as a SecureString in the LCAT parameter set' {
+  It 'Declares -SecureToken as a SecureString in the AgentController secure parameter set' {
     $command = Get-Command Connect-EntitySyncVendor
-    $secureParam = $command.Parameters['LCATSecureBearer']
+    $secureParam = $command.Parameters['SecureToken']
     $secureParam | Should -Not -BeNullOrEmpty
     $secureParam.ParameterType | Should -Be ([securestring])
+    $secureParam.ParameterSets.Keys | Should -Contain 'AgentControllerSecureToken'
+    $secureParam.ParameterSets.Keys | Should -Not -Contain 'AgentControllerToken'
   }
 
-  It 'Excludes LCAT credential-bearing options from registered connection output (T041, US3)' {
-    $secretToken = 'registered-lcat-bearer-a1b2c3d4'
-    $connection = Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.test' -LCATBearerToken $secretToken
+  It 'Accepts a DeviceAssetOps AgentController session object and uses its ops URL without leaking the token' {
+    $secretToken = 'session-agentcontroller-bearer-1a2b3c4d'
+    $secure = [securestring]::new()
+    foreach ($char in $secretToken.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+    $session = [pscustomobject]@{
+      PSTypeName = 'LISSTech.DeviceAssetOps.Session'
+      OpsBaseUrl = 'https://ops-agent-controller.clfy-b.lissonline.com'
+      AuthUri    = 'https://api-agent-controller.clfy-b.lissonline.com'
+      Token      = $secure
+    }
+
+    $connection = $null
+    try {
+      $connection = Connect-EntitySyncVendor -Vendor AgentController -Session $session
+
+      $connection.Vendor | Should -Be 'AgentController'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'Token'
+      $connection.PSObject.Properties.Name | Should -Not -Contain 'SecureToken'
+
+      $adapter = $connection.Adapter
+      $httpClientField = $adapter.GetType().GetField('httpClient', [System.Reflection.BindingFlags]'NonPublic, Instance')
+      $httpClient = $httpClientField.GetValue($adapter)
+      $httpClient.BaseAddress.AbsoluteUri.TrimEnd('/') | Should -Be 'https://ops-agent-controller.clfy-b.lissonline.com'
+      $httpClient.BaseAddress.AbsoluteUri | Should -Not -Match 'api-agent-controller'
+      $httpClient.DefaultRequestHeaders.Authorization.Scheme | Should -Be 'Bearer'
+      $httpClient.DefaultRequestHeaders.Authorization.Parameter | Should -Be $secretToken
+
+      $rendered = @(
+        ($connection | Format-List -Property * | Out-String)
+        ($connection | ConvertTo-Json -Depth 5)
+        ($connection.Adapter | Format-List -Property * | Out-String)
+      ) -join "`n"
+      $rendered | Should -Not -Match ([regex]::Escape($secretToken))
+    }
+    finally {
+      if ($connection) { ($connection.Adapter -as [IDisposable])?.Dispose() }
+    }
+  }
+
+  It 'Keeps AgentController session and manual parameter sets mutually exclusive' {
+    $command = Get-Command Connect-EntitySyncVendor
+    $sessionParam = $command.Parameters['Session']
+    $sessionParam | Should -Not -BeNullOrEmpty
+    $sessionParam.ParameterSets.Keys | Should -Contain 'AgentControllerSession'
+    $sessionParam.ParameterSets.Keys | Should -Not -Contain 'AgentControllerToken'
+    $sessionParam.ParameterSets.Keys | Should -Not -Contain 'AgentControllerSecureToken'
+  }
+
+  It 'Excludes LTAC credential-bearing options from registered connection output (T041, US3)' {
+    $secretToken = 'registered-ltac-bearer-a1b2c3d4'
+    $connection = Connect-EntitySyncVendor -Vendor LTAC -Url 'https://ltac.example.test' -Token $secretToken
 
     try {
-      $registered = Get-EntitySyncConnection | Where-Object Vendor -eq 'LCAT' | Select-Object -First 1
+      $registered = Get-EntitySyncConnection | Where-Object Vendor -eq 'AgentController' | Select-Object -First 1
 
       $registered | Should -Not -BeNullOrEmpty
-      $registered.Vendor | Should -Be 'LCAT'
-      $registered.PSObject.Properties.Name | Should -Not -Contain 'LCATOptions'
-      $registered.PSObject.Properties.Name | Should -Not -Contain 'LCATBearerToken'
+      $registered.Vendor | Should -Be 'AgentController'
+      $registered.PSObject.Properties.Name | Should -Not -Contain 'LTACOptions'
+      $registered.PSObject.Properties.Name | Should -Not -Contain 'Token'
       $registered.PSObject.Properties.Name | Should -Not -Contain 'BearerToken'
 
       $renderedConnection = $registered | Format-List -Property * | Out-String
-      $renderedConnection | Should -Not -Match 'LCATOptions'
-      $renderedConnection | Should -Not -Match 'LCATBearerToken'
+      $renderedConnection | Should -Not -Match 'LTACOptions'
+      $renderedConnection | Should -Not -Match 'Token'
       $renderedConnection | Should -Not -Match 'BearerToken'
       $renderedConnection | Should -Not -Match ([regex]::Escape($secretToken))
 
       $serializedConnection = $registered | ConvertTo-Json -Depth 5
-      $serializedConnection | Should -Not -Match 'LCATOptions'
-      $serializedConnection | Should -Not -Match 'LCATBearerToken'
+      $serializedConnection | Should -Not -Match 'LTACOptions'
+      $serializedConnection | Should -Not -Match 'Token'
       $serializedConnection | Should -Not -Match 'BearerToken'
       $serializedConnection | Should -Not -Match ([regex]::Escape($secretToken))
     }
@@ -2765,7 +2817,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Excludes N-central registration tokens and other custom field metadata from LCAT customer mapping (T036, US3)' {
+  It 'Excludes N-central registration tokens and other custom field metadata from LTAC customer mapping (T036, US3)' {
     $registrationToken = 'ncentral-reg-token-4f3e2d1c'
 
     $customerSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
@@ -2778,7 +2830,7 @@ namespace EntitySyncTests
     $customerSource.CustomFields['NCentralOrgUnitType'] = 'customer'
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $customerRequest = $mapper.MapCreate($customerSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $customerRequest = $mapper.MapCreate($customerSource, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $customerRequest.Fields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
     $customerRequest.Fields.Keys | Should -Not -Contain 'registration_token'
@@ -2786,7 +2838,7 @@ namespace EntitySyncTests
     ($customerRequest.Fields.Values -join '|') | Should -Not -Match ([regex]::Escape($registrationToken))
   }
 
-  It 'Excludes N-central registration tokens from LCAT site-derived mapping and the serialized batch request (T036, US3)' {
+  It 'Excludes N-central registration tokens from LTAC site-derived mapping and the serialized batch request (T036, US3)' {
     $registrationToken = 'ncentral-site-reg-token-9a8b7c6d'
 
     $siteSource = [LISSTech.EntitySync.Core.ExternalEntity]::new()
@@ -2800,33 +2852,33 @@ namespace EntitySyncTests
     $siteSource.CustomFields['NCentralRegistrationToken'] = $registrationToken
 
     $mapper = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new()
-    $siteRequest = $mapper.MapCreate($siteSource, 'LCAT', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
+    $siteRequest = $mapper.MapCreate($siteSource, 'LTAC', 'Customer', [LISSTech.EntitySync.Core.MatchOptions]::new())
 
     $siteRequest.Fields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
     $siteRequest.CustomFields.Count | Should -Be 0
     ($siteRequest.Fields.Values -join '|') | Should -Not -Match ([regex]::Escape($registrationToken))
 
-    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $toScopeMethod = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ToLtacCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
     $siteScope = $toScopeMethod.Invoke($null, @($siteRequest))
 
-    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+    $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
     $customers.Add($siteScope)
 
-    $buildMethod = [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $buildMethod = [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter].GetMethod('BuildSyncRequestBody', [System.Reflection.BindingFlags]'NonPublic, Static')
     $bodyJson = $buildMethod.Invoke($null, @(, $customers))
 
     $bodyJson | Should -Not -Match ([regex]::Escape($registrationToken))
   }
 
-  It 'Performs no LCAT batch sync when Invoke-EntitySyncPlan is called with -WhatIf, even with -Apply (T037, US3)' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Performs no LTAC batch sync when Invoke-EntitySyncPlan is called with -WhatIf, even with -Apply (T037, US3)' {
+    $ltacAdapter = New-TestLTACAdapter
     # Dispose the adapter's HttpClient up front so any attempt to actually send the batch
     # request throws ObjectDisposedException, giving a deterministic, network-free proof that
-    # -WhatIf blocked the write: if the ShouldProcess guard in ApplyLcatBatch were ever bypassed,
+    # -WhatIf blocked the write: if the ShouldProcess guard in ApplyLtacBatch were ever bypassed,
     # SyncCustomerScopesAsync's httpClient.PostAsync call would fail loudly instead of silently
     # succeeding against a real endpoint.
-    $lcatAdapter.Dispose()
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+    $ltacAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
@@ -2844,31 +2896,31 @@ namespace EntitySyncTests
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NCentral'
     $plan.SourceEntityType = 'Customer'
-    $plan.TargetVendor = 'LCAT'
+    $plan.TargetVendor = 'LTAC'
     $plan.TargetEntityType = 'Customer'
     [void]$plan.Items.Add($item)
 
     $results = Invoke-EntitySyncPlan -Plan $plan -Apply -WhatIf -PassThru
 
     $results.Count | Should -Be 1
-    $results[0].Vendor | Should -Be 'LCAT'
+    $results[0].Vendor | Should -Be 'AgentController'
     $results[0].Action | Should -Be 'Create'
     $results[0].Success | Should -BeTrue
-    $results[0].Message | Should -Match 'LCAT batch sync preview'
+    $results[0].Message | Should -Match 'LTAC batch sync preview'
     $results[0].Message | Should -Match 'no write performed because -WhatIf was specified'
     $results[0].Raw.NCentralCustomerId | Should -Be '801'
   }
 
-  It 'Skips Review, Reject, No Update, None, unsafe, duplicate, and incomplete LCAT plan items during apply (T038, US3)' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Skips Review, Reject, No Update, None, unsafe, duplicate, and incomplete LTAC plan items during apply (T038, US3)' {
+    $ltacAdapter = New-TestLTACAdapter
     # A disposed adapter turns any accidental approved batch write into a deterministic failure.
-    $lcatAdapter.Dispose()
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+    $ltacAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NCentral'
     $plan.SourceEntityType = 'Customer'
-    $plan.TargetVendor = 'LCAT'
+    $plan.TargetVendor = 'LTAC'
     $plan.TargetEntityType = 'Customer'
 
     $cases = @(
@@ -2876,7 +2928,7 @@ namespace EntitySyncTests
       [pscustomobject]@{ Id = '902'; Name = 'Rejected Customer'; Action = 'None'; Status = 'Rejected'; MatchType = 'Rejected'; Reason = 'Reviewer rejected item' },
       [pscustomobject]@{ Id = '903'; Name = 'No Update Customer'; Action = 'None'; Status = 'NoUpdate'; MatchType = 'NoUpdate'; Reason = 'Reviewer chose No Update' },
       [pscustomobject]@{ Id = '904'; Name = 'Plain None Customer'; Action = 'None'; Status = 'Planned'; MatchType = 'NoMatch'; Reason = 'No action planned' },
-      [pscustomobject]@{ Id = '905'; Name = '###'; Action = 'Review'; Status = 'Planned'; MatchType = 'Invalid'; Reason = 'Unsafe LCAT slug' },
+      [pscustomobject]@{ Id = '905'; Name = '###'; Action = 'Review'; Status = 'Planned'; MatchType = 'Invalid'; Reason = 'Unsafe LTAC slug' },
       [pscustomobject]@{ Id = '906'; Name = 'Duplicate Id Customer'; Action = 'Review'; Status = 'Planned'; MatchType = 'Duplicate'; Reason = 'Duplicate N-central source identifier' },
       [pscustomobject]@{ Id = ''; Name = 'Incomplete Customer'; Action = 'Review'; Status = 'Planned'; MatchType = 'Invalid'; Reason = 'Missing N-central source identifier' }
     )
@@ -2915,11 +2967,11 @@ namespace EntitySyncTests
     @($results | Where-Object { $_.Action -ne 'Review' }).Count | Should -Be 0
   }
 
-  It 'Reports a non-secret no-op result when an LCAT apply has no approved batch items' {
-    $lcatAdapter = New-TestLCATAdapter
-    # A disposed adapter proves no HTTP write is attempted for an all-no-op LCAT plan.
-    $lcatAdapter.Dispose()
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+  It 'Reports a non-secret no-op result when an LTAC apply has no approved batch items' {
+    $ltacAdapter = New-TestLTACAdapter
+    # A disposed adapter proves no HTTP write is attempted for an all-no-op LTAC plan.
+    $ltacAdapter.Dispose()
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
     $source.Vendor = 'NCentral'
@@ -2938,32 +2990,32 @@ namespace EntitySyncTests
     $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
     $plan.SourceVendor = 'NCentral'
     $plan.SourceEntityType = 'Customer'
-    $plan.TargetVendor = 'LCAT'
+    $plan.TargetVendor = 'LTAC'
     $plan.TargetEntityType = 'Customer'
     [void]$plan.Items.Add($item)
 
     $results = Invoke-EntitySyncPlan -Plan $plan -Apply -PassThru -Confirm:$false
 
     $results.Count | Should -Be 1
-    $results[0].Vendor | Should -Be 'LCAT'
+    $results[0].Vendor | Should -Be 'AgentController'
     $results[0].Action | Should -Be 'None'
     $results[0].Success | Should -BeTrue
-    $results[0].Message | Should -Be 'No approved LCAT customer-scope items were eligible for batch sync.'
+    $results[0].Message | Should -Be 'No approved LTAC customer-scope items were eligible for batch sync.'
     $results[0].Message | Should -Not -Match 'token|Authorization|Bearer'
   }
 
-  It 'Filters invalid approved LCAT plan items before composing the batch request (T042, US3)' {
+  It 'Filters invalid approved LTAC plan items before composing the batch request (T042, US3)' {
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":1,"updated_count":0,"retired_count":0,"active_count":1}')
     $server.Start()
 
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl)
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $server.BaseUrl)
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     try {
       $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
       $plan.SourceVendor = 'NCentral'
       $plan.SourceEntityType = 'Customer'
-      $plan.TargetVendor = 'LCAT'
+      $plan.TargetVendor = 'LTAC'
       $plan.TargetEntityType = 'Customer'
 
       foreach ($case in @(
@@ -2999,10 +3051,10 @@ namespace EntitySyncTests
       $failedResults = @($results | Where-Object { -not $_.Success })
       $successResults.Count | Should -Be 1
       $failedResults.Count | Should -Be 6
-      $failedResults.Message | Should -Contain 'LCAT item skipped before batch sync: ncentral_customer_id is required.'
+      $failedResults.Message | Should -Contain 'LTAC item skipped before batch sync: ncentral_customer_id is required.'
       ($failedResults.Message -join "`n") | Should -Match "duplicate ncentral_customer_id 'duplicate-1203'"
       ($failedResults.Message -join "`n") | Should -Match "duplicate slug 'Duplicate-Slug-Co'"
-      ($failedResults.Message -join "`n") | Should -Match "LCAT customer-scope sync only accepts N-central Customer or Site source records"
+      ($failedResults.Message -join "`n") | Should -Match "LTAC customer-scope sync only accepts N-central Customer or Site source records"
 
       $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
       @($requestBody.customers).Count | Should -Be 1
@@ -3011,22 +3063,22 @@ namespace EntitySyncTests
     }
     finally {
       $server.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Filters case-only duplicate approved LCAT source identifiers before composing the batch request' {
+  It 'Filters case-only duplicate approved LTAC source identifiers before composing the batch request' {
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":1,"updated_count":0,"retired_count":0,"active_count":1}')
     $server.Start()
 
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl)
-    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $server.BaseUrl)
+    [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
     try {
       $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
       $plan.SourceVendor = 'NCentral'
       $plan.SourceEntityType = 'Customer'
-      $plan.TargetVendor = 'LCAT'
+      $plan.TargetVendor = 'LTAC'
       $plan.TargetEntityType = 'Customer'
 
       foreach ($case in @(
@@ -3065,11 +3117,11 @@ namespace EntitySyncTests
     }
     finally {
       $server.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Treats whitespace-hidden duplicate approved LCAT identifiers as duplicates before batch composition' {
+  It 'Treats whitespace-hidden duplicate approved LTAC identifiers as duplicates before batch composition' {
     $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
     $item.Action = 'Create'
     $item.Source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
@@ -3078,7 +3130,7 @@ namespace EntitySyncTests
     $item.Source.Id = '1501'
     $item.Source.Name = 'Whitespace Duplicate Customer'
 
-    $request = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+    $request = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
     $request.Slug = 'Whitespace-Duplicate-Customer'
     $request.DisplayName = 'Whitespace Duplicate Customer'
     $request.NCentralCustomerId = ' duplicate-1501 '
@@ -3087,32 +3139,32 @@ namespace EntitySyncTests
     [void]$duplicateIds.Add('duplicate-1501')
     $duplicateSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $method = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ValidateLcatCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
+    $method = [LISSTech.EntitySync.Commands.InvokeEntitySyncPlanCommand].GetMethod('ValidateLtacCustomerScopeRequest', [System.Reflection.BindingFlags]'NonPublic, Static')
     $errors = $method.Invoke($null, @($item, $request, $duplicateIds, $duplicateSlugs))
 
     $errors | Should -Contain "duplicate ncentral_customer_id ' duplicate-1501 '"
   }
 
-  It 'Rejects direct LCAT adapter batch calls with duplicate customer-scope slugs before HTTP send' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects direct LTAC adapter batch calls with duplicate customer-scope slugs before HTTP send' {
+    $ltacAdapter = New-TestLTACAdapter
     try {
-      $customerOne = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerOne = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerOne.Slug = 'duplicate-scope'
       $customerOne.DisplayName = 'Duplicate Scope A'
       $customerOne.NCentralCustomerId = '1301'
 
-      $customerTwo = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerTwo = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerTwo.Slug = 'Duplicate-Scope'
       $customerTwo.DisplayName = 'Duplicate Scope B'
       $customerTwo.NCentralCustomerId = '1302'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerOne)
       $customers.Add($customerTwo)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3123,30 +3175,30 @@ namespace EntitySyncTests
       $caught.Exception.Message | Should -Match 'duplicate-scope'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Rejects whitespace-hidden duplicate LCAT customer-scope slugs before HTTP send' {
-    $lcatAdapter = New-TestLCATAdapter
+  It 'Rejects whitespace-hidden duplicate LTAC customer-scope slugs before HTTP send' {
+    $ltacAdapter = New-TestLTACAdapter
     try {
-      $customerOne = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerOne = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerOne.Slug = ' duplicate-scope '
       $customerOne.DisplayName = 'Duplicate Scope A'
       $customerOne.NCentralCustomerId = '1301'
 
-      $customerTwo = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerTwo = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerTwo.Slug = 'duplicate-scope'
       $customerTwo.DisplayName = 'Duplicate Scope B'
       $customerTwo.NCentralCustomerId = '1302'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerOne)
       $customers.Add($customerTwo)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3157,21 +3209,21 @@ namespace EntitySyncTests
       $caught.Exception.Message | Should -Match 'duplicate-scope'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Marks invalid LCAT source records for review during planning with non-secret safe-failure reasons (T043, US3)' {
+  It 'Marks invalid LTAC source records for review during planning with non-secret safe-failure reasons (T043, US3)' {
     $ncOptions = [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]::new()
     $ncOptions.BaseUrl = 'https://ncentral.example.test/'
     $ncOptions.UserApiToken = 'token'
     $ncOptions.ServiceOrgId = '50'
     $ncAdapter = [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($ncOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ncAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $missingId = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $missingId.Vendor = 'NCentral'
@@ -3220,38 +3272,38 @@ namespace EntitySyncTests
       $duplicateSlugTwo.ExternalIds['NCentralCustomerId'] = '1307'
 
       $plan = @($missingId, $missingName, $unsafeSlug, $duplicateOne, $duplicateTwo, $duplicateSlugOne, $duplicateSlugTwo) |
-        New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+        New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
       $plan.Items.Count | Should -Be 7
       $plan.Items.Action | Should -Not -Contain 'Create'
       $plan.Items.Action | Should -Not -Contain 'Update'
       $plan.Items.Action | Should -Not -Contain 'Link'
-      $plan.Items.MatchType | Should -Contain 'LcatSourceInvalid'
+      $plan.Items.MatchType | Should -Contain 'LtacSourceInvalid'
 
       $reasons = $plan.Items.Reasons -join "`n"
       $reasons | Should -Match 'source identifier'
       $reasons | Should -Match 'display name'
-      $reasons | Should -Match 'safe LCAT customer-scope slug'
+      $reasons | Should -Match 'safe LTAC customer-scope slug'
       $reasons | Should -Match "Duplicate N-central source identifier 'duplicate-1304'"
-      $reasons | Should -Match "Duplicate LCAT customer-scope slug 'Contoso'"
+      $reasons | Should -Match "Duplicate LTAC customer-scope slug 'Contoso'"
       $reasons | Should -Not -Match 'token'
     }
     finally {
       $ncAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Blocks non-NCentral sources from LCAT customer-scope planning before apply' {
+  It 'Blocks non-NCentral sources from LTAC customer-scope planning before apply' {
     $haloOptions = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
     $haloOptions.BaseUrl = 'https://halo.example.test/'
     $haloOptions.AccessToken = 'token'
     $haloAdapter = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($haloOptions)
-    $lcatAdapter = New-TestLCATAdapter
+    $ltacAdapter = New-TestLTACAdapter
 
     try {
       [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($haloAdapter)
-      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($lcatAdapter)
+      [LISSTech.EntitySync.Runtime.ConnectionRegistry]::Set($ltacAdapter)
 
       $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
       $source.Vendor = 'HaloPSA'
@@ -3259,41 +3311,41 @@ namespace EntitySyncTests
       $source.Id = 'HALO-101'
       $source.Name = 'Contoso Operations'
 
-      $plan = @($source) | New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Client -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+      $plan = @($source) | New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Client -TargetVendor LTAC -TargetEntityType Customer -CreateMissing
 
-      $plan.TargetVendor | Should -Be 'LCAT'
+      $plan.TargetVendor | Should -Be 'AgentController'
       $plan.Items.Count | Should -Be 1
       $plan.Items[0].Action | Should -Be 'Review'
-      $plan.Items[0].MatchType | Should -Be 'LcatSourceInvalid'
+      $plan.Items[0].MatchType | Should -Be 'LtacSourceInvalid'
       $plan.Items[0].Reasons -join "`n" | Should -Match 'only accepts N-central Customer or Site source records'
       $plan.Items[0].Reasons -join "`n" | Should -Match "source vendor 'HaloPSA' is not supported"
     }
     finally {
       $haloAdapter.Dispose()
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Reports LCAT non-success responses without authorization headers or bearer credentials (T039, US3)' {
-    $secretToken = 'lcat-error-secret-bearer-1a2b3c4d'
+  It 'Reports LTAC non-success responses without authorization headers or bearer credentials (T039, US3)' {
+    $secretToken = 'ltac-error-secret-bearer-1a2b3c4d'
     $server = [EntitySyncTests.OneShotHttpServer]::new(403, 'Forbidden', '{"error":"do not echo this body"}')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3303,6 +3355,7 @@ namespace EntitySyncTests
       }
 
       $server.RequestText | Should -Match 'POST /rpc/sync_ncentral_customers '
+      $server.RequestText | Should -Not -Match 'POST /rest/rpc/sync_ncentral_customers '
       $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
       $caught | Should -Not -BeNullOrEmpty
       $caught.Exception.Message | Should -Match 'HTTP 403 Forbidden'
@@ -3313,31 +3366,31 @@ namespace EntitySyncTests
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Reports malformed successful LCAT batch responses without raw body or bearer credentials' {
-    $secretToken = 'malformed-lcat-bearer-123456'
+  It 'Reports malformed successful LTAC batch responses without raw body or bearer credentials' {
+    $secretToken = 'malformed-ltac-bearer-123456'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', 'not-json-secret-body')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3347,37 +3400,37 @@ namespace EntitySyncTests
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT batch sync returned a malformed response'
+      $caught.Exception.Message | Should -Match 'LTAC batch sync returned a malformed response'
       $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
       ($caught | Out-String) | Should -Not -Match 'not-json-secret-body'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Treats non-object successful LCAT batch responses as malformed without leaking secrets' {
-    $secretToken = 'array-lcat-bearer-123456'
+  It 'Treats non-object successful LTAC batch responses as malformed without leaking secrets' {
+    $secretToken = 'array-ltac-bearer-123456'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '["do not echo this array body"]')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3387,37 +3440,37 @@ namespace EntitySyncTests
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT batch sync returned a malformed response'
+      $caught.Exception.Message | Should -Match 'LTAC batch sync returned a malformed response'
       $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
       ($caught | Out-String) | Should -Not -Match 'do not echo this array body'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Treats non-numeric LCAT batch count fields as malformed without leaking secrets' {
-    $secretToken = 'count-lcat-bearer-123456'
+  It 'Treats non-numeric LTAC batch count fields as malformed without leaking secrets' {
+    $secretToken = 'count-ltac-bearer-123456'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":"do not echo this count body","updated_count":0,"retired_count":0,"active_count":1}')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3427,37 +3480,37 @@ namespace EntitySyncTests
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT batch sync returned a malformed response'
+      $caught.Exception.Message | Should -Match 'LTAC batch sync returned a malformed response'
       $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
       ($caught | Out-String) | Should -Not -Match 'do not echo this count body'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Treats non-string LCAT audit event ids as malformed without leaking secrets' {
-    $secretToken = 'audit-lcat-bearer-123456'
+  It 'Treats non-string LTAC audit event ids as malformed without leaking secrets' {
+    $secretToken = 'audit-ltac-bearer-123456'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":1,"audit_event_id":{"secret":"do not echo this audit body"}}')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3467,39 +3520,39 @@ namespace EntitySyncTests
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT batch sync returned a malformed response'
+      $caught.Exception.Message | Should -Match 'LTAC batch sync returned a malformed response'
       $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
       ($caught | Out-String) | Should -Not -Match 'do not echo this audit body'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Parses a successful LCAT batch sync response into LCATSyncResult fields and rides the bearer on the wire' {
-    $secretToken = 'lcat-success-bearer-abcdef1234567890'
-    # Mirrors the response shape from specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md:
+  It 'Parses a successful LTAC batch sync response into LTACSyncResult fields and rides the bearer on the wire' {
+    $secretToken = 'ltac-success-bearer-abcdef1234567890'
+    # Mirrors the response shape from specs/001-ltac-sync-adapter/contracts/ltac-sync-rpc.md:
     # all five fields populated so the parse-and-return path is exercised end-to-end.
     $responseBody = '{"inserted_count":2,"updated_count":3,"retired_count":1,"active_count":4,"audit_event_id":"00000000-0000-0000-0000-000000000abc"}'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $responseBody)
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
       $customerScope.NCentralParentCustomerId = '700'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
-      $result = $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result = $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
 
       $result | Should -Not -BeNullOrEmpty
       $result.InsertedCount | Should -Be 2
@@ -3510,11 +3563,12 @@ namespace EntitySyncTests
 
       $server.Wait()
       $server.RequestText | Should -Match 'POST /rpc/sync_ncentral_customers '
+      $server.RequestText | Should -Not -Match 'POST /rest/rpc/sync_ncentral_customers '
       $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
 
-      # Locks in the JSON contract the adapter sends to LCAT so the wire format cannot drift.
+      # Locks in the JSON contract the adapter sends to LTAC so the wire format cannot drift.
       $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
-      $requestBody.reason | Should -Be 'EntitySync N-central to LCAT sync'
+      $requestBody.reason | Should -Be 'EntitySync N-central to LTAC sync'
       $requestBody.ticket | Should -BeNullOrEmpty
       @($requestBody.customers).Count | Should -Be 1
       $requestBody.customers[0].slug | Should -Be 'arista-air-conditioning'
@@ -3523,29 +3577,29 @@ namespace EntitySyncTests
       $requestBody.customers[0].ncentral_parent_customer_id | Should -Be '700'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Returns a default LCATSyncResult when a successful batch sync response omits the optional count and audit fields' {
-    $secretToken = 'lcat-empty-fields-bearer-fedcba0987654321'
+  It 'Returns a default LTACSyncResult when a successful batch sync response omits the optional count and audit fields' {
+    $secretToken = 'ltac-empty-fields-bearer-fedcba0987654321'
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{}')
     $server.Start()
 
-    $options = New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
-    $lcatAdapter = New-TestLCATAdapter -Options $options
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken $secretToken
+    $ltacAdapter = New-TestLTACAdapter -Options $options
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
-      $result = $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $result = $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
 
       $result | Should -Not -BeNullOrEmpty
       $result.InsertedCount | Should -Be 0
@@ -3558,13 +3612,13 @@ namespace EntitySyncTests
       $server.RequestText | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
 
-  It 'Reports LCAT batch sync transport failures as redacted errors without leaking the bearer token' {
-    $secretToken = 'lcat-batch-sync-refused-bearer-c0ffee01'
+  It 'Reports LTAC batch sync transport failures as redacted errors without leaking the bearer token' {
+    $secretToken = 'ltac-batch-sync-refused-bearer-c0ffee01'
 
     # Reserve a loopback port and immediately stop listening so the adapter's POST is refused,
     # exercising the IsTransportException -> CreateRedactedAdapterException path on the batch
@@ -3575,52 +3629,52 @@ namespace EntitySyncTests
     $probe.Stop()
 
     $deadBaseUrl = "http://127.0.0.1:$deadPort/"
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $deadBaseUrl -BearerToken $secretToken)
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
       }
 
       $caught | Should -Not -BeNullOrEmpty
-      $caught.Exception.Message | Should -Match 'LCAT batch sync failed before a response was returned'
+      $caught.Exception.Message | Should -Match 'LTAC batch sync failed before a response was returned'
       $caught.Exception.Message | Should -Match 'Path: rpc/sync_ncentral_customers'
       $caught.Exception.Message | Should -Not -Match 'Authorization'
       $caught.Exception.Message | Should -Not -Match ([regex]::Escape($secretToken))
       ($caught | Out-String) | Should -Not -Match ([regex]::Escape($secretToken))
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
     }
   }
 
-  It 'Propagates OperationCanceledException from the LCAT batch sync path without redacting the cancellation token' {
+  It 'Propagates OperationCanceledException from the LTAC batch sync path without redacting the cancellation token' {
     # The catch (OperationCanceledException) block rethrows verbatim, so callers see the
     # original cancellation rather than a synthetic redacted adapter error. Locks that in.
     $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', '{"inserted_count":0,"updated_count":0,"retired_count":0,"active_count":0}')
     $server.Start()
 
-    $lcatAdapter = New-TestLCATAdapter -Options (New-TestLCATOptions -BaseUrl $server.BaseUrl -BearerToken 'cancel-lcat-bearer-11223344')
+    $ltacAdapter = New-TestLTACAdapter -Options (New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken 'cancel-ltac-bearer-11223344')
 
     try {
-      $customerScope = [LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]::new()
+      $customerScope = [LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]::new()
       $customerScope.Slug = 'arista-air-conditioning'
       $customerScope.DisplayName = 'Arista Air Conditioning Corp.'
       $customerScope.NCentralCustomerId = '701'
 
-      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LCAT.LCATCustomerScopeRequest]]::new()
+      $customers = [System.Collections.Generic.List[LISSTech.EntitySync.Adapters.LTAC.LTACCustomerScopeRequest]]::new()
       $customers.Add($customerScope)
 
       $cts = [System.Threading.CancellationTokenSource]::new()
@@ -3628,7 +3682,7 @@ namespace EntitySyncTests
 
       $caught = $null
       try {
-        $lcatAdapter.SyncCustomerScopesAsync($customers, $cts.Token).GetAwaiter().GetResult()
+        $ltacAdapter.SyncCustomerScopesAsync($customers, $cts.Token).GetAwaiter().GetResult()
       }
       catch {
         $caught = $_
@@ -3641,10 +3695,10 @@ namespace EntitySyncTests
       # block in the adapter is required to rethrow verbatim.
       $caught.Exception.InnerException | Should -BeOfType ([System.OperationCanceledException])
       $caught.Exception.InnerException.Message | Should -Match 'A task was canceled'
-      $caught.Exception.Message | Should -Not -Match 'LCAT batch sync failed before a response was returned'
+      $caught.Exception.Message | Should -Not -Match 'LTAC batch sync failed before a response was returned'
     }
     finally {
-      $lcatAdapter.Dispose()
+      $ltacAdapter.Dispose()
       $server.Dispose()
     }
   }
@@ -3821,10 +3875,10 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NetSuiteInternalId'
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
-    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLtacSourceIds, $duplicateLtacSlugs))
 
     $item.MatchType | Should -Be 'NoMatch'
     $item.Reasons -join '; ' | Should -Not -Match 'N-central integration'
@@ -3844,10 +3898,10 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NCentralCustomerId'
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
-    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NCentralCustomerId', $true, $false, $duplicateLtacSourceIds, $duplicateLtacSlugs))
 
     $item.MatchType | Should -Be 'IntegrationLinkTargetMissing'
     $item.Reasons -join '; ' | Should -Match 'N-central target 390'
@@ -3900,10 +3954,10 @@ namespace EntitySyncTests
     $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
     $index = $matcher.CreateIndex($targets, $options)
     $method = [LISSTech.EntitySync.Commands.NewEntitySyncPlanCommand].GetMethod('CreatePlanItem', [System.Reflection.BindingFlags]'NonPublic, Static')
-    $duplicateLcatSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $duplicateLcatSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSourceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $duplicateLtacSlugs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLcatSourceIds, $duplicateLcatSlugs))
+    $item = $method.Invoke($null, @($source, $index, 90, 70, $false, 'NetSuiteInternalId', $false, $false, $duplicateLtacSourceIds, $duplicateLtacSlugs))
 
     $item.Action | Should -Be 'Review'
     $item.MatchType | Should -Be 'LowConfidence'
@@ -4146,7 +4200,7 @@ namespace EntitySyncTests
       $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
       $plan.SourceVendor = 'NCentral'
       $plan.SourceEntityType = 'Site'
-      $plan.TargetVendor = 'LCAT'
+      $plan.TargetVendor = 'LTAC'
       $plan.TargetEntityType = 'Customer'
 
       $legitimate = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
@@ -4166,16 +4220,16 @@ namespace EntitySyncTests
       $credential = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
       $credential.Action = 'Review'
       $credential.Status = 'Review'
-      $credential.MatchType = 'LcatSourceInvalid'
+      $credential.MatchType = 'LtacSourceInvalid'
       $credential.Score = 0
       $credential.Source.Vendor = 'NCentral'
       $credential.Source.EntityType = 'Site'
       $credential.Source.Id = 'SITE-200'
       $credential.Source.Name = 'Fabrikam'
-      $credential.Source.ExternalIds['LCATBearerToken'] = 'should-not-leak-1'
+      $credential.Source.ExternalIds['Token'] = 'should-not-leak-1'
       $credential.Source.CustomFields['Authorization'] = 'Bearer should-not-leak-2'
       $credential.Source.CustomFields['NCentralRegistrationToken'] = 'should-not-leak-3'
-      [void]$credential.Reasons.Add('LCATBearerToken=should-not-leak-4')
+      [void]$credential.Reasons.Add('Token=should-not-leak-4')
       [void]$plan.Items.Add($credential)
 
       $plan | Export-EntitySyncPlan -FilePath $xlsxPath
@@ -4188,7 +4242,7 @@ namespace EntitySyncTests
 
       $credReviewed = $reviewed.Items[1]
       $credReviewed.Reasons | Should -Contain '[credential redacted]'
-      $credReviewed.Source.ExternalIds.Keys | Should -Not -Contain 'LCATBearerToken'
+      $credReviewed.Source.ExternalIds.Keys | Should -Not -Contain 'Token'
       $credReviewed.Source.CustomFields.Keys | Should -Not -Contain 'Authorization'
       $credReviewed.Source.CustomFields.Keys | Should -Not -Contain 'NCentralRegistrationToken'
 
@@ -4196,7 +4250,7 @@ namespace EntitySyncTests
       $plan | Export-EntitySyncPlan -FilePath $jsonPath
       $json = Get-Content -Raw $jsonPath
       $json | Should -Not -Match 'should-not-leak'
-      $json | Should -Not -Match 'LCATBearerToken'
+      $json | Should -Not -Match '"Token"\s*:'
       $json | Should -Not -Match '"Authorization"'
       $json | Should -Not -Match 'NCentralRegistrationToken'
       $json | Should -Match 'tokenization'
@@ -4209,21 +4263,21 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Round-trips LCAT plan reasons while excluding credential-bearing artifact fields (T044, US3)' {
-    $secretToken = 'lcat-export-secret-4f3e2d1c'
-    $xlsxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-redacted-{0}.xlsx" -f [guid]::NewGuid())
-    $jsonPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-lcat-redacted-{0}.json" -f [guid]::NewGuid())
+  It 'Round-trips LTAC plan reasons while excluding credential-bearing artifact fields (T044, US3)' {
+    $secretToken = 'ltac-export-secret-4f3e2d1c'
+    $xlsxPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-ltac-redacted-{0}.xlsx" -f [guid]::NewGuid())
+    $jsonPath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-ltac-redacted-{0}.json" -f [guid]::NewGuid())
     try {
       $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
       $plan.SourceVendor = 'NCentral'
       $plan.SourceEntityType = 'Site'
-      $plan.TargetVendor = 'LCAT'
+      $plan.TargetVendor = 'LTAC'
       $plan.TargetEntityType = 'Customer'
 
       $item = [LISSTech.EntitySync.Core.EntitySyncPlanItem]::new()
       $item.Action = 'Review'
       $item.Status = 'Review'
-      $item.MatchType = 'LcatSourceInvalid'
+      $item.MatchType = 'LtacSourceInvalid'
       $item.Score = 0
       $item.Source.Vendor = 'NCentral'
       $item.Source.EntityType = 'Site'
@@ -4231,13 +4285,13 @@ namespace EntitySyncTests
       $item.Source.Name = '###'
       $item.Source.ExternalIds['NCentralSiteId'] = 'SITE-901'
       $item.Source.ExternalIds['NCentralCustomerId'] = 'CUST-390'
-      $item.Source.ExternalIds['LCATBearerToken'] = $secretToken
+      $item.Source.ExternalIds['Token'] = $secretToken
       $item.Source.CustomFields['NCentralCustomerName'] = 'GOAT USA Inc.'
       $item.Source.CustomFields['Authorization'] = "Bearer $secretToken"
-      $item.Source.CustomFields['LCATBearerToken'] = $secretToken
-      [void]$item.Reasons.Add("N-central Site SITE-901 cannot produce a safe LCAT customer-scope slug.")
-      [void]$item.Reasons.Add("Duplicate N-central source identifier 'SITE-901' cannot be synced to LCAT customer scopes.")
-      [void]$item.Reasons.Add("LCATBearerToken=$secretToken")
+      $item.Source.CustomFields['Token'] = $secretToken
+      [void]$item.Reasons.Add("N-central Site SITE-901 cannot produce a safe LTAC customer-scope slug.")
+      [void]$item.Reasons.Add("Duplicate N-central source identifier 'SITE-901' cannot be synced to LTAC customer scopes.")
+      [void]$item.Reasons.Add("Token=$secretToken")
       [void]$plan.Items.Add($item)
 
       $plan | Export-EntitySyncPlan -FilePath $xlsxPath
@@ -4245,23 +4299,23 @@ namespace EntitySyncTests
 
       $reviewed = Import-EntitySyncPlan $xlsxPath
       $reviewedItem = $reviewed.Items[0]
-      $reviewedItem.MatchType | Should -Be 'LcatSourceInvalid'
-      $reviewedItem.Reasons | Should -Contain "N-central Site SITE-901 cannot produce a safe LCAT customer-scope slug."
-      $reviewedItem.Reasons | Should -Contain "Duplicate N-central source identifier 'SITE-901' cannot be synced to LCAT customer scopes."
+      $reviewedItem.MatchType | Should -Be 'LtacSourceInvalid'
+      $reviewedItem.Reasons | Should -Contain "N-central Site SITE-901 cannot produce a safe LTAC customer-scope slug."
+      $reviewedItem.Reasons | Should -Contain "Duplicate N-central source identifier 'SITE-901' cannot be synced to LTAC customer scopes."
       $reviewedItem.Reasons | Should -Contain '[credential redacted]'
       $reviewedItem.Source.ExternalIds['NCentralSiteId'] | Should -Be 'SITE-901'
       $reviewedItem.Source.ExternalIds['NCentralCustomerId'] | Should -Be 'CUST-390'
       $reviewedItem.Source.CustomFields['NCentralCustomerName'] | Should -Be 'GOAT USA Inc.'
-      $reviewedItem.Source.ExternalIds.Keys | Should -Not -Contain 'LCATBearerToken'
+      $reviewedItem.Source.ExternalIds.Keys | Should -Not -Contain 'Token'
       $reviewedItem.Source.CustomFields.Keys | Should -Not -Contain 'Authorization'
-      $reviewedItem.Source.CustomFields.Keys | Should -Not -Contain 'LCATBearerToken'
+      $reviewedItem.Source.CustomFields.Keys | Should -Not -Contain 'Token'
 
       $json = Get-Content -Raw $jsonPath
       $json | Should -Not -Match ([regex]::Escape($secretToken))
-      $json | Should -Not -Match 'LCATBearerToken'
+      $json | Should -Not -Match 'Token'
       $json | Should -Not -Match 'Authorization'
 
-      $plan.Items[0].Source.CustomFields['LCATBearerToken'] | Should -Be $secretToken
+      $plan.Items[0].Source.CustomFields['Token'] | Should -Be $secretToken
     }
     finally {
       Remove-Item -LiteralPath $xlsxPath -Force -ErrorAction SilentlyContinue
@@ -4717,16 +4771,16 @@ namespace EntitySyncTests
     @{ Url = 'https://halopsa.example.com/'; Expected = 'https://halopsa.example.com/' }
     @{ Url = 'https://ncentral.example.com/api/v2'; Expected = 'https://ncentral.example.com/api/v2/' }
     @{ Url = 'https://ncentral.example.com/api/v2/'; Expected = 'https://ncentral.example.com/api/v2/' }
-    @{ Url = 'https://lcat.example.com'; Expected = 'https://lcat.example.com/' }
+    @{ Url = 'https://ltac.example.com'; Expected = 'https://ltac.example.com/' }
     @{ Url = 'http://127.0.0.1:65535'; Expected = 'http://127.0.0.1:65535/' }
     @{ Url = 'http://127.0.0.1:65535/'; Expected = 'http://127.0.0.1:65535/' }
   ) {
-    # Halo / N-central / LCAT adapters and Connect-EntitySyncVendor all previously carried a
+    # Halo / N-central / LTAC adapters and Connect-EntitySyncVendor all previously carried a
     # byte-for-byte private copy of this exact expression; the consolidated surface replaces them.
     [LISSTech.EntitySync.Adapters.UrlHelpers]::EnsureTrailingSlash($Url) | Should -Be $Expected
   }
 
-  It 'UrlHelpers.EnsureTrailingSlash is the single source of truth across Halo, NCentral, LCAT, and Connect-EntitySyncVendor' {
+  It 'UrlHelpers.EnsureTrailingSlash is the single source of truth across Halo, NCentral, LTAC, and Connect-EntitySyncVendor' {
     $type = [LISSTech.EntitySync.Adapters.UrlHelpers]
     $type.IsPublic | Should -BeTrue
     $type.IsAbstract | Should -BeTrue  # static class -> IsAbstract = true, IsSealed = true
@@ -4738,13 +4792,13 @@ namespace EntitySyncTests
     ($ensure.GetParameters() | ForEach-Object { $_.ParameterType }) | Should -Be @([string])
     $ensure.ReturnType | Should -Be ([string])
 
-    # Halo / N-central / LCAT adapters and Connect-EntitySyncVendor used to each carry a private
+    # Halo / N-central / LTAC adapters and Connect-EntitySyncVendor used to each carry a private
     # copy; the consolidation removed them, so reflection against each type must not find the
     # member anymore.
     foreach ($t in @(
       [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter],
       [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter],
-      [LISSTech.EntitySync.Adapters.LCAT.LCATEntityAdapter],
+      [LISSTech.EntitySync.Adapters.LTAC.LTACEntityAdapter],
       [LISSTech.EntitySync.Commands.ConnectEntitySyncVendorCommand]
     )) {
       $flag = [System.Reflection.BindingFlags]'NonPublic, Static'

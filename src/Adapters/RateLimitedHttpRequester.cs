@@ -5,7 +5,7 @@ namespace LISSTech.EntitySync.Adapters;
 /// minimum inter-request interval. Shared across every adapter that issues
 /// outbound HTTP so they cannot drift out of sync on the retry policy or
 /// throttle behaviour; currently used by HaloPSA, N-central, and NetSuite.
-/// LCAT is intentionally excluded because its customer-scope write endpoint
+/// LTAC is intentionally excluded because its customer-scope write endpoint
 /// does not require outbound HTTP. The Retry-After parsing itself lives in
 /// <see cref="RateLimitHelper.RateLimitDelay"/>.
 /// </summary>

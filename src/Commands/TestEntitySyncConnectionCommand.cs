@@ -1,4 +1,5 @@
 using System.Management.Automation;
+using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
@@ -8,15 +9,13 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class TestEntitySyncConnectionCommand : PSCmdlet
 {
     [Parameter(Mandatory = true, Position = 0)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
+    [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
 
     /// <summary>
-    /// LCAT connection tests may be requested with the `LTAC` alias, but every downstream result and
-    /// error must still identify the vendor as `LCAT` (spec FR-002).
+    /// LTAC values are normalized to the cmdlet-facing AgentController vendor name.
     /// </summary>
-    private static string NormalizeVendorAlias(string vendor) =>
-        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+    private static string NormalizeVendorAlias(string vendor) => EntitySyncVendors.Normalize(vendor);
 
     protected override void EndProcessing()
     {

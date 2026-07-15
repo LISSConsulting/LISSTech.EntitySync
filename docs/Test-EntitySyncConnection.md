@@ -21,7 +21,7 @@ Calls `TestConnectionAsync` on the adapter registered for `-Vendor` and returns 
 
 Run `Connect-EntitySyncVendor -Vendor <Name>` first; an unregistered vendor raises `No EntitySync connection exists for vendor '<Vendor>'. Run Connect-EntitySyncVendor first.`.
 
-`-Vendor LTAC` is accepted as an alias and normalizes to `LCAT`, but every downstream result and error still identifies the vendor as `LCAT` (spec FR-002). For LCAT, connection failures return only the operation, HTTP status where available, and the `rpc/sync_ncentral_customers` path — the bearer token, authorization header, and raw response body are never copied into the error.
+`-Vendor LTAC` is accepted as an alias and normalizes to `AgentController`. For Agent Controller, connection failures return only the operation, HTTP status where available, and the ops/PostgREST `rpc/sync_ncentral_customers` path; the bearer token, authorization header, and raw response body are never copied into the error.
 
 ## EXAMPLES
 
@@ -43,8 +43,8 @@ Posts a `SELECT id FROM customer FETCH FIRST 1 ROWS ONLY` probe through REST Web
 
 ### Example 3
 ```powershell
-Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -LCATBearerToken $env:LCAT_BEARER_TOKEN
-Test-EntitySyncConnection -Vendor LTAC
+Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ltac.example.com' -Token $env:LTAC_BEARER_TOKEN
+Test-EntitySyncConnection -Vendor AgentController
 ```
 
-Tests the registered LCAT adapter. The alias normalizes to `LCAT` internally; any error returned identifies the vendor as `LCAT` without echoing the bearer token.
+Tests the registered Agent Controller adapter. Legacy aliases normalize to `AgentController` internally; errors do not echo the bearer token.

@@ -1,19 +1,19 @@
-# Research: LCAT Customer Scope Sync
+# Research: LTAC Customer Scope Sync
 
-## Decision: Implement LCAT as a target-only EntitySync adapter
+## Decision: Implement LTAC as a target-only EntitySync adapter
 
-**Rationale**: The feature requires LCAT as a downstream materialization target for N-central
-customer and site records. Keeping LCAT behavior in a dedicated adapter preserves the canonical core
+**Rationale**: The feature requires LTAC as a downstream materialization target for N-central
+customer and site records. Keeping LTAC behavior in a dedicated adapter preserves the canonical core
 and adapter-edge boundary required by the constitution.
 
-**Alternatives considered**: Embedding LCAT HTTP calls directly in command classes was rejected
+**Alternatives considered**: Embedding LTAC HTTP calls directly in command classes was rejected
 because it would smear vendor behavior through the safe planning/apply orchestration. Extending the
-N-central adapter was rejected because the LCAT behavior belongs to the target system, not the
+N-central adapter was rejected because the LTAC behavior belongs to the target system, not the
 source read path.
 
-## Decision: Apply approved LCAT items in one batch per reviewed plan
+## Decision: Apply approved LTAC items in one batch per reviewed plan
 
-**Rationale**: LCAT's N-central sync contract is authoritative and can retire rows missing from the
+**Rationale**: LTAC's N-central sync contract is authoritative and can retire rows missing from the
 payload. Normal per-item writes would make each item look like a full sync and could retire every
 other synced row. A single batch preserves intended full-sync semantics and plan-first safety.
 
@@ -21,10 +21,10 @@ other synced row. A single batch preserves intended full-sync semantics and plan
 was considered but rejected as less explicit and harder to reason about. Per-item RPC calls were
 rejected because they violate the source contract and risk data loss.
 
-## Decision: Use PostgREST JSON object keys matching the LCAT sync contract
+## Decision: Use PostgREST JSON object keys matching the LTAC sync contract
 
 **Rationale**: Current PostgREST documentation shows named function arguments are passed as JSON
-object keys that match the function parameter names. The feature request specifies the LCAT request
+object keys that match the function parameter names. The feature request specifies the LTAC request
 body with `customers`, `reason`, and `ticket`; the contract will use those names unless the upstream
 AgentController contract changes.
 
@@ -32,10 +32,10 @@ AgentController contract changes.
 rejected because the latest feature source corrected the payload to unprefixed names. A single
 unnamed JSON argument was rejected because the supplied contract describes named payload fields.
 
-## Decision: Represent LCAT targets as canonical `ExternalEntity` customer scopes
+## Decision: Represent LTAC targets as canonical `ExternalEntity` customer scopes
 
-**Rationale**: Planning and matching already operate on canonical entities. LCAT customer scopes can
-be represented with vendor `LCAT`, entity type `Customer`, source identifiers in `ExternalIds`, and
+**Rationale**: Planning and matching already operate on canonical entities. LTAC customer scopes can
+be represented with vendor `LTAC`, entity type `Customer`, source identifiers in `ExternalIds`, and
 sync metadata in custom fields while keeping matching and review behavior consistent.
 
 **Alternatives considered**: Adding a new core entity type was rejected because the canonical model
@@ -44,17 +44,17 @@ state.
 
 ## Decision: Generate slugs in mapping with fail-safe validation
 
-**Rationale**: LCAT requires safe customer-scope slugs. Mapping is the boundary where source records
+**Rationale**: LTAC requires safe customer-scope slugs. Mapping is the boundary where source records
 become target write requests, so it can derive slugs from source names, parent names, and existing
 source fields, then fail safely before apply if a slug is empty, unsafe, or conflicting.
 
-**Alternatives considered**: Letting LCAT generate slugs was rejected because operators need
+**Alternatives considered**: Letting LTAC generate slugs was rejected because operators need
 reviewable evidence before apply and duplicate/unsafe values must be visible in the plan. Storing
 slug logic inside the N-central adapter was rejected because slug rules are target-specific.
 
 ## Decision: Redact and avoid credentials by construction
 
-**Rationale**: LCAT credentials are privileged and must not appear in connection outputs, exported
+**Rationale**: LTAC credentials are privileged and must not appear in connection outputs, exported
 plans, common errors, or tests. The adapter should store credentials only in options/private fields,
 send them only as authorization material, and sanitize failure messages to status and endpoint path.
 

@@ -4,7 +4,7 @@ namespace LISSTech.EntitySync.Adapters;
 /// Shared helpers for vendor adapters that throttle outbound HTTP traffic and
 /// retry 429 TooManyRequests responses. Centralised so every adapter that
 /// needs to honour 429 TooManyRequests cannot drift out of sync on the retry
-/// policy; currently used by HaloPSA, N-central, and NetSuite. LCAT is
+/// policy; currently used by HaloPSA, N-central, and NetSuite. LTAC is
 /// intentionally excluded because its customer-scope write endpoint does not
 /// require outbound HTTP.
 /// </summary>

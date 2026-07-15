@@ -18,10 +18,10 @@ When HaloPSA is the target, planning reads full client records by default so cus
 ## SYNTAX
 
 ```powershell
-New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral> [-TargetVendor] <HaloPSA|NetSuite|NCentral|LCAT|LTAC> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
+New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral> [-TargetVendor] <HaloPSA|NetSuite|NCentral|AgentController> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
 ```
 
-`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendor (`Customer` for NetSuite and LCAT; `Client`/`Site` for HaloPSA; `Customer`/`Site` for N-central). `-InputObject` accepts pipeline input by value so a pre-filtered list of source records can flow in. `-TargetVendor` accepts the `LTAC` alias, which is normalized to `LCAT` for every artifact and contract check.
+`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendor (`Customer` for NetSuite and AgentController; `Client`/`Site` for HaloPSA; `Customer`/`Site` for N-central). `-InputObject` accepts pipeline input by value so a pre-filtered list of source records can flow in. `-TargetVendor` accepts `LTAC`, which normalizes to `AgentController` for new artifacts and contract checks.
 
 ## EXAMPLES
 
@@ -49,14 +49,14 @@ Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` ar
 
 ### Example 4
 ```powershell
-$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
 ```
 
-Creates an N-central Customer to LCAT Customer scope plan. `LCAT` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `LCAT`), and `Customer` is the only `-TargetEntityType` LCAT supports. LCAT has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.
+Creates an N-central Customer to Agent Controller Customer scope plan. `AgentController` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `AgentController`), and `Customer` is the only `-TargetEntityType` Agent Controller supports. Agent Controller has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.
 
 ### Example 5
 ```powershell
-$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LCAT -TargetEntityType Customer -CreateMissing
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
 ```
 
-Creates an N-central Site to LCAT Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LCAT scope stays traceable to the site's owning customer. A site that fails any LCAT source-validation check (for example: no parent N-central customer identifier, no source identifier, no display name, a non-NCentral source vendor, a duplicate N-central source identifier, an unsafe LCAT slug, or a duplicate LCAT slug) is blocked with `Action 'Review'` (`MatchType 'LcatSourceInvalid'`) and a reason that names the specific problem — for the missing-parent case the reason reads `N-central site {sourceId} has no parent N-central customer identifier; LCAT customer scopes require the parent N-central customer identifier.`. This safe failure applies even with `-CreateMissing`, and every LCAT source-validation check uses the same `LcatSourceInvalid` MatchType so reviewers can pivot on a single bucket. See `specs/001-lcat-sync-adapter/data-model.md`.
+Creates an N-central Site to LTAC Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LTAC scope stays traceable to the site's owning customer. A site that fails any LTAC source-validation check (for example: no parent N-central customer identifier, no source identifier, no display name, a non-NCentral source vendor, a duplicate N-central source identifier, an unsafe LTAC slug, or a duplicate LTAC slug) is blocked with `Action 'Review'` (`MatchType 'LtacSourceInvalid'`) and a reason that names the specific problem — for the missing-parent case the reason reads `N-central site {sourceId} has no parent N-central customer identifier; LTAC customer scopes require the parent N-central customer identifier.`. This safe failure applies even with `-CreateMissing`, and every LTAC source-validation check uses the same `LtacSourceInvalid` MatchType so reviewers can pivot on a single bucket. See `specs/001-ltac-sync-adapter/data-model.md`.

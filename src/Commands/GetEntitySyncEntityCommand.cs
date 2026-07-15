@@ -2,7 +2,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Concurrent;
 using System.Management.Automation;
 using LISSTech.EntitySync.Adapters.Halo;
-using LISSTech.EntitySync.Adapters.LCAT;
+using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
@@ -15,17 +15,15 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, Position = 0)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
+    [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
     /// <summary>
-    /// LCAT reads may be requested with the `LTAC` alias, but every downstream result and error
-    /// must still identify the vendor as `LCAT` (spec FR-002).
+    /// LTAC values are normalized to the cmdlet-facing AgentController vendor name.
     /// </summary>
-    private static string NormalizeVendorAlias(string vendor) =>
-        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+    private static string NormalizeVendorAlias(string vendor) => EntitySyncVendors.Normalize(vendor);
 
     public object? GetDynamicParameters()
     {
@@ -43,7 +41,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         {
             AddEntityTypeParameter("Customer", "Site");
         }
-        else if (Vendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase))
+        else if (EntitySyncVendors.IsAgentController(Vendor))
         {
             AddEntityTypeParameter("Customer");
         }
@@ -82,7 +80,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter) haloAdapter.Trace = traces.Enqueue;
             if (adapter is HaloEntityAdapter haloProgressAdapter) haloProgressAdapter.Progress = progress.Enqueue;
-            if (adapter is LCATEntityAdapter lcatAdapter) lcatAdapter.Trace = traces.Enqueue;
+            if (adapter is LTACEntityAdapter ltacAdapter) ltacAdapter.Trace = traces.Enqueue;
             if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
             if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
             IReadOnlyList<ExternalEntity> entities;
@@ -118,7 +116,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
                 }
 
                 if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
-                if (adapter is LCATEntityAdapter completedLcatAdapter) completedLcatAdapter.Trace = null;
+                if (adapter is LTACEntityAdapter completedLtacAdapter) completedLtacAdapter.Trace = null;
                 if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
             }
             DrainMessages(traces, progress);

@@ -1,6 +1,6 @@
-namespace LISSTech.EntitySync.Adapters.LCAT;
+namespace LISSTech.EntitySync.Adapters.LTAC;
 
-public sealed class LCATOptions
+public sealed class LTACOptions
 {
     public string BaseUrl { get; set; } = string.Empty;
     public string BearerToken { get; set; } = string.Empty;

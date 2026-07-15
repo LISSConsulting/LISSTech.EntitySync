@@ -8,7 +8,7 @@ LONG DESCRIPTION
     LISSTech.EntitySync provides a vendor-neutral synchronization engine with
     ports and adapters for external systems. Adapters support NetSuite
     customers, HaloPSA clients and sites, N-central customers and sites, and
-    LCAT customer scopes.
+    AgentController customer scopes.
 
     The module separates discovery, matching, planning, review, and apply.
     Plans are deterministic and can be exported, reviewed, imported, and
@@ -30,7 +30,7 @@ CONFIGURATION
     Connect-EntitySyncVendor parameters. The module signs every SuiteQL
     request with a fresh nonce and HMAC-SHA256 signature per attempt and never
     caches the OAuth header. NetSuite is a source-only adapter in this
-    module; target writes go through HaloPSA, N-central, or LCAT.
+    module; target writes go through HaloPSA, N-central, or AgentController.
 
     N-central uses a User-API token plus the service-organization id for the
     REST API (NCENTRAL_BASE_URL, NCENTRAL_USER_API_TOKEN, NCENTRAL_SERVICE_ORG_ID),
@@ -41,16 +41,21 @@ CONFIGURATION
     (NCENTRAL_SOAP_USERNAME, NCENTRAL_SOAP_PASSWORD) and are optional unless
     Invoke-EntitySyncPlan or Set-EntitySyncCustomProperty needs them.
 
-    LCAT uses a bearer token and only acts as a sync target for N-central
-    Customer and Site sources. Set LCAT_BASE_URL and LCAT_BEARER_TOKEN, or
-    pass the matching Connect-EntitySyncVendor parameters. To reuse an
-    operator-session JWT minted by LISSTech.DeviceAssetOps
-    (Get-DeviceAssetOpsAccessToken) without exposing the cleartext token,
-    pass it as -LCATSecureBearer (SecureString) instead of
-    -LCATBearerToken; the two parameters are mutually exclusive. The bearer
-    token is used only for the LCAT authorization header and is omitted from
+    AgentController uses the ops/PostgREST OpenAPI and only acts as a sync target
+    for N-central Customer and Site sources. Prefer structured session input from
+    LISSTech.DeviceAssetOps: run Get-DeviceAssetOpsAccessToken -AsSession after
+    Connect-DeviceAssetOps, then pass that object to Connect-EntitySyncVendor
+    -Vendor AgentController -Session. The session supplies both OpsBaseUrl and a
+    SecureString operator JWT. EntitySync sends exactly POST
+    /rpc/sync_ncentral_customers relative to OpsBaseUrl and does not derive that
+    URL from the AgentController API/auth host.
+
+    Manual break-glass mode remains available with LTAC_BASE_URL and
+    LTAC_BEARER_TOKEN, or -Url plus -Token/-SecureToken. In manual mode -Url is
+    the ops/PostgREST base URL, not the API/auth base URL. The bearer token is
+    used only for the AgentController authorization header and is omitted from
     Get-EntitySyncConnection, exported plans, dry-run/apply result messages,
-    and adapter error paths. LCAT has no customer-scope read endpoint, so
+    and adapter error paths. AgentController has no customer-scope read endpoint, so
     plans never return target candidates; every approved N-central source
     plans as Create/NoMatch, and site-derived scopes carry the parent
     N-central customer's identifier as ncentral_parent_customer_id.

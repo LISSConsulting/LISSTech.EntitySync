@@ -12,13 +12,12 @@ namespace LISSTech.EntitySync.Commands;
 public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, Position = 0)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
+    [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
-    private static string NormalizeVendor(string vendor) =>
-        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+    private static string NormalizeVendor(string vendor) => EntitySyncVendors.Normalize(vendor);
 
     public object? GetDynamicParameters()
     {

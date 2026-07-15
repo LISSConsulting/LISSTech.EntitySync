@@ -57,7 +57,7 @@ internal static class EntitySyncPlanArtifactSanitizer
     // (which would mean the term is the head of a longer word such as "tokenization"
     // or part of an English phrase such as "password reset pending"). A lowercase
     // letter is allowed immediately before the term when the term runs to the end of
-    // the string, since "NCentralRegistrationToken" or "LCATBearerToken" are valid
+    // the string, since "NCentralRegistrationToken" or "Token" are valid
     // credential-shaped keys whose trailing CamelCase component would otherwise be
     // misread as word continuation.
     private static bool IsSensitiveName(string value)

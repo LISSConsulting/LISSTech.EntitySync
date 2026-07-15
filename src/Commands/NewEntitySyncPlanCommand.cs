@@ -27,15 +27,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public string SourceVendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "LCAT", "LTAC")]
+    [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string TargetVendor { get; set; } = string.Empty;
 
     /// <summary>
-    /// LCAT is a sync target only; plans may be requested with the `LTAC` alias, but every plan
-    /// and artifact produced afterwards must still identify the vendor as `LCAT` (spec FR-002).
+    /// LTAC values are normalized to the cmdlet-facing AgentController vendor name.
     /// </summary>
-    private static string NormalizeVendorAlias(string vendor) =>
-        vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase) ? "LCAT" : vendor;
+    private static string NormalizeVendorAlias(string vendor) => EntitySyncVendors.Normalize(vendor);
 
     public object? GetDynamicParameters()
     {
@@ -138,10 +136,10 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var matchIndex = matcher.CreateIndex(targets, options);
             var plan = new EntitySyncPlan { SourceVendor = SourceVendor, SourceEntityType = sourceEntityType, TargetVendor = TargetVendor, TargetEntityType = targetEntityType, TargetCandidates = targets.ToList() };
             var requiresAuthoritativeTarget = usingHaloNCentralLinks || usingHaloNCentralSiteLinks;
-            var isLcatTarget = TargetVendor.Equals("LCAT", StringComparison.OrdinalIgnoreCase);
-            var duplicateLcatSourceIds = isLcatTarget ? FindDuplicateLcatSourceIdentifiers(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var duplicateLcatSlugs = isLcatTarget ? FindDuplicateLcatSlugs(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds, duplicateLcatSlugs);
+            var isLtacTarget = EntitySyncVendors.IsAgentController(TargetVendor);
+            var duplicateLtacSourceIds = isLtacTarget ? FindDuplicateLtacSourceIdentifiers(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var duplicateLtacSlugs = isLtacTarget ? FindDuplicateLtacSlugs(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLtacTarget, duplicateLtacSourceIds, duplicateLtacSlugs);
             plan.Items.AddRange(items);
 
             WriteObject(plan);
@@ -153,14 +151,14 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         }
     }
 
-    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs)
+    private EntitySyncPlanItem[] MatchSources(IReadOnlyList<ExternalEntity> sources, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, int throttleLimit, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLtacTarget, IReadOnlySet<string> duplicateLtacSourceIds, IReadOnlySet<string> duplicateLtacSlugs)
     {
         var items = new EntitySyncPlanItem[sources.Count];
         var completed = 0;
         var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = EffectiveThrottleLimit(throttleLimit) };
         var task = Task.Run(() => Parallel.For(0, sources.Count, parallelOptions, i =>
         {
-            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget, isLcatTarget, duplicateLcatSourceIds, duplicateLcatSlugs);
+            items[i] = CreatePlanItem(sources[i], matchIndex, autoLinkScore, reviewScore, createMissing, sourceExternalIdName, requiresAuthoritativeTarget, isLtacTarget, duplicateLtacSourceIds, duplicateLtacSlugs);
             Interlocked.Increment(ref completed);
         }));
 
@@ -176,21 +174,21 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return items;
     }
 
-    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLcatTarget, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs)
+    private static EntitySyncPlanItem CreatePlanItem(ExternalEntity source, WeightedEntityMatcher.EntityMatchIndex matchIndex, int autoLinkScore, int reviewScore, bool createMissing, string sourceExternalIdName, bool requiresAuthoritativeTarget, bool isLtacTarget, IReadOnlySet<string> duplicateLtacSourceIds, IReadOnlySet<string> duplicateLtacSlugs)
     {
         if (source.CustomFields.TryGetValue("HaloNCentralIntegrationConflict", out var conflict) && !string.IsNullOrWhiteSpace(conflict))
         {
             return new EntitySyncPlanItem { Source = source, Action = "Review", MatchType = "IntegrationLinkConflict", Reasons = { conflict } };
         }
 
-        if (isLcatTarget && TryGetLcatSourceValidationErrors(source, duplicateLcatSourceIds, duplicateLcatSlugs, out var lcatValidationErrors))
+        if (isLtacTarget && TryGetLtacSourceValidationErrors(source, duplicateLtacSourceIds, duplicateLtacSlugs, out var ltacValidationErrors))
         {
             return new EntitySyncPlanItem
             {
                 Source = source,
                 Action = "Review",
-                MatchType = "LcatSourceInvalid",
-                Reasons = lcatValidationErrors.ToList()
+                MatchType = "LtacSourceInvalid",
+                Reasons = ltacValidationErrors.ToList()
             };
         }
 
@@ -235,13 +233,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return new EntitySyncPlanItem { Source = source, Target = best.Target, Action = action, MatchType = best.MatchType, Score = best.Score, Reasons = best.Reasons };
     }
 
-    private static HashSet<string> FindDuplicateLcatSourceIdentifiers(IReadOnlyList<ExternalEntity> sources)
+    private static HashSet<string> FindDuplicateLtacSourceIdentifiers(IReadOnlyList<ExternalEntity> sources)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var duplicates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in sources)
         {
-            var sourceIdentifier = GetLcatSourceIdentifier(source);
+            var sourceIdentifier = GetLtacSourceIdentifier(source);
             if (string.IsNullOrWhiteSpace(sourceIdentifier)) continue;
             if (!seen.Add(sourceIdentifier)) duplicates.Add(sourceIdentifier);
         }
@@ -249,13 +247,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return duplicates;
     }
 
-    private static HashSet<string> FindDuplicateLcatSlugs(IReadOnlyList<ExternalEntity> sources)
+    private static HashSet<string> FindDuplicateLtacSlugs(IReadOnlyList<ExternalEntity> sources)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var duplicates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in sources)
         {
-            var slug = GetLcatSlug(source);
+            var slug = GetLtacSlug(source);
             if (string.IsNullOrWhiteSpace(slug)) continue;
             if (!seen.Add(slug)) duplicates.Add(slug);
         }
@@ -263,51 +261,51 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return duplicates;
     }
 
-    private static bool TryGetLcatSourceValidationErrors(ExternalEntity source, IReadOnlySet<string> duplicateLcatSourceIds, IReadOnlySet<string> duplicateLcatSlugs, out string[] errors)
+    private static bool TryGetLtacSourceValidationErrors(ExternalEntity source, IReadOnlySet<string> duplicateLtacSourceIds, IReadOnlySet<string> duplicateLtacSlugs, out string[] errors)
     {
         var validationErrors = new List<string>();
         if (!source.Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
         {
-            validationErrors.Add($"LCAT customer-scope sync only accepts N-central Customer or Site source records; source vendor '{source.Vendor}' is not supported.");
+            validationErrors.Add($"LTAC customer-scope sync only accepts N-central Customer or Site source records; source vendor '{source.Vendor}' is not supported.");
         }
 
-        var sourceIdentifier = GetLcatSourceIdentifier(source);
+        var sourceIdentifier = GetLtacSourceIdentifier(source);
         if (string.IsNullOrWhiteSpace(sourceIdentifier))
         {
-            validationErrors.Add($"N-central {source.EntityType} source has no source identifier; LCAT customer scopes require a non-empty N-central source identifier.");
+            validationErrors.Add($"N-central {source.EntityType} source has no source identifier; LTAC customer scopes require a non-empty N-central source identifier.");
         }
-        else if (duplicateLcatSourceIds.Contains(sourceIdentifier))
+        else if (duplicateLtacSourceIds.Contains(sourceIdentifier))
         {
-            validationErrors.Add($"Duplicate N-central source identifier '{sourceIdentifier}' cannot be synced to LCAT customer scopes.");
+            validationErrors.Add($"Duplicate N-central source identifier '{sourceIdentifier}' cannot be synced to LTAC customer scopes.");
         }
 
         if (string.IsNullOrWhiteSpace(source.Name))
         {
-            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} has no display name; LCAT customer scopes require a non-empty display name.");
+            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} has no display name; LTAC customer scopes require a non-empty display name.");
         }
 
         if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(source.GetExternalId("NCentralCustomerId")))
         {
-            validationErrors.Add($"N-central site {DisplaySourceId(source)} has no parent N-central customer identifier; LCAT customer scopes require the parent N-central customer identifier.");
+            validationErrors.Add($"N-central site {DisplaySourceId(source)} has no parent N-central customer identifier; LTAC customer scopes require the parent N-central customer identifier.");
         }
 
-        var slug = GetLcatSlug(source);
-        if (!DefaultEntityMapper.IsValidLcatSlug(slug))
+        var slug = GetLtacSlug(source);
+        if (!DefaultEntityMapper.IsValidLtacSlug(slug))
         {
-            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} cannot produce a safe LCAT customer-scope slug.");
+            validationErrors.Add($"N-central {source.EntityType} {DisplaySourceId(source)} cannot produce a safe LTAC customer-scope slug.");
         }
-        else if (duplicateLcatSlugs.Contains(slug))
+        else if (duplicateLtacSlugs.Contains(slug))
         {
-            validationErrors.Add($"Duplicate LCAT customer-scope slug '{slug}' cannot be synced from more than one N-central source record.");
+            validationErrors.Add($"Duplicate LTAC customer-scope slug '{slug}' cannot be synced from more than one N-central source record.");
         }
 
         errors = validationErrors.ToArray();
         return errors.Length > 0;
     }
 
-    private static string GetLcatSlug(ExternalEntity source)
+    private static string GetLtacSlug(ExternalEntity source)
     {
-        var sourceIdentifier = GetLcatSourceIdentifier(source);
+        var sourceIdentifier = GetLtacSourceIdentifier(source);
         var slugBasis = source.Name;
         if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
         {
@@ -315,10 +313,10 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             slugBasis = string.IsNullOrWhiteSpace(parentContext) ? source.Name : $"{parentContext} {source.Name}";
         }
 
-        return DefaultEntityMapper.DeriveLcatSlug(slugBasis, sourceIdentifier);
+        return DefaultEntityMapper.DeriveLtacSlug(slugBasis, sourceIdentifier);
     }
 
-    private static string? GetLcatSourceIdentifier(ExternalEntity source)
+    private static string? GetLtacSourceIdentifier(ExternalEntity source)
     {
         if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
         {

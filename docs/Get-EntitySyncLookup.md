@@ -16,10 +16,10 @@ Use this cmdlet to discover stable vendor IDs before connecting or applying sync
 ## SYNTAX
 
 ```powershell
-Get-EntitySyncLookup [-Vendor] <HaloPSA|NetSuite|NCentral|LCAT|LTAC> [[-Type] <String>] [<CommonParameters>]
+Get-EntitySyncLookup [-Vendor] <HaloPSA|NetSuite|NCentral|AgentController> [[-Type] <String>] [<CommonParameters>]
 ```
 
-`-Type` is a dynamic parameter exposed only when the chosen `-Vendor` has at least one supported lookup type; for `LCAT`/`LTAC` (and any future vendor without a lookup catalog) the parameter is omitted entirely and the cmdlet returns no records.
+`-Type` is a dynamic parameter exposed only when the chosen `-Vendor` has at least one supported lookup type; for `AgentController` (and any future vendor without a lookup catalog) the parameter is omitted entirely and the cmdlet returns no records.
 
 Supported lookups:
 
@@ -32,7 +32,7 @@ Supported lookups:
 | `HaloPSA` | `NCentralIntegrationLink` |
 | `NCentral` | `ServiceOrganization` |
 
-Vendors without lookup catalogs, including `LCAT`/`LTAC`, return no lookup values and do not require
+Vendors without lookup catalogs, including `AgentController`, return no lookup values and do not require
 `-Type`.
 
 ## EXAMPLES
@@ -75,7 +75,7 @@ Lists HaloPSA's N-central client and site links. Client links are used as author
 
 ### Example 6
 ```powershell
-Get-EntitySyncLookup -Vendor LCAT
+Get-EntitySyncLookup -Vendor AgentController
 ```
 
-Returns no records because LCAT does not expose lookup catalogs for the customer-scope sync workflow.
+Returns no records because Agent Controller does not expose lookup catalogs for the customer-scope sync workflow.

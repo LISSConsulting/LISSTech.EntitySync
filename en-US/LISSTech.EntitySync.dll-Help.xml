@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <helpItems schema="maml" xmlns="http://msh">
   <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
     <command:details>
@@ -15,7 +15,8 @@
       <maml:para>NetSuite connections use standard REST Web Services SuiteQL. Pass the account ID only, such as `1234567` or `1234567_SB1`; the adapter derives the SuiteTalk REST host. The NetSuite role used by the token must have REST Web Services access and permissions to query customers with SuiteQL.</maml:para>
       <maml:para>N-central connections use a User-API token for REST discovery and creation. The adapter exchanges it with `POST /api/auth/authenticate`, then uses the returned access token for customer discovery and creation. Set `NCENTRAL_SERVICE_ORG_ID` or `-NCentralServiceOrgId` because customer creation posts to `/api/service-orgs/{soId}/customers`.</maml:para>
       <maml:para>N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.</maml:para>
-      <maml:para>`Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl &lt;String&gt; -LCATBearerToken &lt;String&gt;` connects an LCAT adapter for syncing N-central customer scopes, with `LCAT_BASE_URL` and `LCAT_BEARER_TOKEN` environment fallbacks. `-Vendor LTAC` is accepted as an alias and normalizes to `LCAT` in the returned connection. `LCATBearerToken` never appears in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; LCAT HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+      <maml:para>`Connect-EntitySyncVendor -Vendor AgentController -Session &lt;Object&gt;` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). EntitySync calls exactly `POST /rpc/sync_ncentral_customers` relative to that ops base URL; it does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.</maml:para>
+      <maml:para>Manual break-glass mode remains available with `-Url &lt;String&gt; -Token &lt;String&gt;` or `-Url &lt;String&gt; -SecureToken &lt;SecureString&gt;`. In those parameter sets, `-Url` means the AgentController ops/PostgREST OpenAPI base URL, for example `https://ops-agent-controller.clfy-b.lissonline.com`, not the API/auth base URL `https://api-agent-controller.clfy-b.lissonline.com`. `-Vendor LTAC` is accepted and normalizes to `AgentController` in the returned connection. Tokens never appear in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; Agent Controller HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
     </maml:description>
     <command:syntax>
       <command:syntaxItem>
@@ -41,9 +42,17 @@ Connect-EntitySyncVendor -Vendor NCentral</dev:code>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 2 --------------------------</maml:title>
-        <dev:code>Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl 'https://lcat.example.com' -LCATBearerToken $env:LCAT_BEARER_TOKEN</dev:code>
+        <dev:code>Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ops-agent-controller.clfy-b.lissonline.com' -Token $env:LTAC_BEARER_TOKEN</dev:code>
         <dev:remarks>
-          <maml:para>Connects an LCAT adapter for syncing N-central customer scopes. `LCAT_BASE_URL`/`LCAT_BEARER_TOKEN` environment variables can be used instead of the parameters; the bearer token is used only for the LCAT authorization header and is not serialized into returned connection objects or plan artifacts.</maml:para>
+          <maml:para>Connects the Agent Controller adapter in manual break-glass mode. `LTAC_BASE_URL`/`LTAC_BEARER_TOKEN` environment variables can be used instead of the parameters; `-Url` must point at the AgentController ops/PostgREST OpenAPI endpoint, not the API/auth host. The bearer token is used only for the Agent Controller authorization header and is not serialized into returned connection objects or plan artifacts.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>EXAMPLE 3</maml:title>
+        <dev:code>$session = Get-DeviceAssetOpsAccessToken -AsSession
+Connect-EntitySyncVendor -Vendor AgentController -Session $session</dev:code>
+        <dev:remarks>
+          <maml:para>Reuses an active `LISSTech.DeviceAssetOps` operator session without writing the cleartext token or manually copying endpoint URLs. EntitySync uses the session's `OpsBaseUrl` for the AgentController ops/PostgREST OpenAPI and sends `POST /rpc/sync_ncentral_customers` there.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -61,8 +70,8 @@ Connect-EntitySyncVendor -Vendor NCentral</dev:code>
     <maml:description>
       <maml:para>Reads `ExternalEntity` records from the vendor adapter registered by `Connect-EntitySyncVendor`. `-Type` defaults to the connected vendor's supported entity type and completes only to values that vendor supports.</maml:para>
       <maml:para>`Get-EntitySyncEntity` is fast by default and returns the vendor's list payload. Use `-FullObjects` only when per-client detail or site address enrichment is required for HaloPSA; that mode is intentionally slower and shows standard PowerShell progress.</maml:para>
-      <maml:para>`Get-EntitySyncEntity -Vendor LCAT -Type Customer` is the only supported LCAT read shape. `LTAC` is accepted as an alias and normalizes to `LCAT`.</maml:para>
-      <maml:para>LCAT currently has no customer-scope list/read endpoint in the sync contract, so Customer reads return an empty set instead of calling the batch write endpoint or fabricating target candidates. This empty-target fallback is intentional: N-central Customer and Site sources still plan as create/sync candidates, and the reviewed plan is applied later through the authoritative LCAT batch path. If LCAT adds a read surface later, this command should return active LCAT customer scopes without changing the plan-first flow. See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+      <maml:para>`Get-EntitySyncEntity -Vendor AgentController -Type Customer` is the only supported Agent Controller read shape. `LTAC` is also accepted and normalizes to `AgentController`.</maml:para>
+      <maml:para>LTAC currently has no customer-scope list/read endpoint in the sync contract, so Customer reads return an empty set instead of calling the batch write endpoint or fabricating target candidates. This empty-target fallback is intentional: N-central Customer and Site sources still plan as create/sync candidates, and the reviewed plan is applied later through the authoritative LTAC batch path. If LTAC adds a read surface later, this command should return active LTAC customer scopes without changing the plan-first flow. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
     </maml:description>
     <command:syntax>
       <command:syntaxItem>
@@ -93,9 +102,9 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 3 --------------------------</maml:title>
-        <dev:code>Get-EntitySyncEntity -Vendor LCAT -Type Customer</dev:code>
+        <dev:code>Get-EntitySyncEntity -Vendor AgentController -Type Customer</dev:code>
         <dev:remarks>
-          <maml:para>Returns no records when the connected LCAT target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become LCAT customer-scope sync candidates.</maml:para>
+          <maml:para>Returns no records when the connected Agent Controller target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become Agent Controller customer-scope sync candidates.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -114,7 +123,7 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
       <maml:para>Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.</maml:para>
       <maml:para>Supported lookups:</maml:para>
       <maml:para>| Vendor | Type | |---|---| | `HaloPSA` | `TopLevel` | | `HaloPSA` | `CustomerRelationship` | | `HaloPSA` | `CustomerType` | | `HaloPSA` | `NCentralIntegration` | | `HaloPSA` | `NCentralIntegrationLink` | | `NCentral` | `ServiceOrganization` |</maml:para>
-      <maml:para>Vendors without lookup catalogs, including `LCAT`/`LTAC`, return no lookup values and do not require `-Type`.</maml:para>
+      <maml:para>Vendors without lookup catalogs, including `LTAC`/`LTAC`, return no lookup values and do not require `-Type`.</maml:para>
     </maml:description>
     <command:syntax />
     <command:parameters />
@@ -162,9 +171,9 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 6 --------------------------</maml:title>
-        <dev:code>Get-EntitySyncLookup -Vendor LCAT</dev:code>
+        <dev:code>Get-EntitySyncLookup -Vendor AgentController</dev:code>
         <dev:remarks>
-          <maml:para>Returns no records because LCAT does not expose lookup catalogs for the customer-scope sync workflow.</maml:para>
+          <maml:para>Returns no records because Agent Controller does not expose lookup catalogs for the customer-scope sync workflow.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -242,10 +251,10 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
         <maml:para>- HaloPSA N-central site links are written with `POST /api/ncentraldetails` by sending the integration account `id`, preserved `client_links`, and updated `site_links` collection.</maml:para>
         <maml:para></maml:para>
         <maml:para>Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.</maml:para>
-        <maml:para>NCentral to LCAT:</maml:para>
-        <maml:para>`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor LCAT` plans apply as one batch request per reviewed plan instead of one write per item. All approved items (Create/Update/Link, mapped to LCAT customer-scope fields `slug`/`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`) are sent together in a single call to `POST /rpc/sync_ncentral_customers`; `None` items are skipped and `Review` items are written as their own unsuccessful result without joining the batch. `-Apply -WhatIf` reports a single `ShouldProcess` confirmation for the whole batch (`"{count} customer scope(s)"`) and performs no write. With `-Apply -WhatIf -PassThru`, one non-secret preview `EntityWriteResult` per approved batched item is returned and `Raw` holds the mapped LCAT customer-scope request that would be included in the batch. Without `-Apply`, every item is reported as "Planned only" and no batch call is made. With real `-Apply -PassThru`, one `EntityWriteResult` per batched item is returned, each carrying the same aggregate inserted/updated/retired/active counts from the single LCAT response (`Raw` holds the full sync result). See `specs/001-lcat-sync-adapter/contracts/lcat-sync-rpc.md`.</maml:para>
-        <maml:para>N-central Customer and Site sources batch together in the same call: a customer-derived item carries no `ncentral_parent_customer_id`, while a site-derived item carries the site's own identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, preserving the site's parent relationship in LCAT. A site with no parent N-central customer ID never reaches the batch — `New-EntitySyncPlan` blocks it at plan time as `Action 'Review'`, so it is written as its own unsuccessful result the same as any other Review item. Before sending, the adapter rejects the whole batch with a clear error if any two items share the same `ncentral_customer_id`, matching the contract's uniqueness rule.</maml:para>
-        <maml:para>LCAT apply safety is stricter than the generic item loop: only approved `Create`, `Update`, and `Link` rows with valid customer-scope fields enter the batch. `Review`, `Reject`, `No Update`, `None`, unsafe slug, empty display-name/source-id, missing parent-id, and duplicate source-id rows are skipped or returned as failed non-secret results without being sent to LCAT. The batch payload contains only the mapped customer-scope fields; LCAT bearer tokens, authorization headers, and unrelated N-central registration tokens are not copied into requests, result messages, or exported plan artifacts.</maml:para>
+        <maml:para>NCentral to AgentController:</maml:para>
+        <maml:para>`New-EntitySyncPlan -SourceVendor NCentral -TargetVendor AgentController` plans apply as one batch request per reviewed plan instead of one write per item. All approved items (Create/Update/Link, mapped to Agent Controller customer-scope fields `slug`/`display_name`/`ncentral_customer_id`/`ncentral_parent_customer_id`) are sent together in a single call to the AgentController ops/PostgREST OpenAPI RPC at `POST /rpc/sync_ncentral_customers`. `None` items are skipped and `Review` items are written as their own unsuccessful result without joining the batch. `-Apply -WhatIf` reports a single `ShouldProcess` confirmation for the whole batch (`"{count} customer scope(s)"`) and performs no write. With `-Apply -WhatIf -PassThru`, one non-secret preview `EntityWriteResult` per approved batched item is returned and `Raw` holds the mapped Agent Controller customer-scope request that would be included in the batch. Without `-Apply`, every item is reported as "Planned only" and no batch call is made. With real `-Apply -PassThru`, one `EntityWriteResult` per batched item is returned, each carrying the same aggregate inserted/updated/retired/active counts from the single Agent Controller response (`Raw` holds the full sync result). See `specs/001-ltac-sync-adapter/contracts/ltac-sync-rpc.md`.</maml:para>
+        <maml:para>N-central Customer and Site sources batch together in the same call: a customer-derived item carries no `ncentral_parent_customer_id`, while a site-derived item carries the site's own identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, preserving the site's parent relationship in LTAC. A site with no parent N-central customer ID never reaches the batch — `New-EntitySyncPlan` blocks it at plan time as `Action 'Review'`, so it is written as its own unsuccessful result the same as any other Review item. Before sending, the adapter rejects the whole batch with a clear error if any two items share the same `ncentral_customer_id`, matching the contract's uniqueness rule.</maml:para>
+        <maml:para>LTAC apply safety is stricter than the generic item loop: only approved `Create`, `Update`, and `Link` rows with valid customer-scope fields enter the batch. `Review`, `Reject`, `No Update`, `None`, unsafe slug, empty display-name/source-id, missing parent-id, and duplicate source-id rows are skipped or returned as failed non-secret results without being sent to LTAC. The batch payload contains only the mapped customer-scope fields; LTAC bearer tokens, authorization headers, and unrelated N-central registration tokens are not copied into requests, result messages, or exported plan artifacts.</maml:para>
       </maml:alert>
     </maml:alertSet>
     <command:examples>
@@ -275,7 +284,7 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
         <dev:code>$plan | Invoke-EntitySyncPlan -Apply -WhatIf
 $results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
         <dev:remarks>
-          <maml:para>Dry-runs then applies an N-central Customer to LCAT plan as a single batched customer-scope sync.</maml:para>
+          <maml:para>Dry-runs then applies an N-central Customer to AgentController plan as a single batched customer-scope sync.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -326,16 +335,16 @@ $plan.Items | Format-Table Action, Score, MatchType, @{n='Source';e={$_.Source.N
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 4 --------------------------</maml:title>
-        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LCAT -TargetEntityType Customer -CreateMissing</dev:code>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
         <dev:remarks>
-          <maml:para>Creates an N-central Customer to LCAT Customer scope plan. `LCAT` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `LCAT`), and `Customer` is the only `-TargetEntityType` LCAT supports. LCAT has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-lcat-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+          <maml:para>Creates an N-central Customer to AgentController Customer scope plan. `AgentController` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `AgentController`), and `Customer` is the only `-TargetEntityType` AgentController supports. AgentController has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
         </dev:remarks>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 5 --------------------------</maml:title>
-        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LCAT -TargetEntityType Customer -CreateMissing</dev:code>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
         <dev:remarks>
-          <maml:para>Creates an N-central Site to LCAT Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LCAT scope stays traceable to the site's owning customer. A site that fails any LCAT source-validation check (for example: no parent N-central customer identifier, no source identifier, no display name, a non-NCentral source vendor, a duplicate N-central source identifier, an unsafe LCAT slug, or a duplicate LCAT slug) is blocked with `Action 'Review'` (`MatchType 'LcatSourceInvalid'`) and a reason that names the specific problem — for the missing-parent case the reason reads `N-central site {sourceId} has no parent N-central customer identifier; LCAT customer scopes require the parent N-central customer identifier.`. This safe failure applies even with `-CreateMissing`, and every LCAT source-validation check uses the same `LcatSourceInvalid` MatchType so reviewers can pivot on a single bucket. See `specs/001-lcat-sync-adapter/data-model.md`.</maml:para>
+          <maml:para>Creates an N-central Site to LTAC Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LTAC scope stays traceable to the site's owning customer. A site that fails any LTAC source-validation check (for example: no parent N-central customer identifier, no source identifier, no display name, a non-NCentral source vendor, a duplicate N-central source identifier, an unsafe LTAC slug, or a duplicate LTAC slug) is blocked with `Action 'Review'` (`MatchType 'LtacSourceInvalid'`) and a reason that names the specific problem — for the missing-parent case the reason reads `N-central site {sourceId} has no parent N-central customer identifier; LTAC customer scopes require the parent N-central customer identifier.`. This safe failure applies even with `-CreateMissing`, and every LTAC source-validation check uses the same `LtacSourceInvalid` MatchType so reviewers can pivot on a single bucket. See `specs/001-ltac-sync-adapter/data-model.md`.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>

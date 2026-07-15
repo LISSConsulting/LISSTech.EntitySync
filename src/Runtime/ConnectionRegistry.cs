@@ -1,4 +1,5 @@
 using LISSTech.EntitySync.Ports;
+using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Runtime;
 
@@ -8,12 +9,12 @@ public static class ConnectionRegistry
 
     public static void Set(IEntityAdapter adapter)
     {
-        Adapters[adapter.Vendor] = adapter;
+        Adapters[EntitySyncVendors.Normalize(adapter.Vendor)] = adapter;
     }
 
     public static IEntityAdapter Get(string vendor)
     {
-        if (Adapters.TryGetValue(vendor, out var adapter)) return adapter;
+        if (Adapters.TryGetValue(EntitySyncVendors.Normalize(vendor), out var adapter)) return adapter;
         throw new InvalidOperationException($"No EntitySync connection exists for vendor '{vendor}'. Run Connect-EntitySyncVendor first.");
     }
 

@@ -1,13 +1,13 @@
 # LISSTech.EntitySync
 
-**Vendor entity synchronization that refuses to guess silently: connect NetSuite, HaloPSA, N-central, and LCAT, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
+**Vendor entity synchronization that refuses to guess silently: connect NetSuite, HaloPSA, N-central, and AgentController, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
 
 [![PowerShell 7.4+](https://img.shields.io/badge/PowerShell-7.4+-5391FE?style=for-the-badge&logo=powershell&logoColor=000&labelColor=000)](https://learn.microsoft.com/powershell/)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-8A2BE2?style=for-the-badge&logo=dotnet&logoColor=fff&labelColor=000)](https://dotnet.microsoft.com/)
 [![NetSuite](https://img.shields.io/badge/Adapter-NetSuite-FF6B35?style=for-the-badge&labelColor=000)](https://www.netsuite.com/)
 [![HaloPSA](https://img.shields.io/badge/Adapter-HaloPSA-4ECDC4?style=for-the-badge&labelColor=000)](https://halopsa.com/)
 [![N-central](https://img.shields.io/badge/Adapter-N--central-2E71B8?style=for-the-badge&labelColor=000)](https://www.n-able.com/products/n-central)
-[![LCAT](https://img.shields.io/badge/Adapter-LCAT-DA5657?style=for-the-badge&labelColor=000)](#-configuration)
+[![AgentController](https://img.shields.io/badge/Adapter-AgentController-DA5657?style=for-the-badge&labelColor=000)](#-configuration)
 [![Safe By Default](https://img.shields.io/badge/Safety-Plan_First_Cut_Later-C7F464?style=for-the-badge&labelColor=000)](#-safety-model)
 
 [**Quick Start**](#-quick-start) · [**Architecture**](#%EF%B8%8F-architecture) · [**PowerShell API**](#-powershell-api) · [**Matching**](#-matching-rules) · [**Safety**](#-safety-model) · [**Build**](#-build--test)
@@ -59,46 +59,47 @@ $plan = Import-EntitySyncPlan .\netsuite-halo-client-plan.xlsx
 $plan | Invoke-EntitySyncPlan -Apply -WhatIf
 ```
 
-### N-central to LCAT customer scopes
+### N-central to AgentController customer scopes
 
-LCAT sync is target-only and starts from reviewed N-central Customer or Site plans. Use `-WhatIf`
-for the first run; it reports the batch that would be sent without changing LCAT.
+AgentController sync is target-only and starts from reviewed N-central Customer or Site plans. Use `-WhatIf`
+for the first run; it reports the batch that would be sent without changing AgentController.
 
 ```powershell
 Import-Module .\Module\LISSTech.EntitySync.psd1 -Force
 
 Connect-EntitySyncVendor -Vendor NCentral
 # Reuse the operator session JWT minted by Connect-DeviceAssetOps:
-#   $lcatToken = Get-DeviceAssetOpsAccessToken
-#   Connect-EntitySyncVendor -Vendor LCAT -LCATBaseUrl ... -LCATSecureBearer $lcatToken
-Connect-EntitySyncVendor -Vendor LCAT
+#   $ltacToken = Get-DeviceAssetOpsAccessToken
+#   Connect-DeviceAssetOps -AuthUri 'https://api-agent-controller.clfy-b.lissonline.com'
+$agentControllerSession = Get-DeviceAssetOpsAccessToken -AsSession
+Connect-EntitySyncVendor -Vendor AgentController -Session $agentControllerSession
 
 $customerPlan = New-EntitySyncPlan `
   -SourceVendor NCentral -SourceEntityType Customer `
-  -TargetVendor LCAT -TargetEntityType Customer `
+  -TargetVendor AgentController -TargetEntityType Customer `
   -CreateMissing
 
-$customerPlan | Export-EntitySyncPlan -Path .\ncentral-lcat-customers.xlsx
-$customerPlan = Import-EntitySyncPlan .\ncentral-lcat-customers.xlsx
+$customerPlan | Export-EntitySyncPlan -Path .\ncentral-ltac-customers.xlsx
+$customerPlan = Import-EntitySyncPlan .\ncentral-ltac-customers.xlsx
 
 $customerPlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
 ```
 
-Site records use the same LCAT Customer target. Each approved site-derived scope carries its parent
+Site records use the same AgentController Customer target. Each approved site-derived scope carries its parent
 N-central customer identifier; records missing that parent are blocked for review instead of being
-sent to LCAT.
+sent to AgentController.
 
 ```powershell
 $sitePlan = New-EntitySyncPlan `
   -SourceVendor NCentral -SourceEntityType Site `
-  -TargetVendor LCAT -TargetEntityType Customer `
+  -TargetVendor AgentController -TargetEntityType Customer `
   -CreateMissing
 
 $sitePlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
 ```
 
 When the reviewed plan and dry-run output are clean, remove `-WhatIf` to apply the approved rows as
-one authoritative LCAT batch:
+one authoritative AgentController batch:
 
 ```powershell
 $customerPlan | Invoke-EntitySyncPlan -Apply -PassThru
@@ -115,7 +116,7 @@ graph LR
     B --> C["🟦 NetSuite Adapter<br/>customers"]
     B --> D["🟩 HaloPSA Adapter<br/>clients & sites"]
     B --> K["🟧 N-central Adapter<br/>customers & sites"]
-    B --> L["🟥 LCAT Adapter<br/>customer scopes<br/>(target only)"]
+    B --> L["🟥 AgentController Adapter<br/>customer scopes<br/>(target only)"]
     C --> E["📦 ExternalEntity<br/>canonical model"]
     D --> E
     K --> E
@@ -146,7 +147,7 @@ graph LR
 | Layer | Role | Brutal truth |
 |---|---|---|
 | 🎮 **Cmdlets** | Operator surface | PowerShell objects in, PowerShell objects out. No GUI ceremony. |
-| 🔌 **Adapters** | Vendor IO | NetSuite, HaloPSA, N-central, and LCAT specifics live at the edge, not smeared through sync logic. |
+| 🔌 **Adapters** | Vendor IO | NetSuite, HaloPSA, N-central, and LTAC specifics live at the edge, not smeared through sync logic. |
 | 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
 | 📋 **Plan** | Change manifest | Sync becomes an Excel-reviewable artifact before it becomes vendor mutation. |
@@ -158,7 +159,7 @@ graph LR
 
 | Cmdlet | Role |
 |---|---|
-| `Connect-EntitySyncVendor` | Configure and register a NetSuite, HaloPSA, N-central, or LCAT adapter; vendor-specific parameters appear after `-Vendor`. |
+| `Connect-EntitySyncVendor` | Configure and register a NetSuite, HaloPSA, N-central, or LTAC adapter; vendor-specific parameters appear after `-Vendor`. |
 | `Get-EntitySyncConnection` | Inspect registered vendor connection objects. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
 | `Get-EntitySyncLookup` | Discover vendor lookup IDs such as HaloPSA top levels and N-central service organizations. |
@@ -337,19 +338,22 @@ Set-EntitySyncCustomProperty -Vendor NCentral -CustomerId 390 -Name 'HaloPSA Cli
 
 This command updates existing custom-property values only; create the custom-property definitions in N-central first.
 
-### LCAT
+### AgentController
 
 | Variable | Parameter |
 |---|---|
-| `LCAT_BASE_URL` | `-LCATBaseUrl` |
-| `LCAT_BEARER_TOKEN` | `-LCATBearerToken` |
-| _operator session JWT_ | `-LCATSecureBearer` (`SecureString`) |
+| `LTAC_BASE_URL` | `-Url` |
+| `LTAC_BEARER_TOKEN` | `-Token` |
+| _DeviceAssetOps session_ | `-Session` (`OpsBaseUrl` plus SecureString token) |
+| _operator session JWT_ | `-SecureToken` (`SecureString`, manual mode) |
 
-`Connect-EntitySyncVendor -Vendor LCAT` (`LTAC` is also accepted and normalizes to `LCAT`) registers a target-only adapter for syncing N-central Customer and Site records into LCAT customer scopes as one authoritative batch per approved plan, matching LCAT's `sync_ncentral_customers` RPC contract. `LCAT` has no customer-scope read endpoint, so plans never return target candidates — every N-central source plans as `Create`/`NoMatch`. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`; a site with no parent N-central customer ID is blocked at plan time with `Action 'Review'` instead of being created. `LCATBearerToken` never appears in the returned connection object. See `specs/001-lcat-sync-adapter/spec.md`.
+`Connect-EntitySyncVendor -Vendor AgentController -Session $session` (`LTAC` is also accepted and normalizes to `AgentController`) registers a target-only adapter for syncing N-central Customer and Site records into AgentController customer scopes as one authoritative batch per approved plan, matching the Agent Controller `sync_ncentral_customers` RPC contract. The session should come from `LISSTech.DeviceAssetOps` after authenticating through the AgentController API/auth base URL (`https://api-agent-controller.clfy-b.lissonline.com`); it carries the declared ops/PostgREST base URL (`https://ops-agent-controller.clfy-b.lissonline.com`) and a SecureString JWT. AgentController has no customer-scope read endpoint, so plans never return target candidates — every N-central source plans as `Create`/`NoMatch`. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`; a site with no parent N-central customer ID is blocked at plan time with `Action 'Review'` instead of being created. `Token` never appears in the returned connection object. See `specs/001-ltac-sync-adapter/spec.md`.
 
-`-LCATSecureBearer` accepts a `SecureString` so the operator JWT minted by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken`) can be reused without writing the cleartext token to a script transcript. The SecureString is unwrapped in-process and used only for the LCAT authorization header. `-LCATBearerToken` and `-LCATSecureBearer` are mutually exclusive — pass exactly one.
+EntitySync calls exactly `POST /rpc/sync_ncentral_customers` relative to the ops/PostgREST base URL. It does not call `/rest/rpc/...`, derive `ops-` from `api-`, or try alternate paths after 404. For manual `-Url`/`LTAC_BASE_URL`, use the AgentController ops/PostgREST OpenAPI endpoint. Do not use the API/auth host; it does not serve the sync RPC.
 
-LCAT credentials are treated as connection-only secrets. The bearer token is used for the LCAT authorization header, but is omitted from `Get-EntitySyncConnection`, exported workbook/JSON plans, dry-run/apply result messages, and common adapter error paths. LCAT apply sends only approved, validated `Create`/`Update`/`Link` customer-scope rows in one batch; review-blocked, rejected, no-update, unsafe, incomplete, or duplicate-source rows are skipped before request composition.
+`-SecureToken` accepts a `SecureString` for manual mode. Prefer `-Session` for normal cross-module use because it carries endpoint metadata and the SecureString token together. The SecureString is unwrapped in-process and used only for the AgentController authorization header. `-Session`, `-Token`, and `-SecureToken` are separate parameter sets; pass exactly one.
+
+AgentController credentials are treated as connection-only secrets. The bearer token is used for the AgentController authorization header, but is omitted from `Get-EntitySyncConnection`, exported workbook/JSON plans, dry-run/apply result messages, and common adapter error paths. AgentController apply sends only approved, validated `Create`/`Update`/`Link` customer-scope rows in one batch; review-blocked, rejected, no-update, unsafe, incomplete, or duplicate-source rows are skipped before request composition.
 
 ---
 
@@ -364,7 +368,7 @@ This module is built for vendor data, which means mistakes are expensive and emb
 - 🛑 `Review` items are skipped during apply.
 - 💾 Plans can be exported and reviewed before mutation.
 - 🧼 Credentials stay out of exported plans.
-- 🔐 LCAT bearer tokens and unrelated N-central registration tokens are not copied into LCAT batch requests or result messages.
+- 🔐 AgentController bearer tokens and unrelated N-central registration tokens are not copied into AgentController batch requests or result messages.
 
 The intended workflow is **inspect → plan → review → dry run → apply**. Anything else is cowboy nonsense.
 
@@ -394,7 +398,7 @@ just clean        # remove compiled output
 ├── 🌎 en-US/                           # about topic source
 ├── 🧪 Tests/                           # Pester tests
 ├── 🧬 src/
-│   ├── Adapters/                       # HaloPSA + NetSuite + N-central + LCAT vendor IO
+│   ├── Adapters/                       # HaloPSA + NetSuite + N-central + AgentController vendor IO
 │   ├── Commands/                       # public PowerShell cmdlets
 │   ├── Core/                           # canonical models + plan types
 │   ├── Mapping/                        # vendor-to-canonical mapping
@@ -413,8 +417,8 @@ Shipped adapters:
 
 - **NetSuite → HaloPSA**: NetSuite customers sync into HaloPSA clients (initial sync flow).
 - **HaloPSA → N-central**: HaloPSA clients and sites sync into N-central customers and sites, maintaining both sides of the client relationship via `externalId` and `client_links`/`site_links`.
-- **N-central → LCAT**: N-central customers and sites sync into LCAT customer scopes, applied as one authoritative batch per approved plan (see `specs/001-lcat-sync-adapter/`).
+- **N-central → AgentController**: N-central customers and sites sync into AgentController customer scopes, applied as one authoritative batch per approved plan (see `specs/001-ltac-sync-adapter/`).
 
-NetSuite is a source-only adapter; LCAT is a sync target only. HaloPSA and N-central participate as both source and target.
+NetSuite is a source-only adapter; AgentController is a sync target only. HaloPSA and N-central participate as both source and target.
 
 The core is intentionally vendor-neutral. Add the next vendor by implementing the adapter port, mapping into `ExternalEntity`, and leaving matching/planning alone.
