@@ -951,6 +951,10 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
             if (isCreate && AddCreateSiteField(payload, field.Key, field.Value)) continue;
             payload[field.Key] = field.Value;
         }
+        if (isCreate && request.Fields.TryGetValue("delivery_address", out var addressValue) && addressValue is Dictionary<string, object?> address)
+        {
+            await AddAddressDerivedSiteFieldsAsync(payload, address, "newclient_", cancellationToken).ConfigureAwait(false);
+        }
         if (request.CustomFields.Count > 0)
         {
             payload["customfields"] = request.CustomFields.Select(field => new Dictionary<string, object?> { ["name"] = field.Key, ["value"] = field.Value }).ToArray();
@@ -1111,7 +1115,13 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         if (!request.Fields.TryGetValue("delivery_address", out var addressValue) || addressValue is not Dictionary<string, object?> address) return payload;
 
         payload["delivery_address"] = address;
+        await AddAddressDerivedSiteFieldsAsync(payload, address, string.Empty, cancellationToken).ConfigureAwait(false);
 
+        return payload;
+    }
+
+    private async Task AddAddressDerivedSiteFieldsAsync(Dictionary<string, object?> payload, Dictionary<string, object?> address, string fieldPrefix, CancellationToken cancellationToken)
+    {
         var siteAddress = new EntityAddress
         {
             Attention = address.TryGetValue("attention", out var attention) ? attention?.ToString() : null,
@@ -1126,15 +1136,13 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         var countryLookup = await ResolveCountryAsync(siteAddress, cancellationToken).ConfigureAwait(false);
         if (countryLookup != null)
         {
-            payload["country_code"] = countryLookup.Id.ToString();
+            payload[fieldPrefix + "country_code"] = countryLookup.Id.ToString();
             var region = await ResolveRegionAsync(siteAddress, countryLookup.Id, cancellationToken).ConfigureAwait(false);
-            if (region != null) payload["region_code"] = region.Id;
+            if (region != null) payload[fieldPrefix + "region_code"] = region.Id;
         }
 
         var timezone = InferWindowsTimeZone(siteAddress);
-        if (!string.IsNullOrWhiteSpace(timezone)) payload["timezone"] = timezone;
-
-        return payload;
+        if (!string.IsNullOrWhiteSpace(timezone)) payload[fieldPrefix + "timezone"] = timezone;
     }
 
     private async Task<LookupOption?> ResolveCountryAsync(EntityAddress address, CancellationToken cancellationToken)

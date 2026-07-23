@@ -940,6 +940,48 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Sends country, region, and time zone fields when creating HaloPSA clients with a primary address' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":1,"name":"Customer"}]'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":236,"name":"United States"}]'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":44,"name":"New York"}]'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":653}]')
+    )
+    $server.Start()
+    $haloAdapter = New-TestHaloAdapter -Options (New-TestHaloOptions -BaseUrl $server.BaseUrl)
+
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.Vendor = 'HaloPSA'
+      $request.EntityType = 'Client'
+      $request.Name = 'Created Address Client'
+      $address = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      $address['line1'] = '1 Main Street'
+      $address['line3'] = 'New York'
+      $address['line4'] = 'NY'
+      $address['postcode'] = '10001'
+      $address['country'] = 'US'
+      $request.Fields['delivery_address'] = $address
+
+      $haloAdapter.CreateEntityAsync($request, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Out-Null
+      $server.Wait(4)
+
+      $server.Requests[0] | Should -Match '^GET /api/Lookup\?lookupid=33 HTTP/1\.1'
+      $server.Requests[1] | Should -Match '^GET /api/Lookup\?lookupid=74 HTTP/1\.1'
+      $server.Requests[2] | Should -Match '^GET /api/Lookup\?lookupid=77&country_code_id=236 HTTP/1\.1'
+      $server.Requests[3] | Should -Match '^POST /api/client HTTP/1\.1'
+      $body = $server.Requests[3].Substring($server.Requests[3].IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      $body[0].newclient_delivery_address.line4 | Should -Be 'NY'
+      $body[0].newclient_country_code | Should -Be '236'
+      $body[0].newclient_region_code | Should -Be 44
+      $body[0].newclient_timezone | Should -Be 'Eastern Standard Time'
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
   It 'Reports NCentral connection test results as true after successful authenticate and validate' {
     $secretToken = 'ncentral-connection-ok-usertoken-5e6f7a8b'
     $authBody = '{"tokens":{"access":{"token":"derived-access-token-deadbeef","expirySeconds":3600}}}'
