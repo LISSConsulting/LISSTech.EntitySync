@@ -47,7 +47,7 @@ adapter contract, mapping, batch apply, safe-failure, and credential-redaction b
 - [ ] T008 Add `LTAC` vendor support to connection testing in `src/Commands/TestEntitySyncConnectionCommand.cs`
 - [ ] T009 Add LTAC lookup behavior as an empty lookup set in `src/Core/EntitySyncLookupTypes.cs`
 - [ ] T010 Add LTAC command export and tag metadata updates in `Module/LISSTech.EntitySync.psd1`
-- [ ] T011 Add shared LTAC request/response model support in `src/Adapters/LTAC/LTACEntityAdapter.cs`
+- [ ] T011 Add generated LTAC request/response model support from the pinned OpenAPI contract in `src/Adapters/LTAC/Generated/`
 - [ ] T012 Add slug validation helper for LTAC customer scopes in `src/Mapping/DefaultEntityMapper.cs`
 
 **Checkpoint**: LTAC is recognized by the command surface and has a target-only adapter shell.
@@ -112,14 +112,14 @@ adapter contract, mapping, batch apply, safe-failure, and credential-redaction b
 
 **Goal**: Operators can connect, plan, dry-run, export/import, and apply LTAC sync plans without exposing credentials or allowing unreviewed writes.
 
-**Independent Test**: Connect to LTAC using configured credentials, generate/export/import a plan, run dry-run and apply paths, inspect returned objects/artifacts/output, and verify credentials are absent while non-approved items are skipped.
+**Independent Test**: Connect to LTAC using configured credentials, generate/export/import a plan, run dry-run and apply paths, inspect returned objects/artifacts/output, and verify credentials are absent while non-approved items block the authoritative batch.
 
 ### Tests for User Story 3
 
 - [ ] T035 [P] [US3] Add Pester tests proving `Token` is absent from connection objects and common error messages in `Tests/LISSTech.EntitySync.Tests.ps1`
 - [ ] T036 [P] [US3] Add Pester tests proving N-central registration tokens are not mapped into LTAC requests in `Tests/LISSTech.EntitySync.Tests.ps1`
 - [ ] T037 [P] [US3] Add Pester tests for `Invoke-EntitySyncPlan -WhatIf` producing no LTAC writes in `Tests/LISSTech.EntitySync.Tests.ps1`
-- [ ] T038 [P] [US3] Add Pester tests for Review, Reject, No Update, None, unsafe, duplicate, and incomplete items being skipped in `Tests/LISSTech.EntitySync.Tests.ps1`
+- [ ] T038 [P] [US3] Add Pester tests proving Review, Reject, No Update, None, unsafe, duplicate, and incomplete items block the authoritative batch in `Tests/LISSTech.EntitySync.Tests.ps1`
 - [ ] T039 [P] [US3] Add Pester tests for LTAC non-success responses returning status/path without authorization headers or credentials in `Tests/LISSTech.EntitySync.Tests.ps1`
 
 ### Implementation for User Story 3

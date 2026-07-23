@@ -42,13 +42,15 @@ Get-EntitySyncEntity -Vendor LTAC -Type Customer
 ### Supported LTAC Target Flows
 
 ```powershell
-New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor LTAC -TargetEntityType Customer
-New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor LTAC -TargetEntityType Customer
+New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor LTAC -TargetEntityType Customer
 ```
 
 ### Rules
 
 - Planning is read-only.
+- `CustomerScope` reads the complete active N-central Customer and Site population; pipeline input is
+  not accepted for this authoritative plan type.
+- Separate `Customer` and `Site` plans may be inspected but cannot be applied to LTAC.
 - Planned items include source identifiers, derived slug evidence, parent customer evidence for
   sites, and safe-failure reasons.
 - LTAC target vendor completion includes `LTAC`.
@@ -66,7 +68,8 @@ $plan | Invoke-EntitySyncPlan -Apply -PassThru
 - Without `-Apply`, no LTAC writes occur.
 - With `-WhatIf`, no LTAC writes occur and planned batch changes are reported.
 - With `-Apply`, approved N-central customer/site items are sent as one LTAC batch.
-- Review, reject, no-update, none, invalid, and incomplete items are skipped.
+- Review, reject, no-update, none, invalid, and incomplete items block the entire authoritative apply
+  before HTTP so omission cannot retire an existing LTAC scope.
 - Pass-through output reports batch success, inserted count, updated count, retired count,
   active count, audit event ID, and non-secret failure messages.
 
@@ -76,7 +79,8 @@ $plan | Invoke-EntitySyncPlan -Apply -PassThru
 Test-EntitySyncConnection -Vendor LTAC
 ```
 
-- Returns successful connectivity without exposing the credential.
+- Calls the generated non-mutating `has_scope` operation for `operator_access:write` and returns
+  successful connectivity only for a sufficiently privileged token.
 
 ## Documentation and Manifest
 

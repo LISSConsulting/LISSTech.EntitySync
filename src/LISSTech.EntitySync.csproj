@@ -5,14 +5,16 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <OutputPath>../Module</OutputPath>
+    <OutputPath>../Build/Module</OutputPath>
     <TargetFramework>net8.0</TargetFramework>
     <TargetName>LISSTech.EntitySync</TargetName>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="System.Management.Automation" Version="7.4.6" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\en-US\*" CopyToOutputDirectory="PreserveNewest" Link="en-US\%(Filename)%(Extension)" />
+    <None Include="..\Module\*.psd1" CopyToOutputDirectory="PreserveNewest" Link="%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

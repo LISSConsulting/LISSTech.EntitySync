@@ -29,7 +29,7 @@ just test
 Expected outcome: Pester tests pass, including LTAC vendor completion, entity type validation,
 mapping, credential redaction, batch apply, and safe-failure coverage.
 
-## Customer Plan Dry Run
+## Complete Customer-Scope Snapshot Dry Run
 
 ```powershell
 Import-Module .\Module\LISSTech.EntitySync.psd1 -Force
@@ -39,7 +39,7 @@ Connect-EntitySyncVendor -Vendor LTAC
 
 $plan = New-EntitySyncPlan `
   -SourceVendor NCentral `
-  -SourceEntityType Customer `
+  -SourceEntityType CustomerScope `
   -TargetVendor LTAC `
   -TargetEntityType Customer `
   -CreateMissing
@@ -47,24 +47,8 @@ $plan = New-EntitySyncPlan `
 $plan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
 ```
 
-Expected outcome: no LTAC customer scope state changes; output identifies the approved customer
-scope batch that would be sent.
-
-## Site Plan Dry Run
-
-```powershell
-$sitePlan = New-EntitySyncPlan `
-  -SourceVendor NCentral `
-  -SourceEntityType Site `
-  -TargetVendor LTAC `
-  -TargetEntityType Customer `
-  -CreateMissing
-
-$sitePlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
-```
-
-Expected outcome: no LTAC customer scope state changes; site-derived scopes include parent N-central
-customer identifiers or are blocked with clear non-secret reasons.
+Expected outcome: no LTAC customer scope state changes; output identifies one batch containing both
+customer-derived and site-derived scopes. Site rows include parent N-central customer identifiers.
 
 ## Reviewed Apply Validation
 
@@ -79,7 +63,7 @@ the result reports inserted, updated, retired, active, and audit information whe
 
 - Inspect exported plan files and pass-through output for the LTAC credential; expected count is
   zero occurrences.
-- Confirm Review, Reject, No Update, and invalid items are skipped.
+- Confirm Review, Reject, No Update, and invalid items block the whole apply before HTTP.
 - Confirm unsafe slug, duplicate identifier, and missing parent identifier cases produce non-secret
   operator-readable reasons.
 

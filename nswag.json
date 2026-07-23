@@ -1,0 +1,40 @@
+{
+  "runtime": "Net80",
+  "documentGenerator": {
+    "fromDocument": {
+      "url": "specs/001-ltac-sync-adapter/contracts/agentcontroller.openapi.json",
+      "output": null,
+      "newLineBehavior": "LF"
+    }
+  },
+  "codeGenerators": {
+    "openApiToCSharpClient": {
+      "className": "AgentControllerClient",
+      "namespace": "LISSTech.EntitySync.Adapters.LTAC",
+      "generateClientClasses": true,
+      "generateClientInterfaces": true,
+      "injectHttpClient": true,
+      "disposeHttpClient": false,
+      "useBaseUrl": true,
+      "generateBaseUrlProperty": true,
+      "generateSyncMethods": false,
+      "generateExceptionClasses": true,
+      "exceptionClass": "AgentControllerApiException",
+      "wrapDtoExceptions": false,
+      "operationGenerationMode": "SingleClientFromOperationId",
+      "generateDtoTypes": true,
+      "generateDataAnnotations": false,
+      "generateJsonMethods": false,
+      "jsonLibrary": "SystemTextJson",
+      "jsonLibraryVersion": "8.0",
+      "generateNullableReferenceTypes": true,
+      "generateOptionalPropertiesAsNullable": true,
+      "requiredPropertiesMustBeDefined": true,
+      "arrayType": "System.Collections.Generic.ICollection",
+      "arrayInstanceType": "System.Collections.Generic.List",
+      "responseArrayType": "System.Collections.Generic.ICollection",
+      "newLineBehavior": "LF",
+      "output": "src/Adapters/LTAC/Generated/AgentControllerClient.g.cs"
+    }
+  }
+}

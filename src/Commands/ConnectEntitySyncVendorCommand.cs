@@ -23,14 +23,47 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
     [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
+
+    [Parameter(Mandatory = true, Position = 0, ParameterSetName = "Profile")]
+    [Parameter(ParameterSetName = "HaloPSA")]
+    [Parameter(ParameterSetName = "NetSuite")]
+    [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "AgentControllerToken")]
+    [Parameter(ParameterSetName = "AgentControllerSecureToken")]
+    [Parameter(ParameterSetName = "AgentControllerSession")]
+    [Parameter(ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
+    public string? Profile { get; set; }
+
+    [Parameter(ParameterSetName = "HaloPSA")]
+    [Parameter(ParameterSetName = "NetSuite")]
+    [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "AgentControllerToken")]
+    [Parameter(ParameterSetName = "AgentControllerSecureToken")]
+    [Parameter(ParameterSetName = "AgentControllerSession")]
+    [Parameter(ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
+    public SwitchParameter SaveProfile { get; set; }
+
+    [Parameter(ParameterSetName = "HaloPSA")]
+    [Parameter(ParameterSetName = "NetSuite")]
+    [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "AgentControllerToken")]
+    [Parameter(ParameterSetName = "AgentControllerSecureToken")]
+    [Parameter(ParameterSetName = "AgentControllerSession")]
+    [Parameter(ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
+    public SwitchParameter DefaultProfile { get; set; }
 
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     public SecureString? SecureToken { get; set; }
 
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
     public PSObject? Session { get; set; }
+
+    [Parameter(ParameterSetName = "AgentControllerSession")]
+    [Parameter(Mandatory = true, ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
+    public string? DeviceAssetOpsProfile { get; set; }
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
@@ -96,6 +129,12 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     {
         try
         {
+            if (ParameterSetName.Equals("Profile", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var output in ConnectEntitySyncProfileCommand.ConnectProfile(Profile)) WriteObject(output);
+                return;
+            }
+
             Vendor = NormalizeVendorAlias(Vendor);
 
             if (EntitySyncVendors.IsAgentController(Vendor))
@@ -103,17 +142,20 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 if (ParameterSetName.Equals("AgentControllerSession", StringComparison.OrdinalIgnoreCase))
                 {
                     var session = Session ?? throw new InvalidOperationException("Session is required.");
-                    var sessionToken = GetSessionSecureToken(session);
-                    var sessionOpsBaseUrl = GetSessionStringProperty(session, "OpsBaseUrl", "Uri");
-                    var sessionOptions = new LTACOptions
-                    {
-                        BaseUrl = ValidateAbsoluteHttpsUrl(sessionOpsBaseUrl, "Session.OpsBaseUrl"),
-                        BearerToken = UnwrapSecureString(sessionToken, "Session.Token")
-                    };
-                    var sessionAdapter = new LTACEntityAdapter(sessionOptions);
-                    ConnectionRegistry.Set(sessionAdapter);
-                    WriteObject(new EntitySyncConnection { Vendor = sessionAdapter.Vendor, Adapter = sessionAdapter });
+                    ConnectAgentControllerFromSession(session, DeviceAssetOpsProfile);
                     return;
+                }
+
+                if (ParameterSetName.Equals("AgentControllerDeviceAssetOpsProfile", StringComparison.OrdinalIgnoreCase))
+                {
+                    var deviceAssetOpsProfileName = RequireProfileReference(DeviceAssetOpsProfile);
+                    ConnectAgentControllerFromSession(GetDeviceAssetOpsSession(deviceAssetOpsProfileName), deviceAssetOpsProfileName);
+                    return;
+                }
+
+                if (SaveProfile)
+                {
+                    throw new InvalidOperationException("AgentController profiles store a DeviceAssetOps profile reference, not short-lived bearer tokens. Use -DeviceAssetOpsProfile with -SaveProfile.");
                 }
 
                 var stringTokenExplicit = DynamicValue<string?>("Token", null);
@@ -179,6 +221,25 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 };
                 var adapter = new HaloEntityAdapter(options);
                 ConnectionRegistry.Set(adapter);
+                SaveProfileIfRequested(adapter.Vendor, new Dictionary<string, string?>
+                {
+                    ["HaloBaseUrl"] = haloBaseUrl,
+                    ["HaloClientId"] = haloClientId,
+                    ["HaloClientSecret"] = haloClientSecret,
+                    ["HaloScope"] = haloScope,
+                    ["HaloTopLevelId"] = haloTopLevelId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["HaloDefaultColour"] = haloDefaultColour,
+                    ["HaloNetSuiteCustomerIdField"] = haloNetSuiteCustomerIdField,
+                    ["HaloNetSuiteCustomerIdFieldId"] = haloNetSuiteCustomerIdFieldId,
+                    ["HaloNetSuiteCustomerNameField"] = haloNetSuiteCustomerNameField,
+                    ["HaloCustomerRelationshipId"] = haloCustomerRelationshipId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["HaloCustomerRelationshipName"] = haloCustomerRelationshipName,
+                    ["HaloCustomerTypeId"] = haloCustomerTypeId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["HaloCustomerTypeName"] = haloCustomerTypeName,
+                    ["HaloAccountManagerEmail"] = haloAccountManagerEmail,
+                    ["HaloAccountManagerField"] = haloAccountManagerField,
+                    ["HaloNCentralIntegrationId"] = haloNCentralIntegrationId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                });
                 WriteObject(new EntitySyncConnection { Vendor = adapter.Vendor, Adapter = adapter });
                 return;
             }
@@ -195,6 +256,14 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 };
                 var nsAdapter = new NetSuiteEntityAdapter(nsOptions);
                 ConnectionRegistry.Set(nsAdapter);
+                SaveProfileIfRequested(nsAdapter.Vendor, new Dictionary<string, string?>
+                {
+                    ["NetSuiteAccountId"] = nsOptions.AccountId,
+                    ["NetSuiteConsumerKey"] = nsOptions.ConsumerKey,
+                    ["NetSuiteConsumerSecret"] = nsOptions.ConsumerSecret,
+                    ["NetSuiteTokenId"] = nsOptions.TokenId,
+                    ["NetSuiteTokenSecret"] = nsOptions.TokenSecret
+                });
                 WriteObject(new EntitySyncConnection { Vendor = nsAdapter.Vendor, Adapter = nsAdapter });
                 return;
             }
@@ -216,6 +285,19 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             };
             var ncAdapter = new NCentralEntityAdapter(ncOptions);
             ConnectionRegistry.Set(ncAdapter);
+            SaveProfileIfRequested(ncAdapter.Vendor, new Dictionary<string, string?>
+            {
+                ["NCentralBaseUrl"] = ncOptions.BaseUrl,
+                ["NCentralUserApiToken"] = ncOptions.UserApiToken,
+                ["NCentralServiceOrgId"] = ncOptions.ServiceOrgId,
+                ["NCentralSoapUsername"] = ncOptions.SoapUsername,
+                ["NCentralSoapPassword"] = ncOptions.SoapPassword,
+                ["NCentralSoapEndpointPath"] = ncOptions.SoapEndpointPath,
+                ["NCentralSoapNamespace"] = ncOptions.SoapNamespace,
+                ["NCentralHaloPsaIdPropertyLabel"] = ncOptions.HaloPsaIdPropertyLabel,
+                ["NCentralNetSuiteIdPropertyLabel"] = ncOptions.NetSuiteIdPropertyLabel,
+                ["NCentralNetSuiteNamePropertyLabel"] = ncOptions.NetSuiteNamePropertyLabel
+            });
             WriteObject(new EntitySyncConnection { Vendor = ncAdapter.Vendor, Adapter = ncAdapter });
         }
         catch (Exception ex)
@@ -284,6 +366,13 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         return value;
     }
 
+    private void SaveProfileIfRequested(string vendor, IReadOnlyDictionary<string, string?> settings)
+    {
+        if (!SaveProfile) return;
+        if (string.IsNullOrWhiteSpace(Profile)) throw new InvalidOperationException("Profile is required when SaveProfile is specified.");
+        EntitySyncProfileStore.SaveVendor(Profile, vendor, settings, DefaultProfile);
+    }
+
     private static string ValidateNetSuiteAccountId(string value)
     {
         if (string.IsNullOrWhiteSpace(value)) throw new InvalidOperationException("NetSuiteAccountId is required.");
@@ -318,6 +407,51 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         }
 
         return token ?? throw new InvalidOperationException("Session must include a SecureString Token.");
+    }
+
+    private void ConnectAgentControllerFromSession(PSObject session, string? deviceAssetOpsProfileName)
+    {
+        if (SaveProfile && string.IsNullOrWhiteSpace(deviceAssetOpsProfileName))
+        {
+            throw new InvalidOperationException("Saving an AgentController profile from -Session requires -DeviceAssetOpsProfile so future connects can mint a fresh short-lived token.");
+        }
+
+        var sessionToken = GetSessionSecureToken(session);
+        var sessionOpsBaseUrl = GetSessionStringProperty(session, "OpsBaseUrl", "Uri");
+        var sessionOptions = new LTACOptions
+        {
+            BaseUrl = ValidateAbsoluteHttpsUrl(sessionOpsBaseUrl, "Session.OpsBaseUrl"),
+            BearerToken = UnwrapSecureString(sessionToken, "Session.Token")
+        };
+        var sessionAdapter = new LTACEntityAdapter(sessionOptions);
+        ConnectionRegistry.Set(sessionAdapter);
+        SaveProfileIfRequested(sessionAdapter.Vendor, new Dictionary<string, string?>
+        {
+            ["DeviceAssetOpsProfile"] = deviceAssetOpsProfileName
+        });
+        WriteObject(new EntitySyncConnection { Vendor = sessionAdapter.Vendor, Adapter = sessionAdapter });
+    }
+
+    private static string RequireProfileReference(string? profileName)
+    {
+        if (string.IsNullOrWhiteSpace(profileName)) throw new InvalidOperationException("DeviceAssetOpsProfile is required.");
+        return profileName.Trim();
+    }
+
+    private static PSObject GetDeviceAssetOpsSession(string profileName)
+    {
+        using (var connect = PowerShell.Create(RunspaceMode.CurrentRunspace))
+        {
+            connect.AddCommand("Connect-DeviceAssetOps").AddParameter("Profile", profileName);
+            connect.Invoke();
+            if (connect.HadErrors) throw new InvalidOperationException(string.Join(Environment.NewLine, connect.Streams.Error.Select(error => error.ToString())));
+        }
+
+        using var token = PowerShell.Create(RunspaceMode.CurrentRunspace);
+        token.AddCommand("Get-DeviceAssetOpsAccessToken").AddParameter("AsSession");
+        var result = token.Invoke();
+        if (token.HadErrors) throw new InvalidOperationException(string.Join(Environment.NewLine, token.Streams.Error.Select(error => error.ToString())));
+        return result.Count == 1 ? result[0] : throw new InvalidOperationException($"Expected one DeviceAssetOps session from Get-DeviceAssetOpsAccessToken -AsSession, got {result.Count}.");
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)

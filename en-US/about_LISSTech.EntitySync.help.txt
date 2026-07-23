@@ -19,6 +19,17 @@ CONFIGURATION
     Configure vendors with Connect-EntitySyncVendor. Values may be passed as
     parameters or supplied from environment variables.
 
+    For repeated use, run Connect-EntitySyncVendor once with -Profile and
+    -SaveProfile. The profile store is local to the current Windows user and
+    protects saved settings with DPAPI. Later sessions can run
+    Connect-EntitySyncProfile <name> to connect every saved vendor in that
+    profile without retyping credentials.
+
+    AgentController profiles store a DeviceAssetOps profile reference, not the
+    short-lived AgentController bearer token. On profile connect, EntitySync
+    runs Connect-DeviceAssetOps -Profile <name> and then mints a fresh
+    session with Get-DeviceAssetOpsAccessToken -AsSession.
+
     HaloPSA uses client credentials. Set HALO_BASE_URL, HALO_CLIENT_ID, and
     HALO_CLIENT_SECRET, or pass the matching Connect-EntitySyncVendor
     parameters. The module requests the bearer token from HaloPSA and does not
@@ -41,14 +52,18 @@ CONFIGURATION
     (NCENTRAL_SOAP_USERNAME, NCENTRAL_SOAP_PASSWORD) and are optional unless
     Invoke-EntitySyncPlan or Set-EntitySyncCustomProperty needs them.
 
-    AgentController uses the ops/PostgREST OpenAPI and only acts as a sync target
-    for N-central Customer and Site sources. Prefer structured session input from
+    AgentController uses an NSwag-generated client for the ops/PostgREST OpenAPI
+    and only acts as a sync target. Build one complete N-central Customer-plus-Site
+    snapshot with -SourceEntityType CustomerScope; separate Customer/Site plans
+    cannot be applied because omission has authoritative retirement semantics.
+    Prefer structured session input from
     LISSTech.DeviceAssetOps: run Get-DeviceAssetOpsAccessToken -AsSession after
     Connect-DeviceAssetOps, then pass that object to Connect-EntitySyncVendor
     -Vendor AgentController -Session. The session supplies both OpsBaseUrl and a
     SecureString operator JWT. EntitySync sends exactly POST
     /rpc/sync_ncentral_customers relative to OpsBaseUrl and does not derive that
-    URL from the AgentController API/auth host.
+    URL from the AgentController API/auth host. Test-EntitySyncConnection uses the
+    generated non-mutating has_scope RPC for operator_access:write.
 
     Manual break-glass mode remains available with LTAC_BASE_URL and
     LTAC_BEARER_TOKEN, or -Url plus -Token/-SecureToken. In manual mode -Url is
@@ -62,6 +77,10 @@ CONFIGURATION
 
 SEE ALSO
     Connect-EntitySyncVendor
+    Connect-EntitySyncProfile
+    Get-EntitySyncProfile
+    Remove-EntitySyncProfile
+    Set-EntitySyncDefaultProfile
     Get-EntitySyncConnection
     Test-EntitySyncConnection
     Get-EntitySyncLookup

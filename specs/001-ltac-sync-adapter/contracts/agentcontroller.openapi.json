@@ -1,0 +1,252 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "AgentController EntitySync API",
+    "version": "1.0.0",
+    "description": "Typed EntitySync projection of the AgentController PostgREST sync_ncentral_customers RPC. The live PostgREST document exposes the customers argument as untyped jsonb and omits the response schema."
+  },
+  "paths": {
+    "/rpc/has_scope": {
+      "post": {
+        "operationId": "HasScope",
+        "summary": "Check whether the current operator may use a scope",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HasScopeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "True when the JWT grants the requested scope or administrator access.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/PostgrestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PostgrestError"
+          }
+        }
+      }
+    },
+    "/rpc/sync_ncentral_customers": {
+      "post": {
+        "operationId": "SyncNcentralCustomers",
+        "summary": "Synchronize the authoritative N-central customer-scope snapshot",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LTACSyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The one-row table result returned by PostgREST.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1,
+                  "items": {
+                    "$ref": "#/components/schemas/LTACSyncResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/PostgrestError"
+          },
+          "401": {
+            "$ref": "#/components/responses/PostgrestError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PostgrestError"
+          },
+          "409": {
+            "$ref": "#/components/responses/PostgrestError"
+          },
+          "500": {
+            "$ref": "#/components/responses/PostgrestError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "responses": {
+      "PostgrestError": {
+        "description": "PostgREST rejected or failed the request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PostgrestError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "HasScopeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "p_scope"
+        ],
+        "properties": {
+          "p_scope": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "LTACSyncRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "customers"
+        ],
+        "properties": {
+          "customers": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/LTACCustomerScopeRequest"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 512
+          },
+          "ticket": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "LTACCustomerScopeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug",
+          "display_name",
+          "ncentral_customer_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$",
+            "minLength": 2,
+            "maxLength": 64
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ncentral_customer_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ncentral_parent_customer_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "LTACSyncResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "inserted_count",
+          "updated_count",
+          "retired_count",
+          "active_count",
+          "audit_event_id"
+        ],
+        "properties": {
+          "inserted_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "updated_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "retired_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "active_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "audit_event_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        }
+      },
+      "PostgrestError": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          },
+          "details": {
+            "type": "string",
+            "nullable": true
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      }
+    }
+  }
+}

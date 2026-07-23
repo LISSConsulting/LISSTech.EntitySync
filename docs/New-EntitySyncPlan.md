@@ -21,7 +21,7 @@ When HaloPSA is the target, planning reads full client records by default so cus
 New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral> [-TargetVendor] <HaloPSA|NetSuite|NCentral|AgentController> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
 ```
 
-`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendor (`Customer` for NetSuite and AgentController; `Client`/`Site` for HaloPSA; `Customer`/`Site` for N-central). `-InputObject` accepts pipeline input by value so a pre-filtered list of source records can flow in. `-TargetVendor` accepts `LTAC`, which normalizes to `AgentController` for new artifacts and contract checks.
+`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendors. N-central normally exposes `Customer`/`Site`; when AgentController is the target it also exposes `CustomerScope`, the default complete Customer-plus-Site snapshot. Pipeline input remains available for non-authoritative Customer/Site planning, but is rejected for `CustomerScope` because it cannot prove completeness. `-TargetVendor LTAC` normalizes to `AgentController`.
 
 ## EXAMPLES
 
@@ -49,14 +49,14 @@ Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` ar
 
 ### Example 4
 ```powershell
-$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Customer -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
 ```
 
-Creates an N-central Customer to Agent Controller Customer scope plan. `AgentController` is a valid `-TargetVendor` (`LTAC` is also accepted and normalizes to `AgentController`), and `Customer` is the only `-TargetEntityType` Agent Controller supports. Agent Controller has no customer-scope read endpoint, so it never returns target candidates; every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent (`ncentral_parent_customer_id` is left empty). See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.
+Creates one authoritative N-central Customer-plus-Site snapshot for AgentController. `CustomerScope` reads both source entity types; `Customer` remains the only AgentController target type. AgentController has no customer-scope read endpoint, so every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent, while site-derived scopes carry `ncentral_parent_customer_id`. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.
 
 ### Example 5
 ```powershell
-$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType Site -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
+$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing
 ```
 
-Creates an N-central Site to LTAC Customer scope plan. Each site-derived scope carries the site's own N-central identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, so the LTAC scope stays traceable to the site's owning customer. A site that fails any LTAC source-validation check (for example: no parent N-central customer identifier, no source identifier, no display name, a non-NCentral source vendor, a duplicate N-central source identifier, an unsafe LTAC slug, or a duplicate LTAC slug) is blocked with `Action 'Review'` (`MatchType 'LtacSourceInvalid'`) and a reason that names the specific problem — for the missing-parent case the reason reads `N-central site {sourceId} has no parent N-central customer identifier; LTAC customer scopes require the parent N-central customer identifier.`. This safe failure applies even with `-CreateMissing`, and every LTAC source-validation check uses the same `LtacSourceInvalid` MatchType so reviewers can pivot on a single bucket. See `specs/001-ltac-sync-adapter/data-model.md`.
+The same `CustomerScope` plan includes every site-derived scope and its parent N-central customer identifier. A source-validation failure becomes `Action 'Review'`, `MatchType 'LtacSourceInvalid'`, and blocks the entire authoritative apply until resolved, preventing an omitted review row from retiring an existing AgentController scope. See `specs/001-ltac-sync-adapter/data-model.md`.

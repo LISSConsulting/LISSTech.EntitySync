@@ -272,7 +272,7 @@ internal static class EntitySyncPlanWorkbook
 
     private static EntitySyncPlan ReadPlan(ZipArchive archive, IReadOnlyList<string> sharedStrings)
     {
-        var entry = archive.GetEntry("xl/worksheets/sheet2.xml") ?? throw new InvalidOperationException("Workbook does not contain the hidden plan data sheet.");
+        var entry = GetWorksheetEntry(archive, "_PlanJson") ?? throw new InvalidOperationException("Workbook does not contain the hidden plan data sheet.");
         using var stream = entry.Open();
         var document = XDocument.Load(stream);
         var encoded = new StringBuilder();
@@ -289,7 +289,7 @@ internal static class EntitySyncPlanWorkbook
 
     private static void ApplyReview(ZipArchive archive, EntitySyncPlan plan, IReadOnlyList<string> sharedStrings)
     {
-        var entry = archive.GetEntry("xl/worksheets/sheet1.xml") ?? throw new InvalidOperationException("Workbook does not contain a Review sheet.");
+        var entry = GetWorksheetEntry(archive, "Review") ?? throw new InvalidOperationException("Workbook does not contain a Review sheet.");
         using var stream = entry.Open();
         var document = XDocument.Load(stream);
         var rows = document.Descendants().Where(e => e.Name.LocalName == "row").ToList();
@@ -303,9 +303,10 @@ internal static class EntitySyncPlanWorkbook
         var notesColumn = FindColumn(headers, "ReviewerNotes");
         if (itemColumn < 0 || decisionColumn < 0) throw new InvalidOperationException("Review sheet must contain Item and Decision columns.");
         var targetsByName = TargetList(plan)
-            .Where(target => !string.IsNullOrWhiteSpace(target.Name))
-            .GroupBy(target => target.Name, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            .Select(target => new { Target = target, DisplayName = TargetDisplay(target).Trim() })
+            .Where(target => !string.IsNullOrWhiteSpace(target.DisplayName))
+            .GroupBy(target => target.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Select(target => target.Target).ToList(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var row in rows.Skip(1))
         {
@@ -314,7 +315,7 @@ internal static class EntitySyncPlanWorkbook
             if (itemNumber < 1 || itemNumber > plan.Items.Count) throw new InvalidOperationException($"Review sheet row references invalid item {itemNumber}.");
 
             var item = plan.Items[itemNumber - 1];
-            var originalTargetName = item.Target?.Name;
+            var originalTargetName = item.Target == null ? null : TargetDisplay(item.Target);
             var hasDecision = TryGetCell(cells, decisionColumn, out var decision) && !string.IsNullOrWhiteSpace(decision);
             if (hasDecision) ApplyDecision(item, decision.Trim());
             if (targetNameColumn >= 0 && TryGetCell(cells, targetNameColumn, out var selectedTarget) && IsChangedTargetSelection(originalTargetName, selectedTarget))
@@ -327,6 +328,51 @@ internal static class EntitySyncPlanWorkbook
         }
 
         ValidateDuplicateTargets(plan);
+    }
+
+    private static ZipArchiveEntry? GetWorksheetEntry(ZipArchive archive, string sheetName)
+    {
+        var workbookEntry = archive.GetEntry("xl/workbook.xml");
+        var relationshipsEntry = archive.GetEntry("xl/_rels/workbook.xml.rels");
+        if (workbookEntry == null || relationshipsEntry == null) return null;
+
+        using var workbookStream = workbookEntry.Open();
+        using var relationshipsStream = relationshipsEntry.Open();
+        var workbook = XDocument.Load(workbookStream);
+        var relationships = XDocument.Load(relationshipsStream);
+        var sheet = workbook.Descendants()
+            .FirstOrDefault(element => element.Name.LocalName == "sheet" && string.Equals(element.Attribute("name")?.Value, sheetName, StringComparison.OrdinalIgnoreCase));
+        var relationshipId = sheet?.Attributes().FirstOrDefault(attribute => attribute.Name.LocalName == "id")?.Value;
+        if (string.IsNullOrWhiteSpace(relationshipId)) return null;
+
+        var relationship = relationships.Descendants()
+            .FirstOrDefault(element => element.Name.LocalName == "Relationship" && string.Equals(element.Attribute("Id")?.Value, relationshipId, StringComparison.Ordinal));
+        var target = relationship?.Attribute("Target")?.Value;
+        if (string.IsNullOrWhiteSpace(target)) return null;
+
+        return archive.GetEntry(NormalizeWorkbookTarget(target));
+    }
+
+    private static string NormalizeWorkbookTarget(string target)
+    {
+        var path = target.Replace('\\', '/');
+        if (path.StartsWith('/')) path = path[1..];
+        else path = "xl/" + path;
+
+        var parts = new List<string>();
+        foreach (var part in path.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part == ".") continue;
+            if (part == "..")
+            {
+                if (parts.Count > 0) parts.RemoveAt(parts.Count - 1);
+                continue;
+            }
+
+            parts.Add(part);
+        }
+
+        return string.Join('/', parts);
     }
 
     private static void ValidateDuplicateTargets(EntitySyncPlan plan)
@@ -371,7 +417,7 @@ internal static class EntitySyncPlanWorkbook
     private static bool IsChangedTargetSelection(string? originalTargetName, string selectedTarget)
     {
         if (string.IsNullOrWhiteSpace(selectedTarget)) return false;
-        return !string.Equals(originalTargetName, selectedTarget.Trim(), StringComparison.OrdinalIgnoreCase);
+        return !string.Equals(originalTargetName?.Trim(), selectedTarget.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ApplyDecision(EntitySyncPlanItem item, string decision)

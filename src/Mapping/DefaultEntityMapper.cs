@@ -22,7 +22,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     public EntityWriteRequest MapUpdate(ExternalEntity source, ExternalEntity target, MatchOptions options)
     {
         var targetVendor = EntitySyncVendors.Normalize(target.Vendor);
-        var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = target.Name };
+        var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = source.Name };
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);

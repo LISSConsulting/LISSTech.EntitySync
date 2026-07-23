@@ -75,9 +75,9 @@ while unapproved or review-blocked items are not applied.
 
 1. **Given** an operator provides LTAC credentials, **When** connection, planning, export, dry run,
    or apply output is inspected, **Then** the credential value is not displayed or serialized.
-2. **Given** a sync plan contains items marked for review, rejection, or no update, **When** the
-   operator applies the plan, **Then** those items are skipped and no LTAC customer scope changes are
-   made for them.
+2. **Given** an authoritative sync plan contains items marked for review, rejection, or no update,
+   **When** the operator applies the plan, **Then** the entire batch is blocked and no LTAC customer
+   scope changes are made, including retirement through omission.
 3. **Given** the operator runs the plan as a dry run, **When** the run completes, **Then** no LTAC
    customer scope state is changed and the operator can see which approved items would change.
 
@@ -108,8 +108,8 @@ while unapproved or review-blocked items are not applied.
   LTAC customer scopes without mutating LTAC during discovery or planning.
 - **FR-005**: System MUST generate reviewable sync plans for N-central site records targeting LTAC
   customer scopes while preserving the parent N-central customer identifier.
-- **FR-006**: System MUST apply approved N-central customer and site records to LTAC as one
-  authoritative batch per reviewed plan, not as independent item-by-item normal sync writes.
+- **FR-006**: System MUST apply one complete N-central Customer-plus-Site snapshot to LTAC as one
+  authoritative batch per reviewed plan, not as independent item-by-item or entity-type writes.
 - **FR-007**: System MUST never create ad hoc LTAC customer scopes outside the authoritative
   N-central-to-LTAC sync flow.
 - **FR-008**: System MUST derive a safe LTAC slug for each synced customer scope and fail the item

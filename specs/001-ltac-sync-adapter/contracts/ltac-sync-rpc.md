@@ -47,13 +47,15 @@ Defines the external LTAC sync contract used when applying an approved N-central
 ## Response
 
 ```json
-{
-  "inserted_count": 1,
-  "updated_count": 1,
-  "retired_count": 0,
-  "active_count": 2,
-  "audit_event_id": "00000000-0000-0000-0000-000000000000"
-}
+[
+  {
+    "inserted_count": 1,
+    "updated_count": 1,
+    "retired_count": 0,
+    "active_count": 2,
+    "audit_event_id": "00000000-0000-0000-0000-000000000000"
+  }
+]
 ```
 
 ## Response Rules
@@ -61,11 +63,19 @@ Defines the external LTAC sync contract used when applying an approved N-central
 - `inserted_count`, `updated_count`, `retired_count`, and `active_count` are reported back to the
   operator when pass-through output is requested.
 - `audit_event_id` is preserved in the write result when present.
+- PostgREST serializes the SQL `RETURNS TABLE` result as a one-row JSON array for `application/json`.
 - Non-success responses must include status and endpoint path in operator-facing errors but must not
   include authorization headers or credential values.
 
 ## Batch Semantics
 
 - The request is authoritative for N-central-sourced LTAC customer scopes.
+- EntitySync composes one complete snapshot containing both N-central Customer and Site records.
+- Any unapproved or invalid plan row blocks the whole request; silently omitting it could retire an
+  existing scope.
 - Previously synced N-central rows absent from the `customers` payload may be retired by LTAC.
 - EntitySync must not use one request per normal plan item.
+
+The typed source for generated client code is `agentcontroller.openapi.json` beside this document.
+It projects the live PostgREST Swagger document's untyped `jsonb` argument and unspecified response
+into explicit request and one-row response schemas.

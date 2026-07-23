@@ -61,8 +61,9 @@ $plan | Invoke-EntitySyncPlan -Apply -WhatIf
 
 ### N-central to AgentController customer scopes
 
-AgentController sync is target-only and starts from reviewed N-central Customer or Site plans. Use `-WhatIf`
-for the first run; it reports the batch that would be sent without changing AgentController.
+AgentController sync is target-only and uses one complete `CustomerScope` plan containing both N-central
+Customer and Site records. Use `-WhatIf` for the first run; it reports the authoritative batch without
+changing AgentController.
 
 ```powershell
 Import-Module .\Module\LISSTech.EntitySync.psd1 -Force
@@ -75,7 +76,7 @@ $agentControllerSession = Get-DeviceAssetOpsAccessToken -AsSession
 Connect-EntitySyncVendor -Vendor AgentController -Session $agentControllerSession
 
 $customerPlan = New-EntitySyncPlan `
-  -SourceVendor NCentral -SourceEntityType Customer `
+  -SourceVendor NCentral -SourceEntityType CustomerScope `
   -TargetVendor AgentController -TargetEntityType Customer `
   -CreateMissing
 
@@ -85,18 +86,9 @@ $customerPlan = Import-EntitySyncPlan .\ncentral-ltac-customers.xlsx
 $customerPlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
 ```
 
-Site records use the same AgentController Customer target. Each approved site-derived scope carries its parent
-N-central customer identifier; records missing that parent are blocked for review instead of being
-sent to AgentController.
-
-```powershell
-$sitePlan = New-EntitySyncPlan `
-  -SourceVendor NCentral -SourceEntityType Site `
-  -TargetVendor AgentController -TargetEntityType Customer `
-  -CreateMissing
-
-$sitePlan | Invoke-EntitySyncPlan -Apply -WhatIf -PassThru
-```
+The plan reads both entity types from N-central. Each site-derived scope carries its parent N-central customer
+identifier. A missing parent, unsafe or duplicate identifier, `Review`, `Reject`, `No Update`, or `None` row
+blocks the entire apply so omission cannot retire an existing AgentController scope.
 
 When the reviewed plan and dry-run output are clean, remove `-WhatIf` to apply the approved rows as
 one authoritative AgentController batch:
@@ -151,7 +143,7 @@ graph LR
 | 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
 | 📋 **Plan** | Change manifest | Sync becomes an Excel-reviewable artifact before it becomes vendor mutation. |
-| 🧨 **Apply** | Controlled write path | `-Apply` is mandatory, `-WhatIf` is supported, `Review` rows are skipped. |
+| 🧨 **Apply** | Controlled write path | `-Apply` is mandatory and `-WhatIf` is supported. AgentController additionally requires a complete, fully approved snapshot. |
 
 ---
 
@@ -347,13 +339,13 @@ This command updates existing custom-property values only; create the custom-pro
 | _DeviceAssetOps session_ | `-Session` (`OpsBaseUrl` plus SecureString token) |
 | _operator session JWT_ | `-SecureToken` (`SecureString`, manual mode) |
 
-`Connect-EntitySyncVendor -Vendor AgentController -Session $session` (`LTAC` is also accepted and normalizes to `AgentController`) registers a target-only adapter for syncing N-central Customer and Site records into AgentController customer scopes as one authoritative batch per approved plan, matching the Agent Controller `sync_ncentral_customers` RPC contract. The session should come from `LISSTech.DeviceAssetOps` after authenticating through the AgentController API/auth base URL (`https://api-agent-controller.clfy-b.lissonline.com`); it carries the declared ops/PostgREST base URL (`https://ops-agent-controller.clfy-b.lissonline.com`) and a SecureString JWT. AgentController has no customer-scope read endpoint, so plans never return target candidates — every N-central source plans as `Create`/`NoMatch`. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`; a site with no parent N-central customer ID is blocked at plan time with `Action 'Review'` instead of being created. `Token` never appears in the returned connection object. See `specs/001-ltac-sync-adapter/spec.md`.
+`Connect-EntitySyncVendor -Vendor AgentController -Session $session` (`LTAC` is also accepted and normalizes to `AgentController`) registers a target-only adapter for syncing one complete N-central Customer-plus-Site snapshot into AgentController customer scopes. Build that snapshot with `-SourceEntityType CustomerScope`; separate Customer or Site plans cannot be applied because the AgentController RPC retires N-central scopes absent from its authoritative payload. The session should come from `LISSTech.DeviceAssetOps` after authenticating through the AgentController API/auth base URL (`https://api-agent-controller.clfy-b.lissonline.com`); it carries the declared ops/PostgREST base URL (`https://ops-agent-controller.clfy-b.lissonline.com`) and a SecureString JWT. AgentController has no customer-scope read endpoint, so plans never return target candidates. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`. `Token` never appears in the returned connection object. See `specs/001-ltac-sync-adapter/spec.md`.
 
-EntitySync calls exactly `POST /rpc/sync_ncentral_customers` relative to the ops/PostgREST base URL. It does not call `/rest/rpc/...`, derive `ops-` from `api-`, or try alternate paths after 404. For manual `-Url`/`LTAC_BASE_URL`, use the AgentController ops/PostgREST OpenAPI endpoint. Do not use the API/auth host; it does not serve the sync RPC.
+AgentController apply calls exactly `POST /rpc/sync_ncentral_customers`; connection validation calls the non-mutating `POST /rpc/has_scope`. Both are generated from the pinned typed OpenAPI contract and relative to the ops/PostgREST base URL. EntitySync does not call `/rest/rpc/...`, derive `ops-` from `api-`, or try alternate paths after 404. For manual `-Url`/`LTAC_BASE_URL`, use the ops endpoint, not the API/auth host.
 
 `-SecureToken` accepts a `SecureString` for manual mode. Prefer `-Session` for normal cross-module use because it carries endpoint metadata and the SecureString token together. The SecureString is unwrapped in-process and used only for the AgentController authorization header. `-Session`, `-Token`, and `-SecureToken` are separate parameter sets; pass exactly one.
 
-AgentController credentials are treated as connection-only secrets. The bearer token is used for the AgentController authorization header, but is omitted from `Get-EntitySyncConnection`, exported workbook/JSON plans, dry-run/apply result messages, and common adapter error paths. AgentController apply sends only approved, validated `Create`/`Update`/`Link` customer-scope rows in one batch; review-blocked, rejected, no-update, unsafe, incomplete, or duplicate-source rows are skipped before request composition.
+AgentController credentials are treated as connection-only secrets. `Test-EntitySyncConnection` calls the generated `has_scope` client operation and succeeds only when the token grants `operator_access:write` or administrator access. The bearer token is omitted from connection output, plans, results, and adapter errors. AgentController apply sends one generated-client request only when every row in the complete `CustomerScope` snapshot is approved and valid; otherwise the entire batch is blocked before HTTP.
 
 ---
 
@@ -365,7 +357,7 @@ This module is built for vendor data, which means mistakes are expensive and emb
 - 📋 Planning does not write.
 - 🧪 `Invoke-EntitySyncPlan` supports `-WhatIf`.
 - 🧨 `Invoke-EntitySyncPlan` requires `-Apply` before writes are allowed.
-- 🛑 `Review` items are skipped during apply.
+- 🛑 Generic plans skip `Review` items; AgentController blocks the complete authoritative batch instead.
 - 💾 Plans can be exported and reviewed before mutation.
 - 🧼 Credentials stay out of exported plans.
 - 🔐 AgentController bearer tokens and unrelated N-central registration tokens are not copied into AgentController batch requests or result messages.
@@ -383,6 +375,8 @@ just              # list recipes
 just build        # compile src/LISSTech.EntitySync.csproj into Module/
 just test-load    # import the module and list exported commands
 just test         # run Pester tests
+just generate-agentcontroller-client # regenerate the pinned NSwag client
+just check-agentcontroller-client    # fail if checked-in generated code is stale
 just clean        # remove compiled output
 ```
 

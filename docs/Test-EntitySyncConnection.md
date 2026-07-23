@@ -17,11 +17,11 @@ Test-EntitySyncConnection -Vendor <String>
 ```
 
 ## DESCRIPTION
-Calls `TestConnectionAsync` on the adapter registered for `-Vendor` and returns `$true` when the underlying credentialed call succeeds, otherwise it throws a terminating `ErrorCategory.ConnectionError`.
+Calls `TestConnectionAsync` on the adapter registered for `-Vendor`. It returns `$true` when the credentialed probe succeeds, `$false` when a reachable service rejects the credential or required permission, and a terminating `ErrorCategory.ConnectionError` for transport failures.
 
 Run `Connect-EntitySyncVendor -Vendor <Name>` first; an unregistered vendor raises `No EntitySync connection exists for vendor '<Vendor>'. Run Connect-EntitySyncVendor first.`.
 
-`-Vendor LTAC` is accepted as an alias and normalizes to `AgentController`. For Agent Controller, connection failures return only the operation, HTTP status where available, and the ops/PostgREST `rpc/sync_ncentral_customers` path; the bearer token, authorization header, and raw response body are never copied into the error.
+`-Vendor LTAC` is accepted as an alias and normalizes to `AgentController`. The generated AgentController client calls the non-mutating `POST /rpc/has_scope` probe for `operator_access:write`; administrators also pass through AgentController's `has_scope` implementation. Invalid, expired, or insufficient tokens return `false`. Transport errors remain redacted and never include the bearer token, authorization header, or raw response body.
 
 ## EXAMPLES
 
@@ -47,4 +47,4 @@ Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ltac.example.com'
 Test-EntitySyncConnection -Vendor AgentController
 ```
 
-Tests the registered Agent Controller adapter. Legacy aliases normalize to `AgentController` internally; errors do not echo the bearer token.
+Tests that the registered AgentController token may execute the authoritative sync operation without mutating customer scopes. Legacy aliases normalize to `AgentController`; errors do not echo the bearer token.

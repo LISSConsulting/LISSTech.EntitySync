@@ -102,9 +102,11 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 
     private void ApplyLtacBatch(DefaultEntityMapper mapper, MatchOptions options)
     {
+        if (Apply) EnsureLtacSnapshotCanApply();
         var batchItems = new List<(EntitySyncPlanItem Item, LTACCustomerScopeRequest Request)>();
         var candidateItems = new List<(EntitySyncPlanItem Item, LTACCustomerScopeRequest Request)>();
         var resultCount = 0;
+        var invalidItemCount = 0;
 
         for (var i = 0; i < Plan.Items.Count; i++)
         {
@@ -163,10 +165,16 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     Message = "LTAC item skipped before batch sync: " + string.Join("; ", validationErrors) + "."
                 });
                 resultCount++;
+                invalidItemCount++;
                 continue;
             }
 
             batchItems.Add(candidate);
+        }
+
+        if (invalidItemCount > 0)
+        {
+            throw new InvalidOperationException($"AgentController authoritative sync was blocked because {invalidItemCount} approved item(s) failed customer-scope validation. No AgentController write was attempted.");
         }
 
         if (batchItems.Count == 0)
@@ -215,6 +223,25 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         return action.Equals("Create", StringComparison.OrdinalIgnoreCase)
             || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
             || action.Equals("Link", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void EnsureLtacSnapshotCanApply()
+    {
+        if (!Plan.SourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+            || !Plan.SourceEntityType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "AgentController apply requires a complete N-central CustomerScope plan containing both Customer and Site records. " +
+                "Create it with New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController.");
+        }
+
+        var omittedCount = Plan.Items.Count(item => !IsApprovedLtacAction(item.Action));
+        if (omittedCount > 0)
+        {
+            throw new InvalidOperationException(
+                $"AgentController authoritative sync was blocked because {omittedCount} plan item(s) are not approved for inclusion. " +
+                "Resolve every Review, Reject, No Update, None, invalid, or incomplete row before apply so omission cannot retire an existing customer scope.");
+        }
     }
 
     private bool IsWhatIfRequested()

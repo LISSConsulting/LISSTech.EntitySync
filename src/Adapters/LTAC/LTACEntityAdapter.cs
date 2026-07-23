@@ -1,6 +1,4 @@
 using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
@@ -8,37 +6,21 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.LTAC;
 
-public sealed class LTACCustomerScopeRequest
-{
-    public string Slug { get; set; } = string.Empty;
-    public string DisplayName { get; set; } = string.Empty;
-    public string NCentralCustomerId { get; set; } = string.Empty;
-    public string? NCentralParentCustomerId { get; set; }
-}
-
-public sealed class LTACSyncResult
-{
-    public int InsertedCount { get; set; }
-    public int UpdatedCount { get; set; }
-    public int RetiredCount { get; set; }
-    public int ActiveCount { get; set; }
-    public string? AuditEventId { get; set; }
-}
-
 public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
 {
     private const string SyncReason = "EntitySync N-central to LTAC sync";
     private const string SyncPath = "rpc/sync_ncentral_customers";
+    private const string SyncScope = "operator_access:write";
 
-    private readonly LTACOptions options;
     private readonly HttpClient httpClient = new();
+    private readonly AgentControllerClient client;
 
     public LTACEntityAdapter(LTACOptions options)
     {
-        this.options = options;
         httpClient.BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.BearerToken);
+        client = new AgentControllerClient(UrlHelpers.EnsureTrailingSlash(options.BaseUrl), httpClient);
     }
 
     public string Vendor => EntitySyncVendors.AgentController;
@@ -76,12 +58,15 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     {
         try
         {
-            using var response = await httpClient.GetAsync(string.Empty, cancellationToken).ConfigureAwait(false);
-            return response.IsSuccessStatusCode;
+            return await client.HasScopeAsync(new HasScopeRequest { P_scope = SyncScope }, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (AgentControllerApiException)
+        {
+            return false;
         }
         catch (Exception ex) when (IsTransportException(ex))
         {
@@ -93,27 +78,35 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     {
         var normalizedCustomers = NormalizeCustomerScopeRequests(customers);
         EnsureCustomerScopeContract(normalizedCustomers);
-        var body = BuildSyncRequestBody(normalizedCustomers);
-        using var content = new StringContent(body, Encoding.UTF8, "application/json");
         Trace?.Invoke("LTAC POST " + SyncPath);
 
         try
         {
-            using var response = await httpClient.PostAsync(SyncPath, content, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) throw CreateRedactedAdapterException($"LTAC batch sync failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}.", SyncPath);
-            var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            try
+            var response = await client.SyncNcentralCustomersAsync(new LTACSyncRequest
             {
-                return ParseSyncResponse(text);
-            }
-            catch (JsonException)
+                Customers = normalizedCustomers.ToList(),
+                Reason = SyncReason,
+                Ticket = null
+            }, cancellationToken).ConfigureAwait(false);
+            if (response.Count != 1)
             {
                 throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
             }
+            var result = response.Single();
+            EnsureSyncResultContract(result);
+            return result;
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (AgentControllerApiException ex) when (ex.StatusCode == 200)
+        {
+            throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
+        }
+        catch (AgentControllerApiException ex)
+        {
+            throw CreateRedactedAdapterException($"LTAC batch sync failed with HTTP {ex.StatusCode}.", SyncPath);
         }
         catch (ObjectDisposedException ex) when (IsTransportException(ex))
         {
@@ -220,57 +213,12 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
         }
     }
 
-    private static string BuildSyncRequestBody(IReadOnlyList<LTACCustomerScopeRequest> customers)
+    private static void EnsureSyncResultContract(LTACSyncResult result)
     {
-        customers = NormalizeCustomerScopeRequests(customers);
-        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        if (result.InsertedCount < 0 || result.UpdatedCount < 0 || result.RetiredCount < 0 || result.ActiveCount < 0)
         {
-            ["customers"] = customers.Select(customer => new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["slug"] = customer.Slug,
-                ["display_name"] = customer.DisplayName,
-                ["ncentral_customer_id"] = customer.NCentralCustomerId,
-                ["ncentral_parent_customer_id"] = customer.NCentralParentCustomerId
-            }).ToArray(),
-            ["reason"] = SyncReason,
-            ["ticket"] = null
-        };
-
-        return JsonSerializer.Serialize(payload);
-    }
-
-    private static LTACSyncResult ParseSyncResponse(string responseBody)
-    {
-        using var document = JsonDocument.Parse(responseBody);
-        var root = document.RootElement;
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            throw new JsonException("LTAC batch sync response must be a JSON object.");
+            throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
         }
-
-        return new LTACSyncResult
-        {
-            InsertedCount = ReadOptionalCount(root, "inserted_count"),
-            UpdatedCount = ReadOptionalCount(root, "updated_count"),
-            RetiredCount = ReadOptionalCount(root, "retired_count"),
-            ActiveCount = ReadOptionalCount(root, "active_count"),
-            AuditEventId = ReadOptionalAuditEventId(root)
-        };
     }
 
-    private static string? ReadOptionalAuditEventId(JsonElement root)
-    {
-        if (!root.TryGetPropertyIgnoreCase("audit_event_id", out var property)) return null;
-        if (property.ValueKind == JsonValueKind.Null) return null;
-        if (property.ValueKind == JsonValueKind.String) return property.GetString();
-        throw new JsonException("LTAC batch sync response field 'audit_event_id' must be a string.");
-    }
-
-    private static int ReadOptionalCount(JsonElement root, string name)
-    {
-        if (!root.TryGetPropertyIgnoreCase(name, out var property)) return 0;
-        if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var numeric) && numeric >= 0) return numeric;
-        if (property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out var textNumeric) && textNumeric >= 0) return textNumeric;
-        throw new JsonException($"LTAC batch sync response field '{name}' must be a non-negative integer.");
-    }
 }

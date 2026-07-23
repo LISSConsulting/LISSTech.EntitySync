@@ -39,7 +39,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     {
         TargetVendor = NormalizeVendorAlias(TargetVendor);
         dynamicParameters = new RuntimeDefinedParameterDictionary();
-        if (!string.IsNullOrWhiteSpace(SourceVendor)) AddEntityTypeParameter("SourceEntityType", EntityTypesForVendor(SourceVendor));
+        if (!string.IsNullOrWhiteSpace(SourceVendor)) AddEntityTypeParameter("SourceEntityType", SourceEntityTypesForPlan());
         if (!string.IsNullOrWhiteSpace(TargetVendor)) AddEntityTypeParameter("TargetEntityType", EntityTypesForVendor(TargetVendor));
         return dynamicParameters;
     }
@@ -83,6 +83,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var targetAdapter = ConnectionRegistry.Get(TargetVendor);
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
             var targetEntityType = DynamicValue<string?>("TargetEntityType", null) ?? DefaultEntityType(TargetVendor);
+            var isLtacSnapshot = IsLtacSnapshotPlan(sourceEntityType);
             WriteProgress(new ProgressRecord(1, "New EntitySync plan", "Preparing source records") { PercentComplete = 0 });
             if (targetAdapter is HaloEntityAdapter && !FullTargetObjects)
             {
@@ -93,11 +94,22 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             IReadOnlyList<ExternalEntity> targets;
             if (pipelineSources.Count > 0)
             {
+                if (isLtacSnapshot)
+                {
+                    throw new InvalidOperationException("AgentController CustomerScope plans must read the complete N-central Customer and Site snapshot; pipeline input is not supported.");
+                }
                 sources = pipelineSources;
                 WriteProgress(new ProgressRecord(1, "New EntitySync plan", $"Using {pipelineSources.Count} pipeline source record(s)") { PercentComplete = 30 });
                 targets = TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
                     ? FetchPipelineTargetCandidates(targetAdapter, sources, targetEntityType)
                     : FetchEntitiesWithProgress(targetAdapter, BuildTargetQuery(targetAdapter, targetEntityType), "Reading target records", 30, 70);
+            }
+            else if (isLtacSnapshot)
+            {
+                var customers = FetchEntitiesWithProgress(sourceAdapter, BuildSourceQuery(sourceAdapter, "Customer"), "Reading N-central customers", 0, 20);
+                var sites = FetchEntitiesWithProgress(sourceAdapter, BuildSourceQuery(sourceAdapter, "Site"), "Reading N-central sites", 20, 40);
+                sources = customers.Concat(sites).ToArray();
+                targets = FetchEntitiesWithProgress(targetAdapter, BuildTargetQuery(targetAdapter, targetEntityType), "Reading target records", 40, 70);
             }
             else
             {
@@ -703,6 +715,23 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) return new[] { "Client", "Site" };
         if (vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return new[] { "Customer", "Site" };
         return new[] { "Customer" };
+    }
+
+    private string[] SourceEntityTypesForPlan()
+    {
+        if (SourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) && EntitySyncVendors.IsAgentController(TargetVendor))
+        {
+            return new[] { "CustomerScope", "Customer", "Site" };
+        }
+
+        return EntityTypesForVendor(SourceVendor);
+    }
+
+    private bool IsLtacSnapshotPlan(string sourceEntityType)
+    {
+        return SourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+            && EntitySyncVendors.IsAgentController(TargetVendor)
+            && sourceEntityType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsHaloToNCentralCustomerPlan(string sourceEntityType, string targetEntityType)
