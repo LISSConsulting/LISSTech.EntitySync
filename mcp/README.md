@@ -17,14 +17,14 @@ HTTP mode serves:
 ## Coolify Deployment
 
 1. Create a Docker Compose resource from this Git repository.
-2. Select `compose.yaml` as the Compose file.
+2. Use the root `docker-compose.yaml` Compose file.
 3. Let Coolify generate the `SERVICE_PASSWORD_MCP_API_KEY` secret referenced by the Compose file. For local Compose, set it to at least 32 characters; generate one with `openssl rand -hex 32`.
 4. Add the environment variables for the vendors the server will use.
 5. Assign a domain to the `entitysync-mcp` service on container port `8080`.
 6. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}`.
 7. Retrieve `SERVICE_PASSWORD_MCP_API_KEY` from Coolify and configure the MCP client with URL `https://<domain>/mcp` and an `Authorization: Bearer <value>` header.
 
-Do not put credentials in `compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
+Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
 ### Vendor Variables
 
@@ -37,7 +37,7 @@ Configure only the vendors the deployment needs. The MCP `connect_vendor` tool r
 | N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID` |
 | Bill.com | `BILLCOM_API_TOKEN` |
 
-The root `.env.example` lists the minimal local Compose variables. `compose.yaml` also passes through optional adapter settings documented in the main README.
+The root `.env.example` lists the minimal local Compose variables. `docker-compose.yaml` also passes through optional adapter settings documented in the main README.
 
 DPAPI-backed EntitySync profiles are Windows-only and are intentionally not mounted into the Linux container. Use Coolify secret environment variables for container deployments.
 

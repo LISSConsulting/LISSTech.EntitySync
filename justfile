@@ -332,9 +332,9 @@ mcp-run: mcp-build
 # Build the production MCP container used by compose.yaml and Coolify
 [group('mcp')]
 mcp-docker-build:
-    docker compose --file '{{ project_root }}\compose.yaml' build
+    docker compose --file '{{ project_root }}\docker-compose.yaml' build
 
 # Validate the Coolify Compose model without starting it
 [group('mcp')]
 mcp-compose-config:
-    docker compose --file '{{ project_root }}\compose.yaml' config --quiet
+    docker compose --file '{{ project_root }}\docker-compose.yaml' config --quiet
