@@ -15,6 +15,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     private readonly NCentralOptions options;
     private readonly HttpClient httpClient;
     private readonly RateLimitedHttpRequester rateLimiter = new("N-central");
+    private readonly SemaphoreSlim tokenRefreshLock = new(1, 1);
     private string? accessToken;
     private DateTimeOffset accessTokenExpiresAt = DateTimeOffset.MinValue;
 
@@ -261,6 +262,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 
     public void Dispose()
     {
+        tokenRefreshLock.Dispose();
         rateLimiter.Dispose();
         httpClient.Dispose();
     }
@@ -283,12 +285,24 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 
     private async Task<HttpResponseMessage> SendAuthenticatedAsync(HttpMethod method, string url, HttpContent? content, CancellationToken cancellationToken)
     {
-        await EnsureAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+        var bufferedContent = await BufferedHttpContent.CaptureAsync(content, cancellationToken).ConfigureAwait(false);
+        await EnsureAccessTokenAsync(forceRefresh: false, cancellationToken).ConfigureAwait(false);
+        var response = await SendWithCurrentTokenAsync(method, url, bufferedContent, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode != System.Net.HttpStatusCode.Unauthorized) return response;
+
+        response.Dispose();
+        Trace?.Invoke("N-central access token was rejected with HTTP 401. Re-authenticating and retrying request once.");
+        await EnsureAccessTokenAsync(forceRefresh: true, cancellationToken).ConfigureAwait(false);
+        return await SendWithCurrentTokenAsync(method, url, bufferedContent, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseMessage> SendWithCurrentTokenAsync(HttpMethod method, string url, BufferedHttpContent? content, CancellationToken cancellationToken)
+    {
         return await rateLimiter.SendAsync(
             httpClient,
             () =>
             {
-                var request = new HttpRequestMessage(method, url) { Content = content };
+                var request = new HttpRequestMessage(method, url) { Content = content?.CreateContent() };
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
                 Trace?.Invoke("N-central " + method.Method + " " + url);
                 return request;
@@ -297,28 +311,65 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task EnsureAccessTokenAsync(CancellationToken cancellationToken)
+    private async Task EnsureAccessTokenAsync(bool forceRefresh, CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(accessToken) && accessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1)) return;
-        using var response = await rateLimiter.SendAsync(
-            httpClient,
-            () =>
-            {
-                var request = new HttpRequestMessage(HttpMethod.Post, "api/auth/authenticate");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.UserApiToken);
-                Trace?.Invoke("N-central POST api/auth/authenticate");
-                return request;
-            },
-            Trace,
-            cancellationToken).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"N-central authentication failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
-        using var document = JsonDocument.Parse(text);
-        var root = document.RootElement;
-        if (!root.TryGetPropertyIgnoreCase("tokens", out var tokens) || !tokens.TryGetPropertyIgnoreCase("access", out var access)) throw new InvalidOperationException("N-central authentication response did not include tokens.access.");
-        accessToken = access.GetString("token") ?? throw new InvalidOperationException("N-central authentication response did not include an access token.");
-        var expirySeconds = access.GetInt("expirySeconds") ?? 3600;
-        accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expirySeconds));
+        if (!forceRefresh && !string.IsNullOrWhiteSpace(accessToken) && accessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1)) return;
+        await tokenRefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!forceRefresh && !string.IsNullOrWhiteSpace(accessToken) && accessTokenExpiresAt > DateTimeOffset.UtcNow.AddMinutes(1)) return;
+
+            using var response = await rateLimiter.SendAsync(
+                httpClient,
+                () =>
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Post, "api/auth/authenticate");
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.UserApiToken);
+                    Trace?.Invoke("N-central POST api/auth/authenticate");
+                    return request;
+                },
+                Trace,
+                cancellationToken).ConfigureAwait(false);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"N-central authentication failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (!root.TryGetPropertyIgnoreCase("tokens", out var tokens) || !tokens.TryGetPropertyIgnoreCase("access", out var access)) throw new InvalidOperationException("N-central authentication response did not include tokens.access.");
+            accessToken = access.GetString("token") ?? throw new InvalidOperationException("N-central authentication response did not include an access token.");
+            var expirySeconds = access.GetInt("expirySeconds") ?? 3600;
+            accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expirySeconds));
+        }
+        finally
+        {
+            tokenRefreshLock.Release();
+        }
+    }
+
+    private sealed class BufferedHttpContent
+    {
+        private readonly byte[] body;
+        private readonly KeyValuePair<string, string[]>[] headers;
+
+        private BufferedHttpContent(byte[] body, KeyValuePair<string, string[]>[] headers)
+        {
+            this.body = body;
+            this.headers = headers;
+        }
+
+        public static async Task<BufferedHttpContent?> CaptureAsync(HttpContent? content, CancellationToken cancellationToken)
+        {
+            if (content == null) return null;
+            var body = await content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            var headers = content.Headers.Select(header => new KeyValuePair<string, string[]>(header.Key, header.Value.ToArray())).ToArray();
+            return new BufferedHttpContent(body, headers);
+        }
+
+        public HttpContent CreateContent()
+        {
+            var clone = new ByteArrayContent(body);
+            foreach (var header in headers) clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            return clone;
+        }
     }
 
     private static ExternalEntity MapCustomer(JsonElement item)

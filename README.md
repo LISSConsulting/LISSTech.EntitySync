@@ -10,13 +10,14 @@
 [![AgentController](https://img.shields.io/badge/Adapter-AgentController-DA5657?style=for-the-badge&labelColor=000)](#-configuration)
 [![Safe By Default](https://img.shields.io/badge/Safety-Plan_First_Cut_Later-C7F464?style=for-the-badge&labelColor=000)](#-safety-model)
 
-[**Quick Start**](#-quick-start) · [**Architecture**](#%EF%B8%8F-architecture) · [**PowerShell API**](#-powershell-api) · [**Matching**](#-matching-rules) · [**Safety**](#-safety-model) · [**Build**](#-build--test)
+[**Quick Start**](#-quick-start) · [**MCP Server**](#-mcp-server) · [**Architecture**](#%EF%B8%8F-architecture) · [**PowerShell API**](#-powershell-api) · [**Matching**](#-matching-rules) · [**Safety**](#-safety-model) · [**Build**](#-build--test)
 
 ---
 
 ## 📑 Table Of Contents
 
 - [⚡ Quick Start](#-quick-start)
+- [🌐 MCP Server](#-mcp-server)
 - [🏗️ Architecture](#%EF%B8%8F-architecture)
 - [🎮 PowerShell API](#-powershell-api)
 - [🧠 Matching Rules](#-matching-rules)
@@ -105,6 +106,7 @@ $customerPlan | Invoke-EntitySyncPlan -Apply -PassThru
 %%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'monospace', 'fontSize': '13px', 'primaryColor': '#2E71B8', 'primaryBorderColor': '#000', 'primaryTextColor': '#000', 'lineColor': '#000'}}}%%
 graph LR
     A["🎮 PowerShell Cmdlets<br/>binary module"] --> B["🔌 ConnectionRegistry<br/>active adapters"]
+    M["🌐 MCP Server<br/>stdio / HTTP"] --> B
     B --> C["🟦 NetSuite Adapter<br/>customers"]
     B --> D["🟩 HaloPSA Adapter<br/>clients & sites"]
     B --> K["🟧 N-central Adapter<br/>customers & sites"]
@@ -127,7 +129,7 @@ graph LR
     classDef red fill:#DA5657,stroke:#000,stroke-width:3px,color:#fff,font-weight:bold
     classDef green fill:#C7F464,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
 
-    class A,B blue
+    class A,B,M blue
     class C,D mint
     class K orange
     class L red2
@@ -139,6 +141,7 @@ graph LR
 | Layer | Role | Brutal truth |
 |---|---|---|
 | 🎮 **Cmdlets** | Operator surface | PowerShell objects in, PowerShell objects out. No GUI ceremony. |
+| 🌐 **MCP server** | Agent surface | The same guarded sync engine over local stdio or authenticated Streamable HTTP. |
 | 🔌 **Adapters** | Vendor IO | NetSuite, HaloPSA, N-central, and LTAC specifics live at the edge, not smeared through sync logic. |
 | 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
@@ -213,7 +216,17 @@ If the source was matched to the wrong target, choose the correct existing targe
 
 When HaloPSA is the target, `New-EntitySyncPlan` reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Use `-FullTargetObjects` only when you need HaloPSA site detail enrichment for address/postal matching; it adds another API call per client with a site.
 
-Use `-ThrottleLimit` to cap parallel work. `0` means automatic/default. `-ThrottleLimit 1` forces sequential source/target reads, sequential matching, and one-at-a-time Halo full-object enrichment.
+Use `New-EntitySyncPlan -SourceSearch <name> -SourceCount 1` for a focused one-off customer plan instead of exporting a full plan and pruning unrelated clients manually.
+
+Use `-ThrottleLimit` to cap parallel work. On `New-EntitySyncPlan`, `0` means automatic/default and `-ThrottleLimit 1` forces sequential source/target reads, sequential matching, and one-at-a-time Halo full-object enrichment. On `Invoke-EntitySyncPlan`, apply is sequential by default; pass `-ThrottleLimit 2` or higher for concurrent independent create/update writes. HaloPSA/N-central plans that require post-write integration-link maintenance remain sequential.
+
+One-off NetSuite to HaloPSA example:
+
+```powershell
+$plan = New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client -SourceSearch 'Acme Corp' -SourceCount 1 -CreateMissing
+$plan | Invoke-EntitySyncPlan -Apply -WhatIf
+$plan | Invoke-EntitySyncPlan -Apply -PassThru -ThrottleLimit 2
+```
 
 For faster HaloPSA planning, the adapter attempts to derive the numeric Halo custom field ID from `-HaloNetSuiteCustomerIdField`, then requests it from list reads with `include_custom_fields=<id>`.
 
@@ -366,6 +379,21 @@ The intended workflow is **inspect → plan → review → dry run → apply**. 
 
 ---
 
+## 🌐 MCP Server
+
+`mcp/` is a first-class MCP host for the same adapters, canonical model, matcher, plans, and guarded apply path used by the PowerShell module. Local clients use stdio by default. Container deployments use authenticated Streamable HTTP at `/mcp` and expose `/health` for orchestration.
+
+```powershell
+just mcp-build # self-contained local binary
+just mcp-run   # stdio transport
+```
+
+The root `compose.yaml` builds a hardened, non-root image for Coolify. Coolify generates `SERVICE_PASSWORD_MCP_API_KEY`; set the required vendor secrets, map a domain to service port `8080`, then connect the MCP client to `https://<domain>/mcp` with that value as the bearer token.
+
+See [`mcp/README.md`](mcp/README.md) for the Coolify procedure, variables, transport behavior, and operational constraints.
+
+---
+
 ## 🔨 Build & Test
 
 Requires [PowerShell 7.4+](https://learn.microsoft.com/powershell/), [.NET 8 SDK](https://dotnet.microsoft.com/download), [just](https://github.com/casey/just), and [Pester](https://pester.dev/) for tests.
@@ -375,6 +403,8 @@ just              # list recipes
 just build        # compile src/LISSTech.EntitySync.csproj into Module/
 just test-load    # import the module and list exported commands
 just test         # run Pester tests
+just mcp-build    # publish the MCP executable
+just mcp-docker-build # build the Coolify container locally
 just generate-agentcontroller-client # regenerate the pinned NSwag client
 just check-agentcontroller-client    # fail if checked-in generated code is stale
 just clean        # remove compiled output
@@ -391,6 +421,7 @@ just clean        # remove compiled output
 ├── 📚 docs/                            # external help markdown
 ├── 🌎 en-US/                           # about topic source
 ├── 🧪 Tests/                           # Pester tests
+├── 🌐 mcp/                             # stdio + Streamable HTTP MCP host and Dockerfile
 ├── 🧬 src/
 │   ├── Adapters/                       # HaloPSA + NetSuite + N-central + AgentController vendor IO
 │   ├── Commands/                       # public PowerShell cmdlets
@@ -399,6 +430,7 @@ just clean        # remove compiled output
 │   ├── Matching/                       # weighted explainable matching
 │   ├── Ports/                          # adapter abstractions
 │   └── Runtime/                        # connection registry/runtime state
+├── compose.yaml                        # Coolify-ready MCP application
 ├── justfile                            # build/test automation
 └── README.md
 ```

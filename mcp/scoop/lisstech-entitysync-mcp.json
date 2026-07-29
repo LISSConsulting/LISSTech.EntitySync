@@ -1,0 +1,27 @@
+{
+  "version": "26.7.0",
+  "description": "LISSTech EntitySync MCP server for natural-language vendor entity synchronization (HaloPSA, NetSuite, N-central, Bill.com, AgentController).",
+  "homepage": "https://github.com/LISSConsulting/LISSTech.EntitySync",
+  "license": "Proprietary",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/mcp-v26.7.0/lisstech-entitysync-mcp-win-x64.zip",
+      "hash": "",
+      "bin": [
+        ["lisstech-entitysync-mcp.exe", "lisstech-entitysync-mcp"]
+      ]
+    }
+  },
+  "checkver": {
+    "url": "https://api.github.com/repos/LISSConsulting/LISSTech.EntitySync/releases",
+    "jsonpath": "$[?(@.tag_name =~ /^mcp-v/])].tag_name",
+    "regex": "mcp-v([\\d.]+)"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/mcp-v$version/lisstech-entitysync-mcp-win-x64.zip"
+      }
+    }
+  }
+}

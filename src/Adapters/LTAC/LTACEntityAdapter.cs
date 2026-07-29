@@ -14,12 +14,14 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
 
     private readonly HttpClient httpClient = new();
     private readonly AgentControllerClient client;
+    private readonly LTACOptions options;
 
     public LTACEntityAdapter(LTACOptions options)
     {
+        this.options = options;
         httpClient.BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.BearerToken);
+        SetAuthorization(options.BearerToken);
         client = new AgentControllerClient(UrlHelpers.EnsureTrailingSlash(options.BaseUrl), httpClient);
     }
 
@@ -58,11 +60,21 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     {
         try
         {
-            return await client.HasScopeAsync(new HasScopeRequest { P_scope = SyncScope }, cancellationToken).ConfigureAwait(false);
+            var result = await client.HasScopeAsync(new HasScopeRequest { P_scope = SyncScope }, cancellationToken).ConfigureAwait(false);
+            if (!result && TryRefreshBearerToken())
+            {
+                return await client.HasScopeAsync(new HasScopeRequest { P_scope = SyncScope }, cancellationToken).ConfigureAwait(false);
+            }
+
+            return result;
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (AgentControllerApiException) when (TryRefreshBearerToken())
+        {
+            return await client.HasScopeAsync(new HasScopeRequest { P_scope = SyncScope }, cancellationToken).ConfigureAwait(false);
         }
         catch (AgentControllerApiException)
         {
@@ -82,12 +94,7 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
 
         try
         {
-            var response = await client.SyncNcentralCustomersAsync(new LTACSyncRequest
-            {
-                Customers = normalizedCustomers.ToList(),
-                Reason = SyncReason,
-                Ticket = null
-            }, cancellationToken).ConfigureAwait(false);
+            var response = await SyncCustomerScopesOnceAsync(normalizedCustomers, cancellationToken).ConfigureAwait(false);
             if (response.Count != 1)
             {
                 throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
@@ -103,6 +110,17 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
         catch (AgentControllerApiException ex) when (ex.StatusCode == 200)
         {
             throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
+        }
+        catch (AgentControllerApiException) when (TryRefreshBearerToken())
+        {
+            var response = await SyncCustomerScopesOnceAsync(normalizedCustomers, cancellationToken).ConfigureAwait(false);
+            if (response.Count != 1)
+            {
+                throw CreateRedactedAdapterException("LTAC batch sync returned a malformed response.", SyncPath);
+            }
+            var result = response.Single();
+            EnsureSyncResultContract(result);
+            return result;
         }
         catch (AgentControllerApiException ex)
         {
@@ -123,6 +141,32 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     }
 
     public void Dispose() => httpClient.Dispose();
+
+    private Task<ICollection<LTACSyncResult>> SyncCustomerScopesOnceAsync(IReadOnlyList<LTACCustomerScopeRequest> normalizedCustomers, CancellationToken cancellationToken)
+    {
+        return client.SyncNcentralCustomersAsync(new LTACSyncRequest
+        {
+            Customers = normalizedCustomers.ToList(),
+            Reason = SyncReason,
+            Ticket = null
+        }, cancellationToken);
+    }
+
+    private void SetAuthorization(string bearerToken)
+    {
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
+    }
+
+    private bool TryRefreshBearerToken()
+    {
+        if (options.BearerTokenProvider == null) return false;
+        var bearerToken = options.BearerTokenProvider();
+        if (string.IsNullOrWhiteSpace(bearerToken)) return false;
+        options.BearerToken = bearerToken;
+        SetAuthorization(bearerToken);
+        Trace?.Invoke("LTAC bearer token was rejected with HTTP 401. Refreshed AgentController token and retrying request once.");
+        return true;
+    }
 
     private static bool IsTransportException(Exception ex)
     {

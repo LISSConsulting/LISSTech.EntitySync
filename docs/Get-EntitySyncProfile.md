@@ -23,6 +23,8 @@ Returns profile names, the vendors stored in each profile, the default-profile m
 
 ## EXAMPLES
 
+### Example 1
+
 ```powershell
 Get-EntitySyncProfile
 ```

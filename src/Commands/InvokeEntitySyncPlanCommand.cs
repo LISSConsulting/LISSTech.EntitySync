@@ -1,4 +1,5 @@
 using System.Management.Automation;
+using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
@@ -24,6 +25,10 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     [Parameter]
     public string TargetCustomFieldName { get; set; } = "CFNetSuiteCustomerID";
 
+    [Parameter]
+    [ValidateRange(0, int.MaxValue)]
+    public int ThrottleLimit { get; set; } = 1;
+
     protected override void ProcessRecord()
     {
         try
@@ -31,7 +36,11 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
-            var options = new MatchOptions { TargetCustomFieldName = TargetCustomFieldName };
+            var options = new MatchOptions
+            {
+                SourceExternalIdName = EntitySyncVendors.IsBillCom(Plan.SourceVendor) ? BillComEntityAdapter.ClientExternalIdName : "NetSuiteInternalId",
+                TargetCustomFieldName = EffectiveTargetCustomFieldName()
+            };
 
             if (EntitySyncVendors.IsAgentController(Plan.TargetVendor))
             {
@@ -40,6 +49,14 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                 return;
             }
 
+            var effectiveThrottleLimit = EffectiveThrottleLimit(ThrottleLimit);
+            if (effectiveThrottleLimit > 1 && Plan.Items.Any(item => RequiresHaloNCentralClientLink(item) || RequiresHaloNCentralSiteLink(item)))
+            {
+                WriteWarning("Invoke-EntitySyncPlan is using sequential apply because this plan writes HaloPSA/N-central integration links after target writes.");
+                effectiveThrottleLimit = 1;
+            }
+
+            var parallelItems = new List<PlanWriteItem>();
             for (var i = 0; i < Plan.Items.Count; i++)
             {
                 var item = Plan.Items[i];
@@ -64,7 +81,18 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Source.Name, "Create target entity in " + Plan.TargetVendor))
                     {
-                        WriteResultAndIntegrationLink(item, request, adapter.CreateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult());
+                        var writeItem = new PlanWriteItem(item, request, adapter, true);
+                        if (effectiveThrottleLimit <= 1) WriteResultAndIntegrationLink(item, request, ExecuteWrite(writeItem));
+                        else parallelItems.Add(writeItem);
+                    }
+                    continue;
+                }
+
+                if (EntitySyncVendors.IsBillCom(Plan.TargetVendor))
+                {
+                    if (item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase))
+                    {
+                        WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = false, Message = "Bill.com custom-field values cannot be updated after creation. The value already exists in Bill.com." });
                     }
                     continue;
                 }
@@ -76,7 +104,9 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Target.Name, $"Set {TargetCustomFieldName} from {item.Source.Name}"))
                     {
-                        WriteResultAndIntegrationLink(item, request, adapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult());
+                        var writeItem = new PlanWriteItem(item, request, adapter, false);
+                        if (effectiveThrottleLimit <= 1) WriteResultAndIntegrationLink(item, request, ExecuteWrite(writeItem));
+                        else parallelItems.Add(writeItem);
                     }
                 }
 
@@ -87,10 +117,14 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Target.Name, $"Update target entity from {item.Source.Name}"))
                     {
-                        WriteResultAndIntegrationLink(item, request, adapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult());
+                        var writeItem = new PlanWriteItem(item, request, adapter, false);
+                        if (effectiveThrottleLimit <= 1) WriteResultAndIntegrationLink(item, request, ExecuteWrite(writeItem));
+                        else parallelItems.Add(writeItem);
                     }
                 }
             }
+
+            if (parallelItems.Count > 0) ExecuteWritesInParallel(parallelItems, effectiveThrottleLimit);
 
             WriteProgress(new ProgressRecord(1, "Invoke EntitySync plan", "Complete") { RecordType = ProgressRecordType.Completed });
         }
@@ -98,6 +132,16 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         {
             ThrowTerminatingError(new ErrorRecord(ex, "InvokeEntitySyncPlanFailed", ErrorCategory.WriteError, Plan));
         }
+    }
+
+    private string EffectiveTargetCustomFieldName()
+    {
+        if (EntitySyncVendors.IsBillCom(Plan.SourceVendor) && Plan.TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return BillComEntityAdapter.HaloClientCustomFieldName;
+        }
+
+        return TargetCustomFieldName;
     }
 
     private void ApplyLtacBatch(DefaultEntityMapper mapper, MatchOptions options)
@@ -318,10 +362,69 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         if (PassThru) WriteObject(result);
     }
 
+    private static EntityWriteResult ExecuteWrite(PlanWriteItem writeItem)
+    {
+        return writeItem.IsCreate
+            ? writeItem.Adapter.CreateEntityAsync(writeItem.Request, CancellationToken.None).GetAwaiter().GetResult()
+            : writeItem.Adapter.UpdateEntityAsync(writeItem.Request, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    private void ExecuteWritesInParallel(IReadOnlyList<PlanWriteItem> writeItems, int throttleLimit)
+    {
+        var results = new EntityWriteResult?[writeItems.Count];
+        var errors = new Exception?[writeItems.Count];
+        var completed = 0;
+        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = throttleLimit };
+        var task = Task.Run(() => Parallel.For(0, writeItems.Count, parallelOptions, i =>
+        {
+            try
+            {
+                results[i] = ExecuteWrite(writeItems[i]);
+            }
+            catch (Exception ex)
+            {
+                errors[i] = ex;
+            }
+            finally
+            {
+                Interlocked.Increment(ref completed);
+            }
+        }));
+
+        while (!task.IsCompleted)
+        {
+            var current = Volatile.Read(ref completed);
+            WriteProgress(new ProgressRecord(1, "Invoke EntitySync plan", $"Applying {current}/{writeItems.Count} approved item(s)") { PercentComplete = (int)Math.Round((double)current / Math.Max(1, writeItems.Count) * 100) });
+            Thread.Sleep(200);
+        }
+
+        task.GetAwaiter().GetResult();
+        for (var i = 0; i < writeItems.Count; i++)
+        {
+            if (errors[i] != null)
+            {
+                throw new InvalidOperationException($"EntitySync apply failed for '{writeItems[i].Item.Source.Name}'.", errors[i]);
+            }
+
+            WriteResultAndIntegrationLink(writeItems[i].Item, writeItems[i].Request, results[i] ?? throw new InvalidOperationException($"EntitySync apply did not return a result for '{writeItems[i].Item.Source.Name}'."));
+        }
+    }
+
+    private static int EffectiveThrottleLimit(int throttleLimit) => throttleLimit > 0 ? throttleLimit : Math.Max(1, Environment.ProcessorCount);
+
+    private sealed record PlanWriteItem(EntitySyncPlanItem Item, EntityWriteRequest Request, LISSTech.EntitySync.Ports.IEntityAdapter Adapter, bool IsCreate);
+
     private void WriteResultAndIntegrationLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)
     {
         WriteResult(result);
         if (!result.Success) return;
+
+        if (RequiresBillComWriteBack(item, result))
+        {
+            WriteBillComIdToSource(item, result);
+            return;
+        }
+
         if (RequiresHaloNCentralSiteLink(item))
         {
             WriteHaloNCentralSiteLink(item, request, result);
@@ -358,6 +461,57 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             && Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
             && Plan.TargetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(item.Source.Id);
+    }
+
+    private bool RequiresBillComWriteBack(EntitySyncPlanItem item, EntityWriteResult result)
+    {
+        return EntitySyncVendors.IsBillCom(Plan.TargetVendor)
+            && Plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && Plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(result.Id)
+            && !string.IsNullOrWhiteSpace(item.Source.Id);
+    }
+
+    private void WriteBillComIdToSource(EntitySyncPlanItem item, EntityWriteResult result)
+    {
+        try
+        {
+            var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter
+                ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the Bill.com client ID.");
+            var numericId = BillComEntityAdapter.DecodeBillComValueId(result.Id);
+            var writeBackRequest = new EntityWriteRequest
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = item.Source.Id,
+                Name = item.Source.Name
+            };
+            writeBackRequest.CustomFields[BillComEntityAdapter.HaloClientCustomFieldName] = numericId;
+            var writeBackResult = haloAdapter.UpdateEntityAsync(writeBackRequest, CancellationToken.None).GetAwaiter().GetResult();
+            WriteResult(new EntityWriteResult
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = item.Source.Id,
+                Action = "BillComWriteBack",
+                Success = writeBackResult.Success,
+                Message = writeBackResult.Success
+                    ? $"Recorded Bill.com client ID '{numericId}' on HaloPSA client '{item.Source.Name}' field '{BillComEntityAdapter.HaloClientCustomFieldName}'."
+                    : $"Bill.com value created (ID {numericId}), but HaloPSA write-back failed: {writeBackResult.Message}"
+            });
+        }
+        catch (Exception ex)
+        {
+            WriteResult(new EntityWriteResult
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = item.Source.Id,
+                Action = "BillComWriteBack",
+                Success = false,
+                Message = $"Bill.com value created, but HaloPSA write-back failed: {ex.Message}"
+            });
+        }
     }
 
     private void WriteHaloNCentralSiteLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)

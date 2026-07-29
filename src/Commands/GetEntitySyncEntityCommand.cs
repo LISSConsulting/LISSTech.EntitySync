@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Concurrent;
 using System.Management.Automation;
+using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NetSuite;
@@ -40,6 +41,10 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         else if (Vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
         {
             AddEntityTypeParameter("Customer", "Site");
+        }
+        else if (EntitySyncVendors.IsBillCom(Vendor))
+        {
+            AddEntityTypeParameter("Client");
         }
         else if (EntitySyncVendors.IsAgentController(Vendor))
         {
@@ -83,6 +88,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             if (adapter is LTACEntityAdapter ltacAdapter) ltacAdapter.Trace = traces.Enqueue;
             if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
             if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
+            if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
             IReadOnlyList<ExternalEntity> entities;
             try
             {
@@ -118,6 +124,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
                 if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
                 if (adapter is LTACEntityAdapter completedLtacAdapter) completedLtacAdapter.Trace = null;
                 if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
+                if (adapter is BillComEntityAdapter completedBillComAdapter) completedBillComAdapter.Trace = null;
             }
             DrainMessages(traces, progress);
             WriteProgress(new ProgressRecord(1, "Get EntitySync entities", "Complete") { RecordType = ProgressRecordType.Completed });

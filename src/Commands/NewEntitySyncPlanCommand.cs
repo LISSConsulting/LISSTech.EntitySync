@@ -1,12 +1,14 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Management.Automation;
+using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
+using LISSTech.EntitySync.Planning;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 
@@ -23,7 +25,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public ExternalEntity? InputObject { get; set; }
 
     [Parameter(Mandatory = true)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "Bill.com", "BillCom", "BILL", "BillSpend")]
     public string SourceVendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true)]
@@ -54,6 +56,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public SwitchParameter FullTargetObjects { get; set; }
 
     [Parameter]
+    public string? SourceSearch { get; set; }
+
+    [Parameter]
+    [ValidateRange(0, int.MaxValue)]
+    public int SourceCount { get; set; }
+
+    [Parameter]
     public int AutoLinkScore { get; set; } = 90;
 
     [Parameter]
@@ -79,6 +88,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         try
         {
             TargetVendor = NormalizeVendorAlias(TargetVendor);
+            SourceVendor = NormalizeVendorAlias(SourceVendor);
             var sourceAdapter = ConnectionRegistry.Get(SourceVendor);
             var targetAdapter = ConnectionRegistry.Get(TargetVendor);
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
@@ -94,6 +104,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             IReadOnlyList<ExternalEntity> targets;
             if (pipelineSources.Count > 0)
             {
+                if (!string.IsNullOrWhiteSpace(SourceSearch) || SourceCount > 0)
+                {
+                    throw new InvalidOperationException("SourceSearch and SourceCount cannot be combined with pipeline source input.");
+                }
+
                 if (isLtacSnapshot)
                 {
                     throw new InvalidOperationException("AgentController CustomerScope plans must read the complete N-central Customer and Site snapshot; pipeline input is not supported.");
@@ -106,6 +121,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             }
             else if (isLtacSnapshot)
             {
+                if (!string.IsNullOrWhiteSpace(SourceSearch) || SourceCount > 0)
+                {
+                    throw new InvalidOperationException("AgentController CustomerScope plans require a complete source snapshot; SourceSearch and SourceCount are not supported.");
+                }
+
                 var customers = FetchEntitiesWithProgress(sourceAdapter, BuildSourceQuery(sourceAdapter, "Customer"), "Reading N-central customers", 0, 20);
                 var sites = FetchEntitiesWithProgress(sourceAdapter, BuildSourceQuery(sourceAdapter, "Site"), "Reading N-central sites", 20, 40);
                 sources = customers.Concat(sites).ToArray();
@@ -120,26 +140,23 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
                     BuildTargetQuery(targetAdapter, targetEntityType));
             }
 
-            var usingHaloNCentralLinks = IsHaloToNCentralCustomerPlan(sourceEntityType, targetEntityType) && sourceAdapter is HaloEntityAdapter;
-            var usingHaloNCentralSiteLinks = IsHaloToNCentralSitePlan(sourceEntityType, targetEntityType) && sourceAdapter is HaloEntityAdapter;
-            if (usingHaloNCentralLinks)
+            var usingHaloNCentralLinks = HaloNCentralPlanLinks.IsCustomerPlan(SourceVendor, sourceEntityType, TargetVendor, targetEntityType, sourceAdapter);
+            var usingHaloNCentralSiteLinks = HaloNCentralPlanLinks.IsSitePlan(SourceVendor, sourceEntityType, TargetVendor, targetEntityType, sourceAdapter);
+            if (usingHaloNCentralLinks || usingHaloNCentralSiteLinks)
             {
-                ApplyHaloNCentralClientLinks(sources, sourceAdapter);
-                ApplyNCentralExternalIdClientMarkers(sources, targets);
-            }
-            else if (usingHaloNCentralSiteLinks)
-            {
-                ApplyHaloNCentralSiteLinks(sources, sourceAdapter);
+                var links = HaloNCentralPlanLinks.ApplyAsync(sources, targets, sourceAdapter, usingHaloNCentralSiteLinks, CancellationToken.None).GetAwaiter().GetResult();
+                WriteVerbose($"Applied {links.ClientLinks} HaloPSA N-central client link(s), {links.SiteLinks} site link(s), {links.ParentLinks} parent link(s), and {links.ExternalIdLinks} N-central external ID link(s).");
             }
 
             var defaultLinkedIdName = usingHaloNCentralSiteLinks ? "NCentralSiteId" : "NCentralCustomerId";
-            var sourceExternalIdName = (usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) ? defaultLinkedIdName : SourceExternalIdName;
-            var targetExternalIdName = (usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) ? defaultLinkedIdName : SourceExternalIdName;
+            var sourceExternalIdName = EffectiveSourceExternalIdName(usingHaloNCentralLinks, usingHaloNCentralSiteLinks, defaultLinkedIdName);
+            var targetCustomFieldName = EffectiveTargetCustomFieldName();
+            var targetExternalIdName = (usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) ? defaultLinkedIdName : sourceExternalIdName;
             var options = new MatchOptions
             {
                 SourceExternalIdName = sourceExternalIdName,
                 TargetExternalIdName = targetExternalIdName,
-                TargetCustomFieldName = TargetCustomFieldName,
+                TargetCustomFieldName = targetCustomFieldName,
                 CreateMissing = CreateMissing,
                 AutoLinkScore = AutoLinkScore,
                 ReviewScore = ReviewScore
@@ -356,167 +373,6 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return null;
     }
 
-    private void ApplyHaloNCentralClientLinks(IReadOnlyList<ExternalEntity> sources, IEntityAdapter sourceAdapter)
-    {
-        var links = ReadHaloNCentralLinks(sourceAdapter, 60, 70);
-        var clientLinks = links
-            .Where(link => link.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase) && link.TargetEntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase))
-            .GroupBy(link => link.SourceId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-
-        var applied = 0;
-        foreach (var source in sources)
-        {
-            if (string.IsNullOrWhiteSpace(source.Id) || !clientLinks.TryGetValue(source.Id, out var matches)) continue;
-            var targetIds = matches.Select(match => match.TargetId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (targetIds.Length == 1)
-            {
-                source.ExternalIds["NCentralCustomerId"] = targetIds[0];
-                source.CustomFields["HaloNCentralIntegrationId"] = matches[0].IntegrationId;
-                source.CustomFields["HaloNCentralIntegrationLinkId"] = matches[0].LinkId;
-                source.CustomFields["HaloNCentralLinkedTargetName"] = matches[0].TargetName;
-                applied++;
-            }
-            else if (targetIds.Length > 1)
-            {
-                source.CustomFields["HaloNCentralIntegrationConflict"] = $"HaloPSA N-central integration has multiple customer links for Halo client {source.Id}: {string.Join(", ", targetIds)}.";
-            }
-        }
-
-        WriteVerbose($"Applied {applied} HaloPSA N-central client link(s) as authoritative N-central customer IDs.");
-    }
-
-    private void ApplyHaloNCentralSiteLinks(IReadOnlyList<ExternalEntity> sources, IEntityAdapter sourceAdapter)
-    {
-        var links = ReadHaloNCentralLinks(sourceAdapter, 60, 70);
-        var siteLinks = links
-            .Where(link => link.SourceEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase) && link.TargetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
-            .GroupBy(link => link.SourceId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-        var clientLinks = links
-            .Where(link => link.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase) && link.TargetEntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase))
-            .GroupBy(link => link.SourceId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-
-        var appliedSiteLinks = 0;
-        var appliedParentLinks = 0;
-        foreach (var source in sources)
-        {
-            if (!string.IsNullOrWhiteSpace(source.Id) && siteLinks.TryGetValue(source.Id, out var siteMatches))
-            {
-                var targetIds = siteMatches.Select(match => match.TargetId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                if (targetIds.Length == 1)
-                {
-                    source.ExternalIds["NCentralSiteId"] = targetIds[0];
-                    if (!string.IsNullOrWhiteSpace(siteMatches[0].ParentTargetId)) source.ExternalIds["NCentralCustomerId"] = siteMatches[0].ParentTargetId!;
-                    source.CustomFields["HaloNCentralIntegrationId"] = siteMatches[0].IntegrationId;
-                    source.CustomFields["HaloNCentralIntegrationLinkId"] = siteMatches[0].LinkId;
-                    source.CustomFields["HaloNCentralLinkedTargetName"] = siteMatches[0].TargetName;
-                    appliedSiteLinks++;
-                }
-                else if (targetIds.Length > 1)
-                {
-                    source.CustomFields["HaloNCentralIntegrationConflict"] = $"HaloPSA N-central integration has multiple site links for Halo site {source.Id}: {string.Join(", ", targetIds)}.";
-                }
-            }
-
-            var haloClientId = source.GetExternalId("HaloPsaClientId");
-            if (string.IsNullOrWhiteSpace(haloClientId) || !clientLinks.TryGetValue(haloClientId, out var clientMatches)) continue;
-            var customerIds = clientMatches.Select(match => match.TargetId).Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (customerIds.Length == 1)
-            {
-                if (source.ExternalIds.TryGetValue("NCentralCustomerId", out var existingCustomerId) && !existingCustomerId.Equals(customerIds[0], StringComparison.OrdinalIgnoreCase))
-                {
-                    source.CustomFields["HaloNCentralIntegrationConflict"] = $"HaloPSA N-central integration links Halo site {source.Id} to parent N-central customer {existingCustomerId}, but parent Halo client {haloClientId} links to N-central customer {customerIds[0]}.";
-                    continue;
-                }
-
-                source.ExternalIds["NCentralCustomerId"] = customerIds[0];
-                if (!string.IsNullOrWhiteSpace(clientMatches[0].TargetName)) source.CustomFields["NCentralCustomerName"] = clientMatches[0].TargetName;
-                appliedParentLinks++;
-            }
-            else if (customerIds.Length > 1)
-            {
-                source.CustomFields["HaloNCentralIntegrationConflict"] = $"HaloPSA N-central integration has multiple customer links for parent Halo client {haloClientId}: {string.Join(", ", customerIds)}.";
-            }
-        }
-
-        WriteVerbose($"Applied {appliedSiteLinks} HaloPSA N-central site link(s) and {appliedParentLinks} parent customer link(s) for site planning.");
-    }
-
-    private IReadOnlyList<EntityIntegrationLink> ReadHaloNCentralLinks(IEntityAdapter sourceAdapter, int startPercent, int endPercent)
-    {
-        var traces = new ConcurrentQueue<string>();
-        var progress = new ConcurrentQueue<EntitySyncProgress>();
-        ConfigureAdapterEvents(sourceAdapter, traces, progress);
-        try
-        {
-            var task = Task.Run(async () =>
-            {
-                var lookups = await sourceAdapter.GetLookupsAsync(EntitySyncLookupTypes.NCentralIntegrationLink, CancellationToken.None).ConfigureAwait(false);
-                return lookups.Select(ToIntegrationLink).ToArray();
-            });
-            while (!task.IsCompleted)
-            {
-                DrainMessages(traces, progress, startPercent, endPercent);
-                Thread.Sleep(200);
-            }
-
-            return task.GetAwaiter().GetResult();
-        }
-        finally
-        {
-            ClearAdapterEvents(sourceAdapter);
-            DrainMessages(traces, progress, startPercent, endPercent);
-        }
-    }
-
-    private void ApplyNCentralExternalIdClientMarkers(IReadOnlyList<ExternalEntity> sources, IReadOnlyList<ExternalEntity> targets)
-    {
-        var targetsByHaloId = targets
-            .Where(target => target.ExternalIds.TryGetValue("NCentralExternalId", out var externalId) && !string.IsNullOrWhiteSpace(externalId))
-            .GroupBy(target => target.ExternalIds["NCentralExternalId"], StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.OrdinalIgnoreCase);
-
-        var applied = 0;
-        foreach (var source in sources)
-        {
-            if (string.IsNullOrWhiteSpace(source.Id) || source.ExternalIds.ContainsKey("NCentralCustomerId")) continue;
-            if (!targetsByHaloId.TryGetValue(source.Id, out var matches) || matches.Length != 1) continue;
-            source.ExternalIds["NCentralCustomerId"] = matches[0].Id;
-            source.CustomFields["NCentralExternalIdLink"] = matches[0].Id;
-            applied++;
-        }
-
-        if (applied > 0) WriteVerbose($"Applied {applied} N-central externalId HaloPSA link marker(s) as authoritative N-central customer IDs.");
-    }
-
-    private static EntityIntegrationLink ToIntegrationLink(EntitySyncLookup lookup)
-    {
-        return new EntityIntegrationLink
-        {
-            SourceVendor = LookupProperty(lookup, "SourceVendor"),
-            SourceEntityType = LookupProperty(lookup, "SourceEntityType"),
-            SourceId = LookupProperty(lookup, "SourceId"),
-            SourceName = lookup.Name,
-            TargetVendor = LookupProperty(lookup, "TargetVendor"),
-            TargetEntityType = LookupProperty(lookup, "TargetEntityType"),
-            TargetId = LookupProperty(lookup, "TargetId"),
-            TargetName = LookupProperty(lookup, "TargetName"),
-            IntegrationId = LookupProperty(lookup, "IntegrationId"),
-            LinkId = lookup.Id,
-            ParentTargetId = LookupPropertyOrNull(lookup, "ParentTargetId"),
-            Primary = bool.TryParse(LookupPropertyOrNull(lookup, "Primary"), out var primary) && primary
-        };
-    }
-
-    private static string LookupProperty(EntitySyncLookup lookup, string name) => LookupPropertyOrNull(lookup, name) ?? string.Empty;
-
-    private static string? LookupPropertyOrNull(EntitySyncLookup lookup, string name)
-    {
-        return lookup.Properties.TryGetValue(name, out var value) ? value : null;
-    }
-
     private IReadOnlyList<ExternalEntity> FetchEntitiesWithProgress(IEntityAdapter adapter, EntityQuery query, string status, int startPercent, int endPercent)
     {
         var traces = new ConcurrentQueue<string>();
@@ -525,6 +381,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is HaloEntityAdapter haloProgressAdapter) haloProgressAdapter.Progress = progress.Enqueue;
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
+        if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
 
         try
         {
@@ -561,6 +418,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
 
             if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
             if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
+            if (adapter is BillComEntityAdapter completedBillComAdapter) completedBillComAdapter.Trace = null;
         }
     }
 
@@ -628,7 +486,8 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var source = sources[i];
             var start = 30 + (int)Math.Round((double)i / Math.Max(1, sources.Count) * 40);
             var end = 30 + (int)Math.Round((double)(i + 1) / Math.Max(1, sources.Count) * 40);
-            var searchTerms = new[] { source.Name, source.GetExternalId(SourceExternalIdName) ?? source.Id }.Where(term => !string.IsNullOrWhiteSpace(term)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var sourceExternalIdName = EffectiveSourceExternalIdName(false, false, SourceExternalIdName);
+            var searchTerms = new[] { source.Name, source.GetExternalId(sourceExternalIdName) ?? source.Id }.Where(term => !string.IsNullOrWhiteSpace(term)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             foreach (var searchTerm in searchTerms)
             {
                 var query = BuildTargetQuery(targetAdapter, targetEntityType);
@@ -653,9 +512,26 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             IncludeInactive = true,
             FullObjects = FullTargetObjects,
             IncludeSiteDetails = isHaloTarget && FullTargetObjects,
-            RequiredCustomFieldName = isHaloTarget ? TargetCustomFieldName : null,
+            RequiredCustomFieldName = isHaloTarget ? EffectiveTargetCustomFieldName() : null,
             ThrottleLimit = ThrottleLimit
         };
+    }
+
+    private string EffectiveSourceExternalIdName(bool usingHaloNCentralLinks, bool usingHaloNCentralSiteLinks, string defaultLinkedIdName)
+    {
+        if ((usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return defaultLinkedIdName;
+        if (EntitySyncVendors.IsBillCom(SourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        return SourceExternalIdName;
+    }
+
+    private string EffectiveTargetCustomFieldName()
+    {
+        if (EntitySyncVendors.IsBillCom(SourceVendor) && TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return BillComEntityAdapter.HaloClientCustomFieldName;
+        }
+
+        return TargetCustomFieldName;
     }
 
     private EntityQuery BuildSourceQuery(IEntityAdapter sourceAdapter, string sourceEntityType)
@@ -666,11 +542,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         var query = new EntityQuery
         {
             EntityType = sourceEntityType,
+            Search = SourceSearch,
             IncludeInactive = IncludeInactive,
             FullObjects = enrichHaloClientForNCentralCustomer,
             IncludeSiteDetails = enrichHaloClientForNCentralCustomer,
             ThrottleLimit = ThrottleLimit
         };
+        if (SourceCount > 0) query.Count = SourceCount;
         if (sourceAdapter is HaloEntityAdapter haloSourceAdapter)
         {
             query.RequiredCustomFieldName = string.Join(',', haloSourceAdapter.NetSuiteCustomerIdField, haloSourceAdapter.NetSuiteCustomerNameField);
@@ -714,6 +592,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     {
         if (vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) return new[] { "Client", "Site" };
         if (vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) return new[] { "Customer", "Site" };
+        if (EntitySyncVendors.IsBillCom(vendor)) return new[] { "Client" };
         return new[] { "Customer" };
     }
 
@@ -732,22 +611,6 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         return SourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
             && EntitySyncVendors.IsAgentController(TargetVendor)
             && sourceEntityType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsHaloToNCentralCustomerPlan(string sourceEntityType, string targetEntityType)
-    {
-        return SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
-            && TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
-            && sourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
-            && targetEntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool IsHaloToNCentralSitePlan(string sourceEntityType, string targetEntityType)
-    {
-        return SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
-            && TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
-            && sourceEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
-            && targetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase);
     }
 
     private T DynamicValue<T>(string name, T defaultValue)
@@ -770,6 +633,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
 
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
+        if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
     }
 
     private static void ClearAdapterEvents(IEntityAdapter adapter)
@@ -782,5 +646,6 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
 
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = null;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = null;
+        if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = null;
     }
 }

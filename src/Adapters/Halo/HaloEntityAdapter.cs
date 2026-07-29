@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -24,7 +25,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     private LookupOption? customerTypeCache;
     private string? netSuiteCustomerIdFieldIdCache;
     private IReadOnlyList<LookupOption>? countryLookupCache;
-    private readonly Dictionary<string, IReadOnlyList<LookupOption>> regionLookupCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, IReadOnlyList<LookupOption>> regionLookupCache = new(StringComparer.OrdinalIgnoreCase);
 
     public HaloEntityAdapter(HaloOptions options)
     {

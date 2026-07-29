@@ -25,11 +25,15 @@ Profiles are saved by passing `-Profile <name> -SaveProfile` to `Connect-EntityS
 
 ## EXAMPLES
 
+### Example 1
+
 ```powershell
 Connect-EntitySyncProfile prod
 ```
 
 Connects every vendor stored in the `prod` profile.
+
+### Example 2
 
 ```powershell
 Connect-EntitySyncProfile

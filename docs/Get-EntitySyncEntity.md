@@ -16,11 +16,14 @@ Pulls canonical entities from a connected vendor adapter.
 Get-EntitySyncEntity -Vendor HaloPSA [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>] [-FullObjects] [-ThrottleLimit <Int32>]
 Get-EntitySyncEntity -Vendor NetSuite [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 Get-EntitySyncEntity -Vendor NCentral [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
+Get-EntitySyncEntity -Vendor Bill.com [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 Get-EntitySyncEntity -Vendor AgentController [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 ```
 
 ## DESCRIPTION
 Reads `ExternalEntity` records from the vendor adapter registered by `Connect-EntitySyncVendor`. `-Type` defaults to the connected vendor's supported entity type and completes only to values that vendor supports.
+
+Bill.com supports `-Type Client`, backed by the configured Bill Spend & Expense client custom field.
 
 `Get-EntitySyncEntity` is fast by default and returns the vendor's list payload. Use `-FullObjects` only when per-client detail or site address enrichment is required for HaloPSA; that mode is intentionally slower and shows standard PowerShell progress.
 

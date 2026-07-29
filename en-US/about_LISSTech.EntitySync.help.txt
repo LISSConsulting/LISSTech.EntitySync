@@ -7,8 +7,8 @@ SHORT DESCRIPTION
 LONG DESCRIPTION
     LISSTech.EntitySync provides a vendor-neutral synchronization engine with
     ports and adapters for external systems. Adapters support NetSuite
-    customers, HaloPSA clients and sites, N-central customers and sites, and
-    AgentController customer scopes.
+    customers, HaloPSA clients and sites, N-central customers and sites,
+    Bill.com client custom-field values, and AgentController customer scopes.
 
     The module separates discovery, matching, planning, review, and apply.
     Plans are deterministic and can be exported, reviewed, imported, and
@@ -51,6 +51,16 @@ CONFIGURATION
     and organization custom-property writes go through the EI2 SOAP endpoint
     (NCENTRAL_SOAP_USERNAME, NCENTRAL_SOAP_PASSWORD) and are optional unless
     Invoke-EntitySyncPlan or Set-EntitySyncCustomProperty needs them.
+
+    Bill.com uses the Bill Spend & Expense custom fields API. Set
+    BILLCOM_API_TOKEN or BILLSPEND_API_TOKEN, or pass -BillComApiToken to
+    Connect-EntitySyncVendor -Vendor Bill.com. The adapter reads the configured
+    Client custom field (default name: Client) and exposes its values as
+    EntityType Client. It can create missing Bill.com client values during
+    Invoke-EntitySyncPlan; existing values are treated as already linked because
+    the Bill Spend API surface used by EntitySync exposes value creation but not
+    value update/delete. The default HaloPSA target custom field for Bill.com
+    source plans is CFBillSpendClientID.
 
     AgentController uses an NSwag-generated client for the ops/PostgREST OpenAPI
     and only acts as a sync target. Build one complete N-central Customer-plus-Site

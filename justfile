@@ -13,6 +13,8 @@ package_dir       := release_dir / "Packages"
 style_script      := project_root / "scripts" / "just-style.ps1"
 configuration     := "Release"
 module_name       := "LISSTech.EntitySync"
+mcp_project       := project_root / "mcp" / "LISSTech.EntitySync.Mcp.csproj"
+mcp_publish_dir   := project_root / "Build" / "Mcp"
 nswag_config      := project_root / "nswag.json"
 generated_client  := project_root / "src" / "Adapters" / "LTAC" / "Generated" / "AgentControllerClient.g.cs"
 signing_cert      := env("CODE_SIGNING_CERTIFICATE_THUMBPRINT", "")
@@ -298,7 +300,41 @@ clean:
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🧹' -Fallback '[clean]' -Text 'Removing Build and Release artifacts' -Script {
-        foreach ($path in @('{{ build_dir }}', '{{ release_dir }}', '{{ project_root }}\src\obj')) {
+        foreach ($path in @('{{ build_dir }}', '{{ release_dir }}', '{{ project_root }}\src\obj', '{{ project_root }}\mcp\obj')) {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
         }
     }
+
+# Build the EntitySync MCP server as a self-contained single-file binary
+[group('mcp')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
+mcp-build:
+    . '{{ style_script }}'
+    $ErrorActionPreference = 'Stop'
+    $rid = if ($IsWindows) { 'win-x64' } elseif ($IsMacOS) { 'osx-arm64' } else { 'linux-x64' }
+    Invoke-JustTimed -Icon '🔧' -Fallback '[mcp-build]' -Text "Building MCP server ($rid)" -Script {
+        dotnet publish '{{ mcp_project }}' -c Release -r $rid -o '{{ mcp_publish_dir }}' -p:PublishSingleFile=true -p:SelfContained=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
+        Write-JustStep -Icon '📦' -Fallback '[mcp]' -Text ('{0} ({1:N0} KB)' -f $binary.Name, ($binary.Length / 1KB)) -ForegroundColor Green
+    }
+
+# Run the MCP server locally via stdio
+[group('mcp')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
+mcp-run: mcp-build
+    . '{{ style_script }}'
+    $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
+    & $binary.FullName
+
+# Build the production MCP container used by compose.yaml and Coolify
+[group('mcp')]
+mcp-docker-build:
+    docker compose --file '{{ project_root }}\compose.yaml' build
+
+# Validate the Coolify Compose model without starting it
+[group('mcp')]
+mcp-compose-config:
+    docker compose --file '{{ project_root }}\compose.yaml' config --quiet

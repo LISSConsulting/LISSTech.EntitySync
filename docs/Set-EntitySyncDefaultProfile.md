@@ -23,6 +23,8 @@ Marks an existing profile as the default used by `Connect-EntitySyncProfile` whe
 
 ## EXAMPLES
 
+### Example 1
+
 ```powershell
 Set-EntitySyncDefaultProfile prod
 ```

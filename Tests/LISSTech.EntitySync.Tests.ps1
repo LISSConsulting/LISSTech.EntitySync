@@ -128,6 +128,16 @@ namespace EntitySyncTests
         }
     }
 
+    public static class TokenProvider
+    {
+        public static string NextToken { get; set; } = string.Empty;
+
+        public static string GetToken()
+        {
+            return NextToken;
+        }
+    }
+
     // Mirrors OneShotHttpServer but serves a queue of canned responses in order on a single
     // listener. Used for adapter flows (e.g. NCentral TestConnectionAsync) that authenticate
     // with one request and then exercise the connection with a second.
@@ -251,6 +261,7 @@ namespace EntitySyncTests
             public List<KeyValuePair<string, string>> ExtraHeaders { get; } = new List<KeyValuePair<string, string>>();
         }
     }
+
 }
 '@
     }
@@ -313,6 +324,26 @@ namespace EntitySyncTests
         [LISSTech.EntitySync.Adapters.NCentral.NCentralOptions]$Options = (New-TestNCentralOptions)
       )
       return [LISSTech.EntitySync.Adapters.NCentral.NCentralEntityAdapter]::new($Options)
+    }
+
+    function New-TestBillComOptions {
+      param(
+        [string]$BaseUrl = 'https://gateway.prod.bill.com/connect/v3/spend/custom-fields',
+        [string]$ApiToken = 'bill-token',
+        [string]$ClientFieldName = 'Client'
+      )
+      $options = [LISSTech.EntitySync.Adapters.BillCom.BillComOptions]::new()
+      $options.BaseUrl = $BaseUrl
+      $options.ApiToken = $ApiToken
+      $options.ClientFieldName = $ClientFieldName
+      return $options
+    }
+
+    function New-TestBillComAdapter {
+      param(
+        [LISSTech.EntitySync.Adapters.BillCom.BillComOptions]$Options = (New-TestBillComOptions)
+      )
+      return [LISSTech.EntitySync.Adapters.BillCom.BillComEntityAdapter]::new($Options)
     }
 
     function New-TestNetSuiteOptions {
@@ -440,18 +471,8 @@ namespace EntitySyncTests
   It 'Saves AgentController profiles through the DeviceAssetOps profile parameter' {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-agentcontroller-deviceassetops-profile-{0}.json" -f [guid]::NewGuid())
     $oldProfilePath = [Environment]::GetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH')
-    $oldDeviceAssetOpsProfileMarker = [Environment]::GetEnvironmentVariable('LISSTECH_TEST_DEVICEASSETOPS_PROFILE')
     try {
       [Environment]::SetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH', $profilePath)
-      [Environment]::SetEnvironmentVariable('LISSTECH_TEST_DEVICEASSETOPS_PROFILE', $null)
-
-      function global:Connect-DeviceAssetOps {
-        param(
-          [Alias('Profile')]
-          [string]$DeviceAssetOpsConfigProfile
-        )
-        [Environment]::SetEnvironmentVariable('LISSTECH_TEST_DEVICEASSETOPS_PROFILE', $DeviceAssetOpsConfigProfile)
-      }
 
       function global:Get-DeviceAssetOpsAccessToken {
         param([switch]$AsSession)
@@ -473,14 +494,11 @@ namespace EntitySyncTests
         -SaveProfile `
         -DeviceAssetOpsProfile 'prod' | Out-Null
 
-      [Environment]::GetEnvironmentVariable('LISSTECH_TEST_DEVICEASSETOPS_PROFILE') | Should -Be 'prod'
       $entitySyncProfile = Get-EntitySyncProfile | Where-Object Name -eq 'prod'
       $entitySyncProfile.Vendors | Should -Contain 'AgentController'
     }
     finally {
-      Remove-Item Function:\Global\Connect-DeviceAssetOps -Force -ErrorAction SilentlyContinue
       Remove-Item Function:\Global\Get-DeviceAssetOpsAccessToken -Force -ErrorAction SilentlyContinue
-      [Environment]::SetEnvironmentVariable('LISSTECH_TEST_DEVICEASSETOPS_PROFILE', $oldDeviceAssetOpsProfileMarker)
       [Environment]::SetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH', $oldProfilePath)
       Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
     }
@@ -493,6 +511,7 @@ namespace EntitySyncTests
     $releaseNotes | Should -Match 'NetSuite' -Because 'NetSuite adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'HaloPSA' -Because 'HaloPSA adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'N-central' -Because 'N-central adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'Bill\.com' -Because 'Bill.com adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'AgentController' -Because 'AgentController adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Retry-After' -Because 'rate-limit/backoff is a load-bearing reliability feature and must be advertised'
     $releaseNotes | Should -Match 'redacted' -Because 'credential redaction across plan artifacts and error paths is a load-bearing safety guarantee'
@@ -506,6 +525,7 @@ namespace EntitySyncTests
     $tags | Should -Contain 'netsuite' -Because 'NetSuite adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'halopsa' -Because 'HaloPSA adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'ncentral' -Because 'N-central adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'billcom' -Because 'Bill.com adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'agentcontroller' -Because 'AgentController adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'ltac' -Because 'LTAC should be discoverable as the corrected LISSTech Agent Controller abbreviation'
   }
@@ -637,6 +657,10 @@ namespace EntitySyncTests
     $nCentralTypes | Should -Contain 'Customer'
     $nCentralTypes | Should -Contain 'Site'
     $nCentralTypes | Should -Not -Contain 'Client'
+
+    $billComInput = 'Get-EntitySyncEntity -Vendor Bill.com -Type '
+    $billComTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComInput, $billComInput.Length, $null).CompletionMatches.CompletionText
+    $billComTypes | Should -Be @('Client')
   }
 
   It 'Completes vendors for New-EntitySyncPlan' {
@@ -645,12 +669,14 @@ namespace EntitySyncTests
     $sourceVendors | Should -Contain 'HaloPSA'
     $sourceVendors | Should -Contain 'NetSuite'
     $sourceVendors | Should -Contain 'NCentral'
+    $sourceVendors | Should -Contain 'Bill.com'
 
     $targetInput = 'New-EntitySyncPlan -TargetVendor '
     $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
     $targetVendors | Should -Contain 'HaloPSA'
     $targetVendors | Should -Contain 'NetSuite'
     $targetVendors | Should -Contain 'NCentral'
+    $targetVendors | Should -Contain 'Bill.com'
   }
 
   It 'Completes vendor-specific entity types for New-EntitySyncPlan' {
@@ -667,6 +693,14 @@ namespace EntitySyncTests
     $nCentralTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($nCentralTargetInput, $nCentralTargetInput.Length, $null).CompletionMatches.CompletionText
     $nCentralTargetTypes | Should -Contain 'Customer'
     $nCentralTargetTypes | Should -Contain 'Site'
+
+    $billComSourceInput = 'New-EntitySyncPlan -SourceVendor Bill.com -SourceEntityType '
+    $billComSourceTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComSourceInput, $billComSourceInput.Length, $null).CompletionMatches.CompletionText
+    $billComSourceTypes | Should -Be @('Client')
+
+    $billComTargetInput = 'New-EntitySyncPlan -TargetVendor Bill.com -TargetEntityType '
+    $billComTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComTargetInput, $billComTargetInput.Length, $null).CompletionMatches.CompletionText
+    $billComTargetTypes | Should -Be @('Client')
   }
 
   It 'Completes vendor-specific lookup types for Get-EntitySyncLookup' {
@@ -737,6 +771,14 @@ namespace EntitySyncTests
     $nCentral | Should -Contain '-NCentralNetSuiteNamePropertyLabel'
     $nCentral | Should -Not -Contain '-HaloBaseUrl'
     $nCentral | Should -Not -Contain '-NetSuiteAccountId'
+
+    $billComInput = 'Connect-EntitySyncVendor -Vendor Bill.com -'
+    $billCom = [System.Management.Automation.CommandCompletion]::CompleteInput($billComInput, $billComInput.Length, $null).CompletionMatches.CompletionText
+    $billCom | Should -Contain '-BillComApiToken'
+    $billCom | Should -Contain '-BillComBaseUrl'
+    $billCom | Should -Contain '-BillComClientFieldName'
+    $billCom | Should -Not -Contain '-HaloBaseUrl'
+    $billCom | Should -Not -Contain '-NetSuiteAccountId'
   }
 
   It 'Completes AgentController as the visible vendor on command surfaces that support AgentController (T013, US1)' {
@@ -796,6 +838,67 @@ namespace EntitySyncTests
 
     $ltacResults | Should -BeNullOrEmpty
     $ltacResults | Should -BeNullOrEmpty
+  }
+
+  It 'Reads Bill.com custom-field client values as ExternalEntity records' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"cf1","name":"Client"}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"100","uuid":"u-100","value":"Acme Corp","deleted":false},{"id":"200","uuid":"u-200","value":"Deleted Corp","deleted":true}]}')
+    )
+    $server.Start()
+    $adapter = New-TestBillComAdapter -Options (New-TestBillComOptions -BaseUrl $server.BaseUrl -ApiToken 'bill-token')
+    try {
+      $query = [LISSTech.EntitySync.Core.EntityQuery]::new()
+      $query.EntityType = 'Client'
+      $entities = @($adapter.GetEntitiesAsync($query, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult())
+
+      $entities.Count | Should -Be 1
+      $entities[0].Vendor | Should -Be 'Bill.com'
+      $entities[0].EntityType | Should -Be 'Client'
+      $entities[0].Id | Should -Be '100'
+      $entities[0].Name | Should -Be 'Acme Corp'
+      $entities[0].ExternalIds['BillSpendClientId'] | Should -Be '100'
+      $entities[0].ExternalIds['BillSpendUuid'] | Should -Be 'u-100'
+
+      $server.Wait(2)
+      $server.Requests[0] | Should -Match 'ApiToken: bill-token'
+      $server.Requests[1] | Should -Match 'GET /cf1/values\?max=100 HTTP/1\.1'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
+  It 'Creates missing Bill.com client values through the Bill.com adapter' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"cf1","name":"Client"}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"300","uuid":"u-300","value":"New Corp","deleted":false}]}')
+    )
+    $server.Start()
+    $adapter = New-TestBillComAdapter -Options (New-TestBillComOptions -BaseUrl $server.BaseUrl -ApiToken 'bill-token')
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.Vendor = 'Bill.com'
+      $request.EntityType = 'Client'
+      $request.Name = 'New Corp'
+
+      $result = $adapter.CreateEntityAsync($request, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $result.Success | Should -BeTrue
+      $result.Vendor | Should -Be 'Bill.com'
+      $result.EntityType | Should -Be 'Client'
+      $result.Id | Should -Be '300'
+
+      $server.Wait(3)
+      $server.Requests[2] | Should -Match 'POST /cf1/values HTTP/1\.1'
+      $server.Requests[2] | Should -Match '"values":\["New Corp"\]'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
   }
 
   It 'Tests registered LTAC connections through the adapter for AgentController and LTAC requests (T008 drift regression)' {
@@ -1009,11 +1112,11 @@ namespace EntitySyncTests
   }
 
   It 'Reports NCentral connection test results as false when validate returns non-success without leaking credentials' {
-    $secretToken = 'ncentral-connection-unauthorized-usertoken-6f7a8b9c'
+    $secretToken = 'ncentral-connection-forbidden-usertoken-6f7a8b9c'
     $authBody = '{"tokens":{"access":{"token":"derived-access-token-cafebabe","expirySeconds":3600}}}'
     $server = [EntitySyncTests.MultiShotHttpServer]::new(
       [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $authBody),
-      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(401, 'Unauthorized', 'do not echo this body')
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(403, 'Forbidden', 'do not echo this body')
     )
     $server.Start()
     $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
@@ -1119,6 +1222,43 @@ namespace EntitySyncTests
       $server.Requests[1] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-bbbb2222'))
       $server.Requests[2] | Should -Match '^GET /api/auth/validate HTTP/1\.1'
       $server.Requests[2] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-bbbb2222'))
+    }
+    finally {
+      $server.Dispose()
+      $ncAdapter.Dispose()
+    }
+  }
+
+  It 'Refreshes the NCentral access token once when a REST request returns 401' {
+    $secretToken = 'ncentral-refresh-usertoken-4e5f6a7b'
+    $firstAuthBody = '{"tokens":{"access":{"token":"derived-access-token-old","expirySeconds":3600}}}'
+    $secondAuthBody = '{"tokens":{"access":{"token":"derived-access-token-new","expirySeconds":3600}}}'
+    $customerBody = '{"data":[{"customerId":"123","customerName":"Acme Corp"}],"totalItems":1}'
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $firstAuthBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(401, 'Unauthorized', 'expired access token'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $secondAuthBody),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $customerBody)
+    )
+    $server.Start()
+    $ncAdapter = New-TestNCentralAdapter -Options (New-TestNCentralOptions -BaseUrl $server.BaseUrl -UserApiToken $secretToken)
+
+    try {
+      $query = [LISSTech.EntitySync.Core.EntityQuery]::new()
+      $query.EntityType = 'Customer'
+      $customers = @($ncAdapter.GetEntitiesAsync($query, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult())
+
+      $customers.Count | Should -Be 1
+      $customers[0].Name | Should -Be 'Acme Corp'
+      $server.Wait(4)
+      $server.Requests[0] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[0] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[1] | Should -Match '^GET /api/customers\?pageNumber=1&pageSize=1000 HTTP/1\.1'
+      $server.Requests[1] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-old'))
+      $server.Requests[2] | Should -Match '^POST /api/auth/authenticate HTTP/1\.1'
+      $server.Requests[2] | Should -Match ([regex]::Escape("Authorization: Bearer $secretToken"))
+      $server.Requests[3] | Should -Match '^GET /api/customers\?pageNumber=1&pageSize=1000 HTTP/1\.1'
+      $server.Requests[3] | Should -Match ([regex]::Escape('Authorization: Bearer derived-access-token-new'))
     }
     finally {
       $server.Dispose()
@@ -2982,6 +3122,32 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Refreshes an AgentController token provider once when the LTAC probe returns 401' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(401, 'Unauthorized', '{"message":"expired"}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', 'true')
+    )
+    $server.Start()
+    $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken 'agentcontroller-old-token'
+    [EntitySyncTests.TokenProvider]::NextToken = 'agentcontroller-new-token'
+    $options.BearerTokenProvider = [Func[string]][EntitySyncTests.TokenProvider]::GetToken
+    $options.BearerTokenProvider.Invoke() | Should -Be 'agentcontroller-new-token'
+    $adapter = New-TestLTACAdapter -Options $options
+
+    try {
+      $result = $adapter.TestConnectionAsync([System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $server.Requests.Count | Should -Be 2
+      $server.Requests[0] | Should -Match ([regex]::Escape('Authorization: Bearer agentcontroller-old-token'))
+      $server.Requests[1] | Should -Match ([regex]::Escape('Authorization: Bearer agentcontroller-new-token'))
+      $result | Should -BeTrue
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
   It 'Keeps AgentController session and manual parameter sets mutually exclusive' {
     $command = Get-Command Connect-EntitySyncVendor
     $sessionParam = $command.Parameters['Session']
@@ -3885,7 +4051,11 @@ namespace EntitySyncTests
 
   It 'Exposes ThrottleLimit on parallel read and plan commands' {
     (Get-Command Get-EntitySyncEntity).Parameters.Keys | Should -Contain 'ThrottleLimit'
-    (Get-Command New-EntitySyncPlan).Parameters.Keys | Should -Contain 'ThrottleLimit'
+    $newPlanParameters = (Get-Command New-EntitySyncPlan).Parameters.Keys
+    $newPlanParameters | Should -Contain 'ThrottleLimit'
+    $newPlanParameters | Should -Contain 'SourceSearch'
+    $newPlanParameters | Should -Contain 'SourceCount'
+    (Get-Command Invoke-EntitySyncPlan).Parameters.Keys | Should -Contain 'ThrottleLimit'
   }
 
   It 'Exposes a gated chain sync command' {
@@ -4148,6 +4318,98 @@ namespace EntitySyncTests
 
     $matchResults[0].MatchType | Should -Be 'Linked'
     $matchResults[0].Reasons[0] | Should -Be 'External ID match: NCentralSiteId=353'
+  }
+
+  It 'Resolves HaloPSA client integration links as authoritative N-central customer IDs' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Client'
+    $source.Id = '684'
+    $source.Name = 'Source name can differ'
+
+    $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $target.Vendor = 'NCentral'
+    $target.EntityType = 'Customer'
+    $target.Id = '390'
+    $target.Name = 'Different target name'
+    $target.ExternalIds['NCentralCustomerId'] = '390'
+
+    $lookup = [LISSTech.EntitySync.Core.EntitySyncLookup]::new()
+    $lookup.Id = 'link-1'
+    $lookup.Properties['SourceEntityType'] = 'Client'
+    $lookup.Properties['SourceId'] = '684'
+    $lookup.Properties['TargetEntityType'] = 'Customer'
+    $lookup.Properties['TargetId'] = '390'
+
+    $sources = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $sources.Add($source)
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $targets.Add($target)
+    $lookups = [System.Collections.Generic.List[LISSTech.EntitySync.Core.EntitySyncLookup]]::new()
+    $lookups.Add($lookup)
+
+    $resolved = [LISSTech.EntitySync.Planning.HaloNCentralPlanLinks]::ApplyLookups($sources, $targets, $lookups, $false)
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $options.SourceExternalIdName = 'NCentralCustomerId'
+    $options.TargetExternalIdName = 'NCentralCustomerId'
+    $match = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new().FindMatches($source, $targets, $options)
+
+    $resolved.ClientLinks | Should -Be 1
+    $source.ExternalIds['NCentralCustomerId'] | Should -Be '390'
+    $match[0].MatchType | Should -Be 'Linked'
+    $match[0].Score | Should -Be 100
+  }
+
+  It 'Resolves HaloPSA site integration and parent links as authoritative N-central IDs' {
+    $source = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $source.Vendor = 'HaloPSA'
+    $source.EntityType = 'Site'
+    $source.Id = '810'
+    $source.Name = 'Source site name can differ'
+    $source.ExternalIds['HaloPsaClientId'] = '684'
+
+    $target = [LISSTech.EntitySync.Core.ExternalEntity]::new()
+    $target.Vendor = 'NCentral'
+    $target.EntityType = 'Site'
+    $target.Id = '353'
+    $target.Name = 'Different target site name'
+    $target.ExternalIds['NCentralSiteId'] = '353'
+
+    $siteLookup = [LISSTech.EntitySync.Core.EntitySyncLookup]::new()
+    $siteLookup.Id = 'site-link'
+    $siteLookup.Properties['SourceEntityType'] = 'Site'
+    $siteLookup.Properties['SourceId'] = '810'
+    $siteLookup.Properties['TargetEntityType'] = 'Site'
+    $siteLookup.Properties['TargetId'] = '353'
+    $siteLookup.Properties['ParentTargetId'] = '390'
+
+    $clientLookup = [LISSTech.EntitySync.Core.EntitySyncLookup]::new()
+    $clientLookup.Id = 'client-link'
+    $clientLookup.Properties['SourceEntityType'] = 'Client'
+    $clientLookup.Properties['SourceId'] = '684'
+    $clientLookup.Properties['TargetEntityType'] = 'Customer'
+    $clientLookup.Properties['TargetId'] = '390'
+
+    $sources = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $sources.Add($source)
+    $targets = [System.Collections.Generic.List[LISSTech.EntitySync.Core.ExternalEntity]]::new()
+    $targets.Add($target)
+    $lookups = [System.Collections.Generic.List[LISSTech.EntitySync.Core.EntitySyncLookup]]::new()
+    $lookups.Add($siteLookup)
+    $lookups.Add($clientLookup)
+
+    $resolved = [LISSTech.EntitySync.Planning.HaloNCentralPlanLinks]::ApplyLookups($sources, $targets, $lookups, $true)
+    $options = [LISSTech.EntitySync.Core.MatchOptions]::new()
+    $options.SourceExternalIdName = 'NCentralSiteId'
+    $options.TargetExternalIdName = 'NCentralSiteId'
+    $match = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new().FindMatches($source, $targets, $options)
+
+    $resolved.SiteLinks | Should -Be 1
+    $resolved.ParentLinks | Should -Be 1
+    $source.ExternalIds['NCentralSiteId'] | Should -Be '353'
+    $source.ExternalIds['NCentralCustomerId'] | Should -Be '390'
+    $match[0].MatchType | Should -Be 'Linked'
+    $match[0].Score | Should -Be 100
   }
 
   It 'Leaves low-confidence targets blank instead of preselecting weak suggestions' {

@@ -4,4 +4,5 @@ public sealed class LTACOptions
 {
     public string BaseUrl { get; set; } = string.Empty;
     public string BearerToken { get; set; } = string.Empty;
+    public Func<string>? BearerTokenProvider { get; set; }
 }

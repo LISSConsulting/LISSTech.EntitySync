@@ -3,6 +3,7 @@ using System.Management.Automation;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
+using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
@@ -20,6 +21,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
     [Parameter(Mandatory = true, ParameterSetName = "NCentral")]
+    [Parameter(Mandatory = true, ParameterSetName = "BillCom")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
@@ -31,6 +33,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "HaloPSA")]
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "BillCom")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -40,6 +43,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "HaloPSA")]
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "BillCom")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -49,6 +53,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "HaloPSA")]
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
+    [Parameter(ParameterSetName = "BillCom")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -116,6 +121,12 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             AddDynamicParameter<string>("NCentralNetSuiteIdPropertyLabel", "NetSuite Customer ID");
             AddDynamicParameter<string>("NCentralNetSuiteNamePropertyLabel", "NetSuite Customer Name");
         }
+        else if (EntitySyncVendors.IsBillCom(Vendor))
+        {
+            AddDynamicParameter<string>("BillComApiToken");
+            AddDynamicParameter<string>("BillComBaseUrl", "https://gateway.prod.bill.com/connect/v3/spend/custom-fields");
+            AddDynamicParameter<string>("BillComClientFieldName", "Client");
+        }
         else if (EntitySyncVendors.IsAgentController(Vendor))
         {
             AddDynamicParameter<string>("Url", parameterSetNames: new[] { "AgentControllerToken", "AgentControllerSecureToken" });
@@ -180,6 +191,32 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 var ltacAdapter = new LTACEntityAdapter(ltacOptions);
                 ConnectionRegistry.Set(ltacAdapter);
                 WriteObject(new EntitySyncConnection { Vendor = ltacAdapter.Vendor, Adapter = ltacAdapter });
+                return;
+            }
+
+            if (EntitySyncVendors.IsBillCom(Vendor))
+            {
+                var billBaseUrl = MyInvocation.BoundParameters.ContainsKey("BillComBaseUrl")
+                    ? DynamicValue<string?>("BillComBaseUrl", null)
+                    : Environment.GetEnvironmentVariable("BILLCOM_BASE_URL") ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields";
+                var billClientFieldName = MyInvocation.BoundParameters.ContainsKey("BillComClientFieldName")
+                    ? DynamicValue<string?>("BillComClientFieldName", null)
+                    : Environment.GetEnvironmentVariable("BILLCOM_CLIENT_FIELD_NAME") ?? "Client";
+                var billOptions = new BillComOptions
+                {
+                    BaseUrl = ValidateAbsoluteHttpsUrl(billBaseUrl ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields", "BillComBaseUrl"),
+                    ApiToken = Require(DynamicValue<string?>("BillComApiToken", null), "BILLCOM_API_TOKEN", "BillComApiToken", "BILLSPEND_API_TOKEN"),
+                    ClientFieldName = billClientFieldName ?? "Client"
+                };
+                var billAdapter = new BillComEntityAdapter(billOptions);
+                ConnectionRegistry.Set(billAdapter);
+                SaveProfileIfRequested(billAdapter.Vendor, new Dictionary<string, string?>
+                {
+                    ["BillComBaseUrl"] = billOptions.BaseUrl,
+                    ["BillComApiToken"] = billOptions.ApiToken,
+                    ["BillComClientFieldName"] = billOptions.ClientFieldName
+                });
+                WriteObject(new EntitySyncConnection { Vendor = billAdapter.Vendor, Adapter = billAdapter });
                 return;
             }
 
@@ -366,6 +403,15 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         return value;
     }
 
+    private string Require(string? parameterValue, string environmentVariable, string parameterName, string fallbackEnvironmentVariable)
+    {
+        var value = parameterValue;
+        if (string.IsNullOrWhiteSpace(value)) value = Environment.GetEnvironmentVariable(environmentVariable);
+        if (string.IsNullOrWhiteSpace(value)) value = Environment.GetEnvironmentVariable(fallbackEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(value)) throw new InvalidOperationException($"{parameterName} is required. Pass -{parameterName} or set {environmentVariable} or {fallbackEnvironmentVariable}.");
+        return value;
+    }
+
     private void SaveProfileIfRequested(string vendor, IReadOnlyDictionary<string, string?> settings)
     {
         if (!SaveProfile) return;
@@ -421,7 +467,10 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         var sessionOptions = new LTACOptions
         {
             BaseUrl = ValidateAbsoluteHttpsUrl(sessionOpsBaseUrl, "Session.OpsBaseUrl"),
-            BearerToken = UnwrapSecureString(sessionToken, "Session.Token")
+            BearerToken = UnwrapSecureString(sessionToken, "Session.Token"),
+            BearerTokenProvider = string.IsNullOrWhiteSpace(deviceAssetOpsProfileName)
+                ? null
+                : () => RefreshDeviceAssetOpsToken(deviceAssetOpsProfileName)
         };
         var sessionAdapter = new LTACEntityAdapter(sessionOptions);
         ConnectionRegistry.Set(sessionAdapter);
@@ -438,20 +487,82 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         return profileName.Trim();
     }
 
+    private static void EnsureDeviceAssetOpsAvailable()
+    {
+        using var check = PowerShell.Create(RunspaceMode.CurrentRunspace);
+        check.AddCommand("Get-Command").AddArgument("Get-DeviceAssetOpsAccessToken").AddParameter("ErrorAction", "SilentlyContinue");
+        var found = check.Invoke();
+        if (found.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Get-DeviceAssetOpsAccessToken is not available in this session. Import the LISSTech.DeviceAssetOps module, run Connect-DeviceAssetOps to establish an operator session, then retry.");
+        }
+    }
+
+    private static string FormatErrorRecords(IEnumerable<ErrorRecord> errors)
+    {
+        var messages = errors.Select(error =>
+        {
+            var parts = new List<string>();
+            if (error.Exception != null && !string.IsNullOrWhiteSpace(error.Exception.Message))
+            {
+                parts.Add(error.Exception.Message);
+            }
+
+            if (error.ErrorDetails != null && !string.IsNullOrWhiteSpace(error.ErrorDetails.Message)
+                && !string.Equals(error.ErrorDetails.Message, error.Exception?.Message, StringComparison.Ordinal))
+            {
+                parts.Add(error.ErrorDetails.Message);
+            }
+
+            if (parts.Count == 0) parts.Add(error.ToString());
+            return string.Join(" — ", parts);
+        });
+        return string.Join(Environment.NewLine, messages);
+    }
+
     private static PSObject GetDeviceAssetOpsSession(string profileName)
     {
-        using (var connect = PowerShell.Create(RunspaceMode.CurrentRunspace))
-        {
-            connect.AddCommand("Connect-DeviceAssetOps").AddParameter("Profile", profileName);
-            connect.Invoke();
-            if (connect.HadErrors) throw new InvalidOperationException(string.Join(Environment.NewLine, connect.Streams.Error.Select(error => error.ToString())));
-        }
+        EnsureDeviceAssetOpsAvailable();
 
         using var token = PowerShell.Create(RunspaceMode.CurrentRunspace);
         token.AddCommand("Get-DeviceAssetOpsAccessToken").AddParameter("AsSession");
         var result = token.Invoke();
-        if (token.HadErrors) throw new InvalidOperationException(string.Join(Environment.NewLine, token.Streams.Error.Select(error => error.ToString())));
-        return result.Count == 1 ? result[0] : throw new InvalidOperationException($"Expected one DeviceAssetOps session from Get-DeviceAssetOpsAccessToken -AsSession, got {result.Count}.");
+        if (token.HadErrors)
+        {
+            var detail = FormatErrorRecords(token.Streams.Error);
+            throw new InvalidOperationException(
+                $"Get-DeviceAssetOpsAccessToken -AsSession failed: {detail}{Environment.NewLine}"
+                + $"Run 'Connect-DeviceAssetOps -Profile {profileName}' first to establish an interactive operator session.");
+        }
+
+        if (result.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"Get-DeviceAssetOpsAccessToken -AsSession returned {result.Count} result(s); expected exactly one.{Environment.NewLine}"
+                + $"Run 'Connect-DeviceAssetOps -Profile {profileName}' first to establish an interactive operator session.");
+        }
+
+        return result[0];
+    }
+
+    private static string RefreshDeviceAssetOpsToken(string profileName)
+    {
+        EnsureDeviceAssetOpsAvailable();
+
+        using var token = PowerShell.Create(RunspaceMode.CurrentRunspace);
+        token.AddCommand("Get-DeviceAssetOpsAccessToken").AddParameter("AsSession");
+        var result = token.Invoke();
+        if (!token.HadErrors && result.Count == 1)
+        {
+            return UnwrapSecureString(GetSessionSecureToken(result[0]), "Session.Token");
+        }
+
+        var detail = token.HadErrors ? FormatErrorRecords(token.Streams.Error) : "no session returned";
+        throw new InvalidOperationException(
+            $"AgentController token refresh failed because the DeviceAssetOps session is no longer valid ({detail}). "
+            + "Reconnect interactively with Connect-DeviceAssetOps -Profile "
+            + $"'{profileName}', then Connect-EntitySyncVendor -Vendor AgentController -DeviceAssetOpsProfile '{profileName}'.");
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)

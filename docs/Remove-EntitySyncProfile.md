@@ -23,6 +23,8 @@ Deletes a named profile from the current user's EntitySync profile store. If the
 
 ## EXAMPLES
 
+### Example 1
+
 ```powershell
 Remove-EntitySyncProfile old-profile
 ```

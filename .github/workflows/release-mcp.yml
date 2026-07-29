@@ -1,0 +1,156 @@
+name: Release MCP Server
+
+on:
+  push:
+    tags:
+      - 'mcp-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            archive: zip
+          - os: macos-latest
+            rid: osx-arm64
+            archive: tar.gz
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and publish single-file binary
+        shell: pwsh
+        run: |
+          dotnet publish mcp/LISSTech.EntitySync.Mcp.csproj `
+            -c Release `
+            -r ${{ matrix.rid }} `
+            -p:PublishSingleFile=true `
+            -p:SelfContained=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o publish
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $binary = Get-ChildItem publish -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
+          if (-not $binary) { throw 'Binary not found in publish output' }
+          $name = "lisstech-entitysync-mcp-${{ matrix.rid }}"
+          New-Item -ItemType Directory -Path "dist/$name" -Force | Out-Null
+          Copy-Item $binary.FullName "dist/$name/"
+          if ('${{ matrix.archive }}' -eq 'zip') {
+            Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip" -Force
+          } else {
+            tar -czf "dist/$name.tar.gz" -C "dist" "$name"
+          }
+          $hash = (Get-FileHash "dist/$name.${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash" | Out-File -NoNewline "dist/$name.${{ matrix.archive }}.sha256"
+          echo "HASH=$hash" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lisstech-entitysync-mcp-${{ matrix.rid }}
+          path: |
+            dist/lisstech-entitysync-mcp-${{ matrix.rid }}.${{ matrix.archive }}
+            dist/lisstech-entitysync-mcp-${{ matrix.rid }}.${{ matrix.archive }}.sha256
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Read win-x64 hash
+        id: hash
+        run: |
+          HASH=$(cat dist/lisstech-entitysync-mcp-win-x64/lisstech-entitysync-mcp-win-x64.zip.sha256)
+          echo "win_hash=$HASH" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: MCP Server ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/**/*.zip
+            dist/**/*.tar.gz
+            dist/**/*.sha256
+
+      - name: Publish Scoop manifest to LISSTech/scoop-bucket
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag -replace '^mcp-v', ''
+          $hash = '${{ steps.hash.outputs.win_hash }}'
+          $url = "https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/$tag/lisstech-entitysync-mcp-win-x64.zip"
+
+          $manifest = [ordered]@{
+            version = $version
+            description = 'LISSTech EntitySync MCP server for natural-language vendor entity synchronization (HaloPSA, NetSuite, N-central, Bill.com, AgentController).'
+            homepage = 'https://github.com/LISSConsulting/LISSTech.EntitySync'
+            license = 'Proprietary'
+            architecture = [ordered]@{
+              '64bit' = [ordered]@{
+                url = $url
+                hash = $hash
+                bin = @(@('lisstech-entitysync-mcp.exe', 'lisstech-entitysync-mcp'))
+              }
+            }
+            checkver = [ordered]@{
+              url = 'https://api.github.com/repos/LISSConsulting/LISSTech.EntitySync/releases'
+              jsonpath = '$[?(@.tag_name =~ /^mcp-v/])].tag_name'
+              regex = 'mcp-v([\d.]+)'
+            }
+            autoupdate = [ordered]@{
+              architecture = [ordered]@{
+                '64bit' = [ordered]@{
+                  url = 'https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/mcp-v$version/lisstech-entitysync-mcp-win-x64.zip'
+                }
+              }
+            }
+          }
+
+          $json = $manifest | ConvertTo-Json -Depth 10
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+          $b64 = [Convert]::ToBase64String($bytes)
+
+          $bucketRepo = 'LISSConsulting/scoop-bucket'
+          $manifestPath = 'bucket/lisstech-entitysync-mcp.json'
+          $branch = 'main'
+
+          $existing = gh api "repos/$bucketRepo/contents/$manifestPath?ref=$branch" --jq '.sha' 2>$null
+          $payload = @{
+            message = "Update lisstech-entitysync-mcp for $tag"
+            content = $b64
+            branch  = $branch
+          }
+          if ($existing) { $payload.sha = $existing }
+          $payloadJson = $payload | ConvertTo-Json
+
+          $result = gh api "repos/$bucketRepo/contents/$manifestPath" -X PUT -f data=$payloadJson 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to publish manifest to $bucketRepo`: $result"
+            exit 1
+          }
+          Write-Host "Published $manifestPath to $bucketRepo@$branch (version $version, hash $($hash.Substring(0,12))...)"

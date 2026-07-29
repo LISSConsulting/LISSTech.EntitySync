@@ -13,13 +13,15 @@ Applies a reviewed EntitySync plan.
 ## DESCRIPTION
 Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
 
+`-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.
+
+For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. For Bill.com target plans, creates add missing Bill.com client custom-field values; updates to existing Bill.com values are safe no-ops because the Bill Spend API surface used by EntitySync exposes value creation but not value update/delete.
+
 ## SYNTAX
 
 ```powershell
-Invoke-EntitySyncPlan [-Plan] <EntitySyncPlan> [-Apply] [-PassThru] [-TargetCustomFieldName <String>] [-WhatIf] [-Confirm] [<CommonParameters>]
+Invoke-EntitySyncPlan [-Plan] <EntitySyncPlan> [-Apply] [-PassThru] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
-
-`-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes.
 
 ## EXAMPLES
 
@@ -39,10 +41,10 @@ Applies a previously reviewed plan with confirmation.
 
 ### Example 3
 ```powershell
-$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru
+$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru -ThrottleLimit 4
 ```
 
-Applies the plan and returns EntityWriteResult objects.
+Applies independent plan rows with up to four concurrent vendor writes and returns EntityWriteResult objects.
 
 ### Example 4
 ```powershell

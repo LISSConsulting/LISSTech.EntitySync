@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Core;
 
@@ -5,7 +6,7 @@ namespace LISSTech.EntitySync.Runtime;
 
 public static class ConnectionRegistry
 {
-    private static readonly Dictionary<string, IEntityAdapter> Adapters = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, IEntityAdapter> Adapters = new(StringComparer.OrdinalIgnoreCase);
 
     public static void Set(IEntityAdapter adapter)
     {

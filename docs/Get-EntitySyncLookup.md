@@ -13,12 +13,6 @@ Returns vendor-specific lookup values used to configure sync connections.
 ## DESCRIPTION
 Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.
 
-## SYNTAX
-
-```powershell
-Get-EntitySyncLookup [-Vendor] <HaloPSA|NetSuite|NCentral|AgentController> [[-Type] <String>] [<CommonParameters>]
-```
-
 `-Type` is a dynamic parameter exposed only when the chosen `-Vendor` has at least one supported lookup type; for `AgentController` (and any future vendor without a lookup catalog) the parameter is omitted entirely and the cmdlet returns no records.
 
 Supported lookups:
@@ -32,8 +26,13 @@ Supported lookups:
 | `HaloPSA` | `NCentralIntegrationLink` |
 | `NCentral` | `ServiceOrganization` |
 
-Vendors without lookup catalogs, including `AgentController`, return no lookup values and do not require
-`-Type`.
+Vendors without lookup catalogs, including `AgentController`, return no lookup values and do not require `-Type`.
+
+## SYNTAX
+
+```powershell
+Get-EntitySyncLookup [-Vendor] <HaloPSA|NetSuite|NCentral|AgentController> [[-Type] <String>] [<CommonParameters>]
+```
 
 ## EXAMPLES
 

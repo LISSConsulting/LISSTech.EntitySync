@@ -6,7 +6,7 @@ namespace LISSTech.EntitySync.Commands;
 
 public sealed class EntitySyncVendorCompleter : IArgumentCompleter
 {
-    private static readonly string[] Vendors = { "HaloPSA", "NetSuite", "NCentral", "AgentController" };
+    private static readonly string[] Vendors = { "HaloPSA", "NetSuite", "NCentral", "Bill.com", "AgentController" };
 
     public IEnumerable<CompletionResult> CompleteArgument(
         string commandName,

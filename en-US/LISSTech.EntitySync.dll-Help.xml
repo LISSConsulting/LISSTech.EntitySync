@@ -1,5 +1,47 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <helpItems schema="maml" xmlns="http://msh">
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Connect-EntitySyncProfile</command:name>
+      <command:verb>Connect</command:verb>
+      <command:noun>EntitySyncProfile</command:noun>
+      <maml:description>
+        <maml:para>Connects all vendors stored in a named EntitySync profile.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Loads a saved profile from the current user's EntitySync profile store and connects every vendor entry in that profile. If `-Name` is omitted, the configured default profile is used.</maml:para>
+      <maml:para>Profiles are saved by passing `-Profile &lt;name&gt; -SaveProfile` to `Connect-EntitySyncVendor` during one-time setup. Stored settings are protected with Windows DPAPI for the current user. AgentController profiles store a DeviceAssetOps profile reference and mint a fresh short-lived token during connect; AgentController bearer tokens are not persisted.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Connect-EntitySyncProfile</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncProfile prod</dev:code>
+        <dev:remarks>
+          <maml:para>Connects every vendor stored in the `prod` profile.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncProfile</dev:code>
+        <dev:remarks>
+          <maml:para>Connects the default profile.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
   <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
     <command:details>
       <command:name>Connect-EntitySyncVendor</command:name>
@@ -11,11 +53,13 @@
     </command:details>
     <maml:description>
       <maml:para>Connects a vendor adapter for later discovery, planning, and sync operations. Configuration may come from parameters or environment variables.</maml:para>
+      <maml:para>Add `-Profile &lt;name&gt; -SaveProfile` to a vendor connection command to save that vendor's resolved connection settings into a named local profile. Profiles are protected with Windows DPAPI for the current user. Later sessions can run `Connect-EntitySyncProfile &lt;name&gt;` or `Connect-EntitySyncVendor -Profile &lt;name&gt;` to connect every stored vendor in the profile.</maml:para>
+      <maml:para>AgentController is different: its bearer tokens are short-lived and are not saved. Save AgentController profiles with `-DeviceAssetOpsProfile &lt;name&gt;` so each profile connect can call `Connect-DeviceAssetOps -Profile &lt;name&gt;` and then mint a fresh session with `Get-DeviceAssetOpsAccessToken -AsSession`.</maml:para>
       <maml:para>HaloPSA connections use client credentials. The cmdlet posts `grant_type=client_credentials`, `client_id`, `client_secret`, and `scope` to `auth/token`, falls back to `token` if needed, then uses the returned `access_token` for API calls.</maml:para>
       <maml:para>NetSuite connections use standard REST Web Services SuiteQL. Pass the account ID only, such as `1234567` or `1234567_SB1`; the adapter derives the SuiteTalk REST host. The NetSuite role used by the token must have REST Web Services access and permissions to query customers with SuiteQL.</maml:para>
       <maml:para>N-central connections use a User-API token for REST discovery and creation. The adapter exchanges it with `POST /api/auth/authenticate`, then uses the returned access token for customer discovery and creation. Set `NCENTRAL_SERVICE_ORG_ID` or `-NCentralServiceOrgId` because customer creation posts to `/api/service-orgs/{soId}/customers`.</maml:para>
       <maml:para>N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.</maml:para>
-      <maml:para>`Connect-EntitySyncVendor -Vendor AgentController -Session &lt;Object&gt;` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). The generated client uses `POST /rpc/has_scope` for connection validation and `POST /rpc/sync_ncentral_customers` for apply, both relative to that ops base URL; it does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.</maml:para>
+      <maml:para>`Connect-EntitySyncVendor -Vendor AgentController -Session &lt;Object&gt;` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). The generated client uses `POST /rpc/has_scope` for non-mutating connection validation and `POST /rpc/sync_ncentral_customers` for apply, both relative to that ops base URL. It does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.</maml:para>
       <maml:para>Manual break-glass mode remains available with `-Url &lt;String&gt; -Token &lt;String&gt;` or `-Url &lt;String&gt; -SecureToken &lt;SecureString&gt;`. In those parameter sets, `-Url` means the AgentController ops/PostgREST OpenAPI base URL, for example `https://ops-agent-controller.clfy-b.lissonline.com`, not the API/auth base URL `https://api-agent-controller.clfy-b.lissonline.com`. `-Vendor LTAC` is accepted and normalizes to `AgentController` in the returned connection. Tokens never appear in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; Agent Controller HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
     </maml:description>
     <command:syntax>
@@ -48,11 +92,123 @@ Connect-EntitySyncVendor -Vendor NCentral</dev:code>
         </dev:remarks>
       </command:example>
       <command:example>
-        <maml:title>EXAMPLE 3</maml:title>
-        <dev:code>$session = Get-DeviceAssetOpsAccessToken -AsSession
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>$session = Get-DeviceAssetOpsAccessToken -AsSession   # from LISSTech.DeviceAssetOps
 Connect-EntitySyncVendor -Vendor AgentController -Session $session</dev:code>
         <dev:remarks>
-          <maml:para>Reuses an active `LISSTech.DeviceAssetOps` operator session without writing the cleartext token or manually copying endpoint URLs. EntitySync uses the session's `OpsBaseUrl` for the AgentController ops/PostgREST OpenAPI and sends `POST /rpc/sync_ncentral_customers` there.</maml:para>
+          <maml:para>Reuses an active `LISSTech.DeviceAssetOps` operator session without writing the cleartext token or manually copying endpoint URLs. EntitySync uses the session's `OpsBaseUrl` for the AgentController ops/PostgREST OpenAPI and sends `POST /rpc/sync_ncentral_customers` there. The SecureString is unwrapped in-process and used only for the Agent Controller authorization header. `-Session`, `-Token`, and `-SecureToken` are separate parameter sets; pass exactly one.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor NetSuite -Profile prod -SaveProfile -DefaultProfile
+Connect-EntitySyncVendor -Vendor HaloPSA -Profile prod -SaveProfile
+Connect-EntitySyncVendor -Vendor NCentral -Profile prod -SaveProfile
+Connect-EntitySyncVendor -Vendor AgentController -DeviceAssetOpsProfile prod -Profile prod -SaveProfile
+
+Connect-EntitySyncProfile prod</dev:code>
+        <dev:remarks>
+          <maml:para>Saves a reusable profile during one-time setup, then reconnects all saved vendors from the profile in later sessions.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Export-EntitySyncPlan</command:name>
+      <command:verb>Export</command:verb>
+      <command:noun>EntitySyncPlan</command:noun>
+      <maml:description>
+        <maml:para>Persists a plan to a reviewer-friendly `.xlsx` workbook or fallback JSON.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Writes the supplied `EntitySyncPlan` so reviewers can examine and decide on every planned action before any vendor write happens.</maml:para>
+      <maml:para>`-Path` accepts either a full file path or an existing directory. When `-Path` resolves to a directory, the cmdlet generates a timestamped workbook name shaped like `EntitySync-NetSuite-Customer-to-HaloPSA-Client-20260625-115250.xlsx` (the timestamp reflects `DateTimeOffset.Now` at export time, not the plan's `CreatedAt`). When `-Path` has no extension, the workbook variant is used. When `-Path` ends in `.xlsx`, the cmdlet writes a reviewer workbook with a `Review` sheet, a hidden sheet pair preserving the full plan, a target sheet, and a legend sheet. When `-Path` ends in `.json`, the cmdlet writes a sanitized JSON copy of the plan as UTF-8 without a byte-order mark.</maml:para>
+      <maml:para>`-FilePath` is an alias for `-Path` for callers that prefer explicit file-path naming. Use `-PassThru` to emit a `FileInfo` for the created workbook so the caller can pass it to another cmdlet.</maml:para>
+      <maml:para>`Export-EntitySyncPlan` redacts sensitive entries before the artifact is written. Plan items whose `Reasons` or `ExternalIds`/`CustomFields` keys mention credential-shaped identifiers (`Authorization`, `BearerToken`, `Token`, `NCentralRegistrationToken`, `password_reset`, etc.) are rewritten or removed. The matcher is identifier-aware so English reviewer phrases that incidentally contain sensitive words — `tokenization policy review`, `password reset pending`, `secrets management policy`, `bearer of good news`, `reauthorization`, `credentialing` — are preserved. When a `Reason` is redacted it becomes `[credential redacted]`; redacted keys are removed entirely along with their values. Adapter-specific secrets are deliberately absent: the LTAC bearer token and N-central SOAP password never appear in workbook cells, JSON output, or the file name.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Export-EntitySyncPlan</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert>
+        <maml:para>Reviewers choose one `Decision` per row: `Accept Planned`, `Reject`, `Create`, `Link`, `Update`, `No Update`, or `Review`. A blank or `Review` cell imports as `Link` with the matched target, `MatchType 'ReviewerOverride'`, and an empty reviewer reason. A changed `TargetName` cannot be combined with `Create`, `Reject`, or `No Update`. When the source was matched to the wrong target, reviewers pick the correct existing target from the `TargetName` dropdown. Multiple targets with the same name fail import rather than guessing.</maml:para>
+      </maml:alert>
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>$plan | Export-EntitySyncPlan -Path .\netsuite-halo-client-plan.xlsx</dev:code>
+        <dev:remarks>
+          <maml:para>Writes a reviewer workbook that mirrors `PowerShell API` flow's reviewer surface.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>$reviewWorkbook = $plan | Export-EntitySyncPlan -Path $HOME\Downloads -PassThru</dev:code>
+        <dev:remarks>
+          <maml:para>Lets the cmdlet generate a timestamped workbook name under `~/Downloads` and returns the resulting `FileInfo` through the pipeline.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>$plan | Export-EntitySyncPlan -Path .\plan.json</dev:code>
+        <dev:remarks>
+          <maml:para>Writes a sanitized JSON plan (UTF-8, no BOM) when `-Path` ends in `.json`. Reviewers cannot edit JSON, but operators can diff or archive the plan shape with version control.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Get-EntitySyncConnection</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>EntitySyncConnection</command:noun>
+      <maml:description>
+        <maml:para>Lists the vendor adapters currently registered for the session.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Returns one `EntitySyncConnection` object per vendor registered by `Connect-EntitySyncVendor` during the current PowerShell session. Each object exposes the registered adapter so scripts can verify which vendors are available before running discovery, planning, or apply steps.</maml:para>
+      <maml:para>`LTAC` connections registered through `Connect-EntitySyncVendor -Vendor LTAC` are reported back under the canonical `LTAC` vendor label (spec FR-002).</maml:para>
+      <maml:para>The credential fields passed to `Connect-EntitySyncVendor` are intentionally not exposed here. For example, the LTAC bearer token and N-central SOAP password are absent from the returned object, `Export-EntitySyncPlan` artifacts, and adapter error messages. Use `Connect-EntitySyncVendor` with environment-variable fallback to keep secrets out of transcripts.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-EntitySyncConnection</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor NetSuite
+Connect-EntitySyncVendor -Vendor HaloPSA
+Connect-EntitySyncVendor -Vendor NCentral
+Connect-EntitySyncVendor -Vendor LTAC
+Get-EntitySyncConnection</dev:code>
+        <dev:remarks>
+          <maml:para>Registers adapters for every supported vendor using environment variables, then lists every registered connection in alphabetical order.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncConnection | Select-Object -ExpandProperty Vendor</dev:code>
+        <dev:remarks>
+          <maml:para>Lists the vendor names of every registered adapter in alphabetical, case-insensitive order. Useful as a precondition check before `Test-EntitySyncConnection`.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -104,7 +260,7 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
         <maml:title>-------------------------- Example 3 --------------------------</maml:title>
         <dev:code>Get-EntitySyncEntity -Vendor AgentController -Type Customer</dev:code>
         <dev:remarks>
-          <maml:para>Returns no records when the connected Agent Controller target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become Agent Controller customer-scope sync candidates.</maml:para>
+          <maml:para>Returns no records when the connected LTAC target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become LTAC customer-scope sync candidates.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -121,11 +277,16 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
     </command:details>
     <maml:description>
       <maml:para>Use this cmdlet to discover stable vendor IDs before connecting or applying sync workflows.</maml:para>
+      <maml:para>`-Type` is a dynamic parameter exposed only when the chosen `-Vendor` has at least one supported lookup type; for `AgentController` (and any future vendor without a lookup catalog) the parameter is omitted entirely and the cmdlet returns no records.</maml:para>
       <maml:para>Supported lookups:</maml:para>
       <maml:para>| Vendor | Type | |---|---| | `HaloPSA` | `TopLevel` | | `HaloPSA` | `CustomerRelationship` | | `HaloPSA` | `CustomerType` | | `HaloPSA` | `NCentralIntegration` | | `HaloPSA` | `NCentralIntegrationLink` | | `NCentral` | `ServiceOrganization` |</maml:para>
-      <maml:para>Vendors without lookup catalogs, including `LTAC`/`LTAC`, return no lookup values and do not require `-Type`.</maml:para>
+      <maml:para>Vendors without lookup catalogs, including `AgentController`, return no lookup values and do not require `-Type`.</maml:para>
     </maml:description>
-    <command:syntax />
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-EntitySyncLookup</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
     <command:parameters />
     <command:inputTypes />
     <command:returnValues />
@@ -181,6 +342,89 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
   </command:command>
   <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
     <command:details>
+      <command:name>Get-EntitySyncProfile</command:name>
+      <command:verb>Get</command:verb>
+      <command:noun>EntitySyncProfile</command:noun>
+      <maml:description>
+        <maml:para>Lists saved EntitySync connection profiles.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Returns profile names, the vendors stored in each profile, the default-profile marker, and the local profile-store path. Secret values are never returned.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Get-EntitySyncProfile</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncProfile</dev:code>
+        <dev:remarks>
+          <maml:para></maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Import-EntitySyncPlan</command:name>
+      <command:verb>Import</command:verb>
+      <command:noun>EntitySyncPlan</command:noun>
+      <maml:description>
+        <maml:para>Reloads a reviewed `.xlsx` workbook or JSON plan back into an executable `EntitySyncPlan`.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Reads a plan that was previously exported with `Export-EntitySyncPlan`, applies reviewer decisions, and emits a single `EntitySyncPlan` object ready for `Invoke-EntitySyncPlan` or `Invoke-EntitySyncChain`.</maml:para>
+      <maml:para>When `-Path` ends in `.xlsx`, the cmdlet reads the reviewer workbook, restores the full plan from the hidden sheets, then applies each reviewer decision to the corresponding `EntitySyncPlanItem`. When `-Path` ends in `.json`, the cmdlet deserializes the JSON file directly; the JSON shape is the same sanitized structure written by `Export-EntitySyncPlan -Path *.json`, so any tools that read or write that JSON can interoperate.</maml:para>
+      <maml:para>Import is the boundary where reviewer notes turn into plan state. `ReviewerNotes` are appended to the item's `Reasons`, so the operator's decision context carries through to `-WhatIf` and apply output. Plan items whose `Reasons` mention credential-shaped identifiers (`Authorization`, `BearerToken`, `Token`, `password_reset`, etc.) were already redacted to `[credential redacted]` during export, and the redaction is preserved on import; English reviewer phrases that incidentally contain sensitive words (`tokenization`, `password reset`, `secrets management`, etc.) survive the round-trip unchanged. Adapter-specific secrets such as the LTAC bearer token are not stored in plan artifacts, so they cannot leak back into apply.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Import-EntitySyncPlan</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert>
+        <maml:para>Reviewer decisions are applied as follows:</maml:para>
+        <maml:para>| Decision | Resulting plan item | |---|---| | `Accept Planned` | Keeps the generated action and marks the item accepted. | | `Reject` | Changes the item to `Action 'None'`; apply skips it as a rejection. | | `Create` | Forces a target create. | | `Link` | Forces a link/update of the target external/custom field. | | `Update` | Forces an update of the matched target. | | `No Update` | Changes the item to `Action 'None'`; apply skips it without treating it as a rejection. | | `Review` | Keeps the item blocked from apply. | | Blank | Imports as `Link` with the matched target and `MatchType 'ReviewerOverride'`. |</maml:para>
+        <maml:para>A changed `TargetName` cannot be combined with `Create`, `Reject`, or `No Update`. When multiple targets share the same name, import fails with an ambiguity error rather than guessing.</maml:para>
+      </maml:alert>
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>$plan = Import-EntitySyncPlan .\netsuite-halo-client-plan.xlsx
+$plan | Invoke-EntitySyncPlan -Apply -WhatIf</dev:code>
+        <dev:remarks>
+          <maml:para>Loads the reviewed workbook and dry-runs the approved actions.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>$plan = Import-EntitySyncPlan .\plan.json
+$plan.Items | Where-Object Action -eq 'Create' | Format-Table Source, Target, Score</dev:code>
+        <dev:remarks>
+          <maml:para>Loads a JSON plan and lists every planned create. Use this when reviewing or diffing plans outside Excel.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
       <command:name>Invoke-EntitySyncChain</command:name>
       <command:verb>Invoke</command:verb>
       <command:noun>EntitySyncChain</command:noun>
@@ -190,6 +434,8 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
     </command:details>
     <maml:description>
       <maml:para>Creates one review workbook per sync edge during planning, then applies only reviewed workbooks when `-ReviewedPlanPath` and `-Apply` are supplied. The default chain is `NetSuite -&gt; HaloPSA -&gt; NCentral`.</maml:para>
+      <maml:para>`-RootVendor` defaults to `NetSuite`, `-HubVendor` defaults to `HaloPSA`, and `-LeafVendors` defaults to `@('NCentral')`. `-Path` accepts a directory; one workbook is written per edge.</maml:para>
+      <maml:para>`-ReviewedPlanPath` accepts one or more `.xlsx` workbooks from a previous `Invoke-EntitySyncChain -Path` run. Items still marked `Review` are skipped.</maml:para>
     </maml:description>
     <command:syntax />
     <command:parameters />
@@ -220,6 +466,51 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
   </command:command>
   <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
     <command:details>
+      <command:name>Invoke-EntitySyncNetSuiteSuiteQL</command:name>
+      <command:verb>Invoke</command:verb>
+      <command:noun>EntitySyncNetSuiteSuiteQL</command:noun>
+      <maml:description>
+        <maml:para>Executes a SuiteQL query against the active NetSuite connection.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Runs the supplied SuiteQL through the registered `NetSuite` adapter and emits each result row as a `PSObject`. The cmdlet requires a connected NetSuite adapter; call `Connect-EntitySyncVendor -Vendor NetSuite` first.</maml:para>
+      <maml:para>The query is forwarded to NetSuite's REST Web Services SuiteQL endpoint, the same surface `Get-EntitySyncEntity -Vendor NetSuite` uses for customer discovery. Empty or whitespace-only queries are rejected before the HTTP call. Non-JSON responses (including HTML error pages that usually mean REST Web Services is disabled or the account host is wrong) raise `InvalidOperationException` with a redacted preview; an authentication failure or non-success status carries the same sanitized message instead of leaking the raw body.</maml:para>
+      <maml:para>Each SuiteQL row is converted into a `PSObject` whose `PSNoteProperty` names match the column names returned by NetSuite. NetSuite `T`/`F` booleans become `$true`/`$false`, integers become `Int64`, decimals become `Decimal`, strings stay strings, and unrecognized shapes fall back to the raw JSON text.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Invoke-EntitySyncNetSuiteSuiteQL</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor NetSuite
+Invoke-EntitySyncNetSuiteSuiteQL -Query 'SELECT id, entityid, companyname FROM customer WHERE isinactive = ''F'' ORDER BY entityid FETCH FIRST 25 ROWS ONLY'</dev:code>
+        <dev:remarks>
+          <maml:para>Lists up to 25 active NetSuite customers as `PSObject` rows.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>'SELECT id, tranid, status FROM transaction WHERE recordtype = ''invoice'' FETCH FIRST 10 ROWS ONLY' |
+    Invoke-EntitySyncNetSuiteSuiteQL</dev:code>
+        <dev:remarks>
+          <maml:para>Pipes a SuiteQL string into the cmdlet and returns one `PSObject` per invoice row.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
       <command:name>Invoke-EntitySyncPlan</command:name>
       <command:verb>Invoke</command:verb>
       <command:noun>EntitySyncPlan</command:noun>
@@ -229,8 +520,13 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
     </command:details>
     <maml:description>
       <maml:para>Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.</maml:para>
+      <maml:para>`-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.</maml:para>
     </maml:description>
-    <command:syntax />
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Invoke-EntitySyncPlan</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
     <command:parameters />
     <command:inputTypes />
     <command:returnValues />
@@ -251,10 +547,10 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
         <maml:para>- HaloPSA N-central site links are written with `POST /api/ncentraldetails` by sending the integration account `id`, preserved `client_links`, and updated `site_links` collection.</maml:para>
         <maml:para></maml:para>
         <maml:para>Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.</maml:para>
-        <maml:para>NCentral to AgentController:</maml:para>
+        <maml:para>NCentral to LTAC:</maml:para>
         <maml:para>`New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController` reads both N-central Customers and Sites and applies them as one authoritative request through the generated AgentController client. The PostgREST RPC is `POST /rpc/sync_ncentral_customers`; its successful `RETURNS TABLE` payload is a one-row JSON array. `-Apply -WhatIf` reports one `ShouldProcess` confirmation and performs no write. With real `-Apply -PassThru`, each included item carries the aggregate inserted/updated/retired/active counts from that single result.</maml:para>
-        <maml:para>N-central Customer and Site sources batch together in the same call: a customer-derived item carries no `ncentral_parent_customer_id`, while a site-derived item carries the site's own identifier as `ncentral_customer_id` and its parent N-central customer's identifier as `ncentral_parent_customer_id`, preserving the site's parent relationship in LTAC. A site with no parent N-central customer ID never reaches the batch — `New-EntitySyncPlan` blocks it at plan time as `Action 'Review'`, so it is written as its own unsuccessful result the same as any other Review item. Before sending, the adapter rejects the whole batch with a clear error if any two items share the same `ncentral_customer_id`, matching the contract's uniqueness rule.</maml:para>
-        <maml:para>AgentController apply blocks the entire `CustomerScope` batch when any `Review`, `Reject`, `No Update`, `None`, unsafe, incomplete, or duplicate row would be omitted. Separate Customer/Site plans cannot be applied. This prevents the authoritative RPC from retiring an existing scope merely because its review row was skipped. Credentials and unrelated N-central registration tokens never enter the generated request or operator-facing errors.</maml:para>
+        <maml:para>Customer and Site sources batch together in the same call. A customer-derived item carries no `ncentral_parent_customer_id`; a site-derived item carries its own identifier plus its parent's identifier. Separate Customer/Site plans and pipeline-built `CustomerScope` plans are not valid authoritative snapshots.</maml:para>
+        <maml:para>AgentController apply blocks the entire `CustomerScope` batch when any `Review`, `Reject`, `No Update`, `None`, unsafe, incomplete, or duplicate row would be omitted. This prevents the authoritative RPC from retiring an existing scope merely because its review row was skipped. Credentials and unrelated N-central registration tokens never enter the generated request or operator-facing errors.</maml:para>
       </maml:alert>
     </maml:alertSet>
     <command:examples>
@@ -274,9 +570,9 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 3 --------------------------</maml:title>
-        <dev:code>$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
+        <dev:code>$results = $plan | Invoke-EntitySyncPlan -Apply -PassThru -ThrottleLimit 4</dev:code>
         <dev:remarks>
-          <maml:para>Applies the plan and returns EntityWriteResult objects.</maml:para>
+          <maml:para>Applies independent plan rows with up to four concurrent vendor writes and returns EntityWriteResult objects.</maml:para>
         </dev:remarks>
       </command:example>
       <command:example>
@@ -284,7 +580,7 @@ Get-EntitySyncLookup -Vendor HaloPSA -Type CustomerType</dev:code>
         <dev:code>$plan | Invoke-EntitySyncPlan -Apply -WhatIf
 $results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
         <dev:remarks>
-          <maml:para>Dry-runs then applies an N-central Customer to AgentController plan as a single batched customer-scope sync.</maml:para>
+          <maml:para>Dry-runs then applies a complete N-central `CustomerScope` plan as one authoritative AgentController sync.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -302,8 +598,14 @@ $results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
     <maml:description>
       <maml:para>Retrieves target entities, performs explainable fuzzy matching, and emits an EntitySync plan. This command does not write to any vendor.</maml:para>
       <maml:para>When HaloPSA is the target, planning reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Pass `-FullTargetObjects` only when every HaloPSA client must also be enriched with site details for address/postal matching; this can be slower on large tenants.</maml:para>
+      <maml:para>`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendors. N-central normally exposes `Customer`/`Site`; when AgentController is the target it also exposes `CustomerScope`, the default complete Customer-plus-Site snapshot. Pipeline input remains available for non-authoritative Customer/Site planning, but is rejected for `CustomerScope` because it cannot prove completeness. `-TargetVendor LTAC` normalizes to `AgentController`.</maml:para>
+      <maml:para>Use `-SourceSearch` and optional `-SourceCount` for focused one-off customer plans. They filter the source read before matching, so operators do not have to build a full plan and manually prune unrelated rows.</maml:para>
     </maml:description>
-    <command:syntax />
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>New-EntitySyncPlan</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
     <command:parameters />
     <command:inputTypes />
     <command:returnValues />
@@ -321,30 +623,72 @@ $plan.Items | Format-Table Action, Score, MatchType, @{n='Source';e={$_.Source.N
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client -SourceSearch 'Acme Corp' -SourceCount 1 -CreateMissing
+$plan | Invoke-EntitySyncPlan -Apply -WhatIf</dev:code>
+        <dev:remarks>
+          <maml:para>Builds and dry-runs a one-customer NetSuite to HaloPSA plan.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
         <dev:code>$plan = New-EntitySyncPlan -SourceVendor NetSuite -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client -FullTargetObjects</dev:code>
         <dev:remarks>
           <maml:para>Uses exhaustive HaloPSA client and site enrichment for matching at the cost of additional API calls.</maml:para>
         </dev:remarks>
       </command:example>
       <command:example>
-        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
         <dev:code>$plan = New-EntitySyncPlan -SourceVendor HaloPSA -SourceEntityType Site -TargetVendor NCentral -TargetEntityType Site -CreateMissing</dev:code>
         <dev:remarks>
           <maml:para>Creates a HaloPSA site to N-central site plan. HaloPSA N-central `site_links` are authoritative when present. If a Halo site has no existing site link, the parent Halo client must be linked to an N-central customer so new N-central sites can be created under the correct customer.</maml:para>
         </dev:remarks>
       </command:example>
       <command:example>
-        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
-        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
-        <dev:remarks>
-          <maml:para>Creates one authoritative N-central Customer-plus-Site snapshot for AgentController. `CustomerScope` reads both source entity types; `Customer` remains the only AgentController target type. AgentController has no customer-scope read endpoint, so every source plans as `Create`/`NoMatch` with `-CreateMissing`.</maml:para>
-        </dev:remarks>
-      </command:example>
-      <command:example>
         <maml:title>-------------------------- Example 5 --------------------------</maml:title>
         <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
         <dev:remarks>
-          <maml:para>The same `CustomerScope` plan includes every site-derived scope and its parent N-central customer identifier. A source-validation failure becomes `Action 'Review'`, `MatchType 'LtacSourceInvalid'`, and blocks the entire authoritative apply until resolved, preventing retirement through omission.</maml:para>
+          <maml:para>Creates one authoritative N-central Customer-plus-Site snapshot for AgentController. `CustomerScope` reads both source entity types; `Customer` remains the only AgentController target type. AgentController has no customer-scope read endpoint, so every source plans as `Create`/`NoMatch` with `-CreateMissing`. Customer-derived scopes carry no parent, while site-derived scopes carry `ncentral_parent_customer_id`. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 6 --------------------------</maml:title>
+        <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
+        <dev:remarks>
+          <maml:para>The same `CustomerScope` plan includes every site-derived scope and its parent N-central customer identifier. A source-validation failure becomes `Action 'Review'`, `MatchType 'LtacSourceInvalid'`, and blocks the entire authoritative apply until resolved, preventing an omitted review row from retiring an existing AgentController scope. See `specs/001-ltac-sync-adapter/data-model.md`.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Remove-EntitySyncProfile</command:name>
+      <command:verb>Remove</command:verb>
+      <command:noun>EntitySyncProfile</command:noun>
+      <maml:description>
+        <maml:para>Removes a saved EntitySync connection profile.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Deletes a named profile from the current user's EntitySync profile store. If the removed profile was the default profile, another saved profile is selected as default when one exists.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Remove-EntitySyncProfile</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Remove-EntitySyncProfile old-profile</dev:code>
+        <dev:remarks>
+          <maml:para></maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>
@@ -361,10 +705,15 @@ $plan.Items | Format-Table Action, Score, MatchType, @{n='Source';e={$_.Source.N
     </command:details>
     <maml:description>
       <maml:para>Sets an existing custom-property value on a connected vendor entity. The command requires `-Apply` before writes are allowed and supports `-WhatIf` and `-Confirm`.</maml:para>
+      <maml:para>`-Id` accepts the alias `-CustomerId`. `-Name` accepts the alias `-PropertyName`. `-Value` accepts empty strings. `-Vendor` is currently restricted to `NCentral` and `-EntityType` is currently restricted to `Customer`.</maml:para>
       <maml:para>N-central support uses EI2 SOAP `organizationPropertyList` to resolve the property label to an ID, then `organizationPropertyModify` to update the value. It updates existing N-central organization custom properties; it does not create custom-property definitions.</maml:para>
       <maml:para>Current support is limited to N-central customer organization properties.</maml:para>
     </maml:description>
-    <command:syntax />
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Set-EntitySyncCustomProperty</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
     <command:parameters />
     <command:inputTypes />
     <command:returnValues />
@@ -391,6 +740,93 @@ $plan.Items | Format-Table Action, Score, MatchType, @{n='Source';e={$_.Source.N
         <dev:code>Set-EntitySyncCustomProperty -Vendor NCentral -CustomerId 390 -Name 'NetSuite Customer ID' -Value 12345 -Apply</dev:code>
         <dev:remarks>
           <maml:para>Sets the `NetSuite Customer ID` custom property on N-central customer `390`.</maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Set-EntitySyncDefaultProfile</command:name>
+      <command:verb>Set</command:verb>
+      <command:noun>EntitySyncDefaultProfile</command:noun>
+      <maml:description>
+        <maml:para>Sets the default EntitySync connection profile.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Marks an existing profile as the default used by `Connect-EntitySyncProfile` when no profile name is supplied.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Set-EntitySyncDefaultProfile</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Set-EntitySyncDefaultProfile prod</dev:code>
+        <dev:remarks>
+          <maml:para></maml:para>
+        </dev:remarks>
+      </command:example>
+    </command:examples>
+    <command:relatedLinks />
+  </command:command>
+  <command:command xmlns:maml="http://schemas.microsoft.com/maml/2004/10" xmlns:command="http://schemas.microsoft.com/maml/dev/command/2004/10" xmlns:dev="http://schemas.microsoft.com/maml/dev/2004/10" xmlns:MSHelp="http://msdn.microsoft.com/mshelp">
+    <command:details>
+      <command:name>Test-EntitySyncConnection</command:name>
+      <command:verb>Test</command:verb>
+      <command:noun>EntitySyncConnection</command:noun>
+      <maml:description>
+        <maml:para>Validates connectivity to a registered vendor adapter.</maml:para>
+      </maml:description>
+    </command:details>
+    <maml:description>
+      <maml:para>Calls `TestConnectionAsync` on the adapter registered for `-Vendor`. It returns `$true` when the credentialed probe succeeds, `$false` when a reachable service rejects the credential or required permission, and a terminating `ErrorCategory.ConnectionError` for transport failures.</maml:para>
+      <maml:para>Run `Connect-EntitySyncVendor -Vendor &lt;Name&gt;` first; an unregistered vendor raises `No EntitySync connection exists for vendor '&lt;Vendor&gt;'. Run Connect-EntitySyncVendor first.`.</maml:para>
+      <maml:para>`-Vendor LTAC` is accepted as an alias and normalizes to `AgentController`. The generated AgentController client calls the non-mutating `POST /rpc/has_scope` probe for `operator_access:write`; administrators also pass through AgentController's `has_scope` implementation. Invalid, expired, or insufficient tokens return `false`. Transport errors remain redacted and never include the bearer token, authorization header, or raw response body.</maml:para>
+    </maml:description>
+    <command:syntax>
+      <command:syntaxItem>
+        <maml:name>Test-EntitySyncConnection</maml:name>
+      </command:syntaxItem>
+    </command:syntax>
+    <command:parameters />
+    <command:inputTypes />
+    <command:returnValues />
+    <maml:alertSet>
+      <maml:alert />
+    </maml:alertSet>
+    <command:examples>
+      <command:example>
+        <maml:title>-------------------------- Example 1 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor HaloPSA
+Test-EntitySyncConnection -Vendor HaloPSA</dev:code>
+        <dev:remarks>
+          <maml:para>Returns `$true` when the HaloPSA bearer-token call to `auth/token` succeeds.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 2 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor NetSuite
+Test-EntitySyncConnection -Vendor NetSuite</dev:code>
+        <dev:remarks>
+          <maml:para>Posts a `SELECT id FROM customer FETCH FIRST 1 ROWS ONLY` probe through REST Web Services and returns `$true` when NetSuite answers with a 2xx status.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor AgentController -Url 'https://ltac.example.com' -Token $env:LTAC_BEARER_TOKEN
+Test-EntitySyncConnection -Vendor AgentController</dev:code>
+        <dev:remarks>
+          <maml:para>Tests that the registered AgentController token may execute the authoritative sync operation without mutating customer scopes. Legacy aliases normalize to `AgentController`; errors do not echo the bearer token.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>

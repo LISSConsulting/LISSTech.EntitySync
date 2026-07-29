@@ -1,5 +1,6 @@
 using System.Management.Automation;
 using System.Text.Json;
+using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
@@ -114,11 +115,11 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         ps.AddCommand("New-EntitySyncPlan")
             .AddParameter("SourceVendor", sourceVendor)
             .AddParameter("TargetVendor", targetVendor)
-            .AddParameter("TargetCustomFieldName", TargetCustomFieldName)
             .AddParameter("AutoLinkScore", AutoLinkScore)
             .AddParameter("ReviewScore", ReviewScore)
             .AddParameter("ThrottleLimit", ThrottleLimit);
-        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) ps.AddParameter("SourceExternalIdName", SourceExternalIdName);
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)) || !EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("TargetCustomFieldName", EffectiveTargetCustomFieldName(sourceVendor, targetVendor));
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) || EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("SourceExternalIdName", EffectiveSourceExternalIdName(sourceVendor));
         if (IncludeInactive) ps.AddParameter("IncludeInactive");
         if (CreateMissing) ps.AddParameter("CreateMissing");
         if (FullTargetObjects) ps.AddParameter("FullTargetObjects");
@@ -131,12 +132,16 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
     private void ApplyReviewedPlans()
     {
         var mapper = new DefaultEntityMapper();
-        var options = new MatchOptions { TargetCustomFieldName = TargetCustomFieldName };
         var planPaths = ResolveReviewedPlanPaths().ToArray();
         if (planPaths.Length == 0) throw new InvalidOperationException("At least one reviewed plan path is required.");
         for (var planIndex = 0; planIndex < planPaths.Length; planIndex++)
         {
             var plan = ReadPlan(planPaths[planIndex]);
+            var options = new MatchOptions
+            {
+                SourceExternalIdName = EffectiveSourceExternalIdName(plan.SourceVendor),
+                TargetCustomFieldName = EffectiveTargetCustomFieldName(plan.SourceVendor, plan.TargetVendor)
+            };
             if (!ShouldProcess($"{plan.SourceVendor} -> {plan.TargetVendor}", "Apply reviewed EntitySync plan")) continue;
             for (var i = 0; i < plan.Items.Count; i++)
             {
@@ -169,6 +174,22 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         }
 
         WriteProgress(new ProgressRecord(1, "Invoke EntitySync chain", "Complete") { RecordType = ProgressRecordType.Completed });
+    }
+
+    private string EffectiveSourceExternalIdName(string sourceVendor)
+    {
+        if (EntitySyncVendors.IsBillCom(sourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        return SourceExternalIdName;
+    }
+
+    private string EffectiveTargetCustomFieldName(string sourceVendor, string targetVendor)
+    {
+        if (EntitySyncVendors.IsBillCom(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return BillComEntityAdapter.HaloClientCustomFieldName;
+        }
+
+        return TargetCustomFieldName;
     }
 
     private IEnumerable<string> ResolveReviewedPlanPaths()
