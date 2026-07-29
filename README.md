@@ -388,7 +388,7 @@ just mcp-build # self-contained local binary
 just mcp-run   # stdio transport
 ```
 
-The root `docker-compose.yaml` builds a hardened, non-root image for Coolify. Coolify generates `SERVICE_PASSWORD_64_MCP_API_KEY`; set the required vendor secrets, map a domain to service port `8080`, then connect the MCP client to `https://<domain>/mcp` with that value as the bearer token.
+The root `docker-compose.yaml` builds a hardened, non-root image for Coolify. Set `MCP_API_KEY` and the required vendor secrets, map a domain to service port `8080`, then connect the MCP client to `https://<domain>/mcp` with that value as the bearer token.
 
 See [`mcp/README.md`](mcp/README.md) for the Coolify procedure, variables, transport behavior, and operational constraints.
 
