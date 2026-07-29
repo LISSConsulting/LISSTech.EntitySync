@@ -18,11 +18,11 @@ HTTP mode serves:
 
 1. Create a Docker Compose resource from this Git repository.
 2. Use the root `docker-compose.yaml` Compose file.
-3. Let Coolify generate the `SERVICE_PASSWORD_MCP_API_KEY` secret referenced by the Compose file. For local Compose, set it to at least 32 characters; generate one with `openssl rand -hex 32`.
+3. Let Coolify generate the `SERVICE_PASSWORD_64_MCP_API_KEY` secret referenced by the Compose file. For local Compose, set it to at least 32 characters; generate one with `openssl rand -hex 32`.
 4. Add the environment variables for the vendors the server will use.
 5. Assign a domain to the `entitysync-mcp` service on container port `8080`.
 6. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}`.
-7. Retrieve `SERVICE_PASSWORD_MCP_API_KEY` from Coolify and configure the MCP client with URL `https://<domain>/mcp` and an `Authorization: Bearer <value>` header.
+7. Retrieve `SERVICE_PASSWORD_64_MCP_API_KEY` from Coolify and configure the MCP client with URL `https://<domain>/mcp` and an `Authorization: Bearer <value>` header.
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
@@ -47,7 +47,7 @@ DPAPI-backed EntitySync profiles are Windows-only and are intentionally not moun
 - A restart clears connections and plans. Reconnect vendors and create a fresh plan after each deployment or restart.
 - Creating a plan is read-only. Applying writes still requires `apply=true`; the default is a dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
-- Rotate `SERVICE_PASSWORD_MCP_API_KEY` in Coolify and redeploy if the key is disclosed.
+- Rotate `SERVICE_PASSWORD_64_MCP_API_KEY` in Coolify and redeploy if the key is disclosed.
 
 ## Local Development
 

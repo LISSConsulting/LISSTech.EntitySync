@@ -5,7 +5,7 @@ services:
       dockerfile: mcp/Dockerfile
     environment:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
-      MCP_API_KEY: "${SERVICE_PASSWORD_MCP_API_KEY}"
+      MCP_API_KEY: "${SERVICE_PASSWORD_64_MCP_API_KEY}"
       MCP_TRANSPORT: http
       HALO_BASE_URL: "${HALO_BASE_URL:-}"
       HALO_CLIENT_ID: "${HALO_CLIENT_ID:-}"
