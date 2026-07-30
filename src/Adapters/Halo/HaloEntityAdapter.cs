@@ -656,6 +656,52 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         };
     }
 
+    public async Task<EntityWriteResult> RemoveNCentralClientLinksAsync(IReadOnlyDictionary<string, string> expectedTargetIdsByHaloClientId, CancellationToken cancellationToken)
+    {
+        if (expectedTargetIdsByHaloClientId.Count == 0) throw new InvalidOperationException("HaloPSA N-central client link removal requires at least one expected link.");
+
+        var integrationId = await ResolveNCentralIntegrationIdAsync(cancellationToken).ConfigureAwait(false);
+        var root = await GetNCentralIntegrationDetailsAsync(integrationId, cancellationToken).ConfigureAwait(false);
+        var clientLinks = ReadMutableArray(root, "client_links");
+
+        foreach (var expected in expectedTargetIdsByHaloClientId)
+        {
+            var matches = clientLinks.Where(link => expected.Key.Equals(StringValue(link.TryGetValue("halo_id", out var haloId) ? haloId : null), StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matches.Length != 1)
+            {
+                throw new InvalidOperationException($"Expected exactly one HaloPSA N-central client link for HaloPSA client '{expected.Key}', but found {matches.Length}. No links were removed.");
+            }
+
+            var actualTargetId = ValidThirdPartyId(StringValue(matches[0].TryGetValue("third_party_id", out var targetId) ? targetId : null));
+            if (!expected.Value.Equals(actualTargetId, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"HaloPSA N-central client link for HaloPSA client '{expected.Key}' now targets '{actualTargetId}', not expected target '{expected.Value}'. No links were removed.");
+            }
+        }
+
+        clientLinks.RemoveAll(link => expectedTargetIdsByHaloClientId.ContainsKey(StringValue(link.TryGetValue("halo_id", out var haloId) ? haloId : null) ?? string.Empty));
+        var body = JsonSerializer.Serialize(new[]
+        {
+            new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["client_links"] = clientLinks,
+                ["site_links"] = ReadMutableArray(root, "site_links"),
+                ["id"] = integrationId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            }
+        });
+        using var response = await PostJsonAsync("api/ncentraldetails", body, cancellationToken).ConfigureAwait(false);
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        return new EntityWriteResult
+        {
+            Vendor = Vendor,
+            EntityType = "NCentralIntegrationLink",
+            Action = "RemoveClientLinks",
+            Success = response.IsSuccessStatusCode,
+            Message = response.IsSuccessStatusCode ? $"Removed {expectedTargetIdsByHaloClientId.Count} HaloPSA N-central client links." : text,
+            Raw = text
+        };
+    }
+
     public async Task<EntityWriteResult> UpsertNCentralSiteLinkAsync(string haloSiteId, string haloSiteName, string haloClientName, string nCentralSiteId, string nCentralSiteName, string nCentralCustomerId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(haloSiteId)) throw new InvalidOperationException("HaloPSA N-central site link write requires a HaloPSA site ID.");

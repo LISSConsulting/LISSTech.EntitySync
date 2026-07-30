@@ -4512,6 +4512,21 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Requires expected links before removing HaloPSA N-central client links' {
+    $options = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
+    $options.BaseUrl = 'https://halo.example.test/'
+    $options.AccessToken = 'token'
+    $options.NCentralIntegrationId = 3
+    $adapter = [LISSTech.EntitySync.Adapters.Halo.HaloEntityAdapter]::new($options)
+    try {
+      $expectedLinks = [System.Collections.Generic.Dictionary[string,string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      { $adapter.RemoveNCentralClientLinksAsync($expectedLinks, [Threading.CancellationToken]::None).GetAwaiter().GetResult() } | Should -Throw '*requires at least one expected link*'
+    }
+    finally {
+      $adapter.Dispose()
+    }
+  }
+
   It 'Requires IDs before writing HaloPSA N-central site links' {
     $options = [LISSTech.EntitySync.Adapters.Halo.HaloOptions]::new()
     $options.BaseUrl = 'https://halo.example.test/'
