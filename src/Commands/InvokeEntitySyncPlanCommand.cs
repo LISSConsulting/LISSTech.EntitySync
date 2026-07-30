@@ -1,10 +1,12 @@
 using System.Management.Automation;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
@@ -13,6 +15,9 @@ namespace LISSTech.EntitySync.Commands;
 [OutputType(typeof(EntityWriteResult))]
 public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 {
+    private IEntityAdapter? targetAdapter;
+    private HaloEntityAdapter? haloAdapter;
+
     [Parameter(Mandatory = true, ValueFromPipeline = true, Position = 0)]
     public EntitySyncPlan Plan { get; set; } = default!;
 
@@ -34,6 +39,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         try
         {
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
+            if (Apply) ReviewedPlanPolicy.EnsureApproved(Plan);
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions
@@ -41,8 +47,15 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                 SourceExternalIdName = EntitySyncVendors.IsBillCom(Plan.SourceVendor) ? BillComEntityAdapter.ClientExternalIdName : "NetSuiteInternalId",
                 TargetCustomFieldName = EffectiveTargetCustomFieldName()
             };
+            var isLtacTarget = EntitySyncVendors.IsAgentController(Plan.TargetVendor);
+            using var targetLease = Apply || isLtacTarget ? ConnectionRegistry.Acquire(Plan.TargetVendor) : null;
+            using var haloLease = Apply && Plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !Plan.TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+                ? ConnectionRegistry.Acquire("HaloPSA")
+                : null;
+            targetAdapter = targetLease?.Connection.Adapter;
+            haloAdapter = (targetAdapter as HaloEntityAdapter) ?? (haloLease?.Connection.Adapter as HaloEntityAdapter);
 
-            if (EntitySyncVendors.IsAgentController(Plan.TargetVendor))
+            if (isLtacTarget)
             {
                 ApplyLtacBatch(mapper, options);
                 WriteProgress(new ProgressRecord(1, "Invoke EntitySync plan", "Complete") { RecordType = ProgressRecordType.Completed });
@@ -76,7 +89,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 
                 if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                 {
-                    var adapter = ConnectionRegistry.Get(Plan.TargetVendor);
+                    var adapter = targetAdapter ?? throw new InvalidOperationException("The target connection is required for apply.");
                     var request = mapper.MapCreate(item.Source, Plan.TargetVendor, Plan.TargetEntityType, options);
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Source.Name, "Create target entity in " + Plan.TargetVendor))
@@ -99,7 +112,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 
                 if (item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase) && item.Target != null)
                 {
-                    var adapter = ConnectionRegistry.Get(Plan.TargetVendor);
+                    var adapter = targetAdapter ?? throw new InvalidOperationException("The target connection is required for apply.");
                     var request = mapper.MapUpdate(item.Source, item.Target, options);
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Target.Name, $"Set {TargetCustomFieldName} from {item.Source.Name}"))
@@ -112,7 +125,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 
                 if (item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase) && item.Target != null)
                 {
-                    var adapter = ConnectionRegistry.Get(Plan.TargetVendor);
+                    var adapter = targetAdapter ?? throw new InvalidOperationException("The target connection is required for apply.");
                     var request = mapper.MapUpdate(item.Source, item.Target, options);
                     if (Plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
                     if (ShouldProcess(item.Target.Name, $"Update target entity from {item.Source.Name}"))
@@ -131,6 +144,11 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         catch (Exception ex)
         {
             ThrowTerminatingError(new ErrorRecord(ex, "InvokeEntitySyncPlanFailed", ErrorCategory.WriteError, Plan));
+        }
+        finally
+        {
+            targetAdapter = null;
+            haloAdapter = null;
         }
     }
 
@@ -243,7 +261,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             return;
         }
 
-        var adapter = ConnectionRegistry.Get(Plan.TargetVendor) as LTACEntityAdapter
+        var adapter = targetAdapter as LTACEntityAdapter
             ?? throw new InvalidOperationException("LTAC adapter is required to apply an LTAC customer scope batch.");
         var syncResult = adapter.SyncCustomerScopesAsync(batchItems.Select(b => b.Request).ToList(), CancellationToken.None).GetAwaiter().GetResult();
 
@@ -440,7 +458,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             return;
         }
 
-        var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration client link.");
+        var haloAdapter = this.haloAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration client link.");
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
         WriteResult(haloAdapter.UpsertNCentralClientLinkAsync(item.Source.Id, item.Source.Name, targetId, targetName, CancellationToken.None).GetAwaiter().GetResult());
     }
@@ -476,7 +494,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     {
         try
         {
-            var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter
+            var haloAdapter = this.haloAdapter
                 ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the Bill.com client ID.");
             var numericId = BillComEntityAdapter.DecodeBillComValueId(result.Id);
             var writeBackRequest = new EntityWriteRequest
@@ -524,7 +542,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             return;
         }
 
-        var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration site link.");
+        var haloAdapter = this.haloAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration site link.");
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
         var haloClientName = item.Source.GetCustomField("HaloPsaClientName") ?? string.Empty;
         WriteResult(haloAdapter.UpsertNCentralSiteLinkAsync(item.Source.Id, item.Source.Name, haloClientName, targetId, targetName, customerId, CancellationToken.None).GetAwaiter().GetResult());

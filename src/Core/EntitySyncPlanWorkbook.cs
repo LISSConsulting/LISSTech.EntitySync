@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml;
@@ -47,7 +48,9 @@ internal static class EntitySyncPlanWorkbook
         using var archive = ZipFile.OpenRead(path);
         var sharedStrings = ReadSharedStrings(archive);
         var plan = ReadPlan(archive, sharedStrings);
+        foreach (var item in plan.Items.Where(item => IsExecutable(item.Action))) item.Status = "Planned";
         ApplyReview(archive, plan, sharedStrings);
+        plan.ReviewRequired = true;
         return plan;
     }
 
@@ -153,7 +156,7 @@ internal static class EntitySyncPlanWorkbook
             headers.Add("NCentralCustomerId");
         }
 
-        headers.AddRange(new[] { "Score", "MatchType", "Reasons", "SourceId", "TargetId", "SourceEmail", "TargetEmail", "ReviewerNotes" });
+        headers.AddRange(new[] { "Score", "MatchType", "Reasons", "SourceId", "TargetId", "SourceEmail", "TargetEmail", "PayloadDigest", "ReviewerNotes" });
         return headers.ToArray();
     }
 
@@ -177,7 +180,7 @@ internal static class EntitySyncPlanWorkbook
             values.Add(item.Target?.GetExternalId("NCentralCustomerId"));
         }
 
-        values.AddRange(new object?[] { item.Score, item.MatchType, string.Join("; ", item.Reasons), item.Source.Id, item.Target?.Id, item.Source.Email, item.Target?.Email, string.Empty });
+        values.AddRange(new object?[] { item.Score, item.MatchType, string.Join("; ", item.Reasons), item.Source.Id, item.Target?.Id, item.Source.Email, item.Target?.Email, ItemPayloadDigest(plan, item), string.Empty });
         return values.ToArray();
     }
 
@@ -301,7 +304,8 @@ internal static class EntitySyncPlanWorkbook
         var targetNameColumn = FindColumn(headers, EntityNameHeader(plan.TargetVendor, plan.TargetEntityType));
         if (targetNameColumn < 0) targetNameColumn = FindColumn(headers, "TargetName");
         var notesColumn = FindColumn(headers, "ReviewerNotes");
-        if (itemColumn < 0 || decisionColumn < 0) throw new InvalidOperationException("Review sheet must contain Item and Decision columns.");
+        var payloadDigestColumn = FindColumn(headers, "PayloadDigest");
+        if (itemColumn < 0 || decisionColumn < 0 || payloadDigestColumn < 0) throw new InvalidOperationException("Review sheet must contain Item, Decision, and PayloadDigest columns.");
         var targetsByName = TargetList(plan)
             .Select(target => new { Target = target, DisplayName = TargetDisplay(target).Trim() })
             .Where(target => !string.IsNullOrWhiteSpace(target.DisplayName))
@@ -315,6 +319,8 @@ internal static class EntitySyncPlanWorkbook
             if (itemNumber < 1 || itemNumber > plan.Items.Count) throw new InvalidOperationException($"Review sheet row references invalid item {itemNumber}.");
 
             var item = plan.Items[itemNumber - 1];
+            if (!TryGetCell(cells, payloadDigestColumn, out var payloadDigest) || !payloadDigest.Equals(ItemPayloadDigest(plan, item), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Review row {itemNumber} no longer matches the exported plan payload. Export and review a new workbook.");
             var originalTargetName = item.Target == null ? null : TargetDisplay(item.Target);
             var hasDecision = TryGetCell(cells, decisionColumn, out var decision) && !string.IsNullOrWhiteSpace(decision);
             if (hasDecision) ApplyDecision(item, decision.Trim());
@@ -394,6 +400,28 @@ internal static class EntitySyncPlanWorkbook
     private static bool ActionUsesTarget(string action)
     {
         return action.Equals("Link", StringComparison.OrdinalIgnoreCase) || action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsExecutable(string action)
+    {
+        return action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ItemPayloadDigest(EntitySyncPlan plan, EntitySyncPlanItem item)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            plan.SourceVendor,
+            plan.SourceEntityType,
+            plan.TargetVendor,
+            plan.TargetEntityType,
+            item.Action,
+            item.Source,
+            item.Target
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
     private static void ApplyTargetSelection(EntitySyncPlanItem item, string selectedTarget, IReadOnlyDictionary<string, List<ExternalEntity>> targetsByName, int itemNumber, bool hasDecision)

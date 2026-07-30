@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Core\LISSTech.EntitySync.Core.csproj" />
+    <ProjectReference Include="..\..\src\Ports\LISSTech.EntitySync.Ports.csproj" />
+    <ProjectReference Include="..\..\src\Application\LISSTech.EntitySync.Application.csproj" />
+    <ProjectReference Include="..\..\src\Runtime\LISSTech.EntitySync.Runtime.csproj" />
+    <ProjectReference Include="..\..\mcp\LISSTech.EntitySync.Mcp.csproj" />
+  </ItemGroup>
+</Project>

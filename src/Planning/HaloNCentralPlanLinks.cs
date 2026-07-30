@@ -1,4 +1,3 @@
-using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 
@@ -10,7 +9,7 @@ public static class HaloNCentralPlanLinks
 {
     public static bool IsCustomerPlan(string sourceVendor, string sourceEntityType, string targetVendor, string targetEntityType, IEntityAdapter sourceAdapter)
     {
-        return sourceAdapter is HaloEntityAdapter
+        return sourceAdapter.Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && targetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
             && sourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
@@ -19,7 +18,7 @@ public static class HaloNCentralPlanLinks
 
     public static bool IsSitePlan(string sourceVendor, string sourceEntityType, string targetVendor, string targetEntityType, IEntityAdapter sourceAdapter)
     {
-        return sourceAdapter is HaloEntityAdapter
+        return sourceAdapter.Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && targetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
             && sourceEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)

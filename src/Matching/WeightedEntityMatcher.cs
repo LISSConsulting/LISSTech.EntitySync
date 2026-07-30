@@ -11,8 +11,9 @@ public sealed class WeightedEntityMatcher : IEntityMatcher
     }
 
     public EntityMatchIndex CreateIndex(IReadOnlyList<ExternalEntity> targets, MatchOptions options) => new(targets, options);
+    IEntityMatchIndex IEntityMatcher.CreateIndex(IReadOnlyList<ExternalEntity> targets, MatchOptions options) => CreateIndex(targets, options);
 
-    public sealed class EntityMatchIndex
+    public sealed class EntityMatchIndex : IEntityMatchIndex
     {
         private readonly MatchOptions options;
         private readonly TargetInfo[] targets;

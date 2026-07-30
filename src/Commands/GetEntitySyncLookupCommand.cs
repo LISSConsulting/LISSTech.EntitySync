@@ -36,7 +36,8 @@ public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
             if (lookupTypes.Count == 0) return;
 
             var type = DynamicValue<string?>("Type", null) ?? throw new InvalidOperationException("Type is required.");
-            var adapter = ConnectionRegistry.Get(normalizedVendor);
+            using var lease = ConnectionRegistry.Acquire(normalizedVendor);
+            var adapter = lease.Connection.Adapter;
             var traces = new ConcurrentQueue<string>();
             var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter)

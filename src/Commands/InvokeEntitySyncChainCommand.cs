@@ -1,5 +1,5 @@
 using System.Management.Automation;
-using System.Text.Json;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NCentral;
@@ -137,12 +137,19 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         for (var planIndex = 0; planIndex < planPaths.Length; planIndex++)
         {
             var plan = ReadPlan(planPaths[planIndex]);
+            ReviewedPlanPolicy.EnsureApproved(plan);
+            if (!ShouldProcess($"{plan.SourceVendor} -> {plan.TargetVendor}", "Apply reviewed EntitySync plan")) continue;
+            using var targetLease = ConnectionRegistry.Acquire(plan.TargetVendor);
+            using var haloLease = plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !plan.TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+                ? ConnectionRegistry.Acquire("HaloPSA")
+                : null;
+            var targetAdapter = targetLease.Connection.Adapter;
+            var haloAdapter = (targetAdapter as HaloEntityAdapter) ?? (haloLease?.Connection.Adapter as HaloEntityAdapter);
             var options = new MatchOptions
             {
                 SourceExternalIdName = EffectiveSourceExternalIdName(plan.SourceVendor),
                 TargetCustomFieldName = EffectiveTargetCustomFieldName(plan.SourceVendor, plan.TargetVendor)
             };
-            if (!ShouldProcess($"{plan.SourceVendor} -> {plan.TargetVendor}", "Apply reviewed EntitySync plan")) continue;
             for (var i = 0; i < plan.Items.Count; i++)
             {
                 var item = plan.Items[i];
@@ -156,19 +163,17 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
 
                 if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                 {
-                    var adapter = ConnectionRegistry.Get(plan.TargetVendor);
                     var request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, options);
                     if (plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
-                    if (ShouldProcess(item.Source.Name, "Create target entity in " + plan.TargetVendor)) WriteResultAndIntegrationLink(plan, item, request, adapter.CreateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult());
+                    if (ShouldProcess(item.Source.Name, "Create target entity in " + plan.TargetVendor)) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.CreateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), haloAdapter);
                     continue;
                 }
 
                 if ((item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase)) && item.Target != null)
                 {
-                    var adapter = ConnectionRegistry.Get(plan.TargetVendor);
                     var request = mapper.MapUpdate(item.Source, item.Target, options);
                     if (plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
-                    if (ShouldProcess(item.Target.Name, $"{item.Action} target entity from {item.Source.Name}")) WriteResultAndIntegrationLink(plan, item, request, adapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult());
+                    if (ShouldProcess(item.Target.Name, $"{item.Action} target entity from {item.Source.Name}")) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), haloAdapter);
                 }
             }
         }
@@ -206,8 +211,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
     {
         var resolved = System.IO.Path.GetFullPath(path);
         if (resolved.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) return EntitySyncPlanWorkbook.Read(resolved);
-        var json = File.ReadAllText(resolved);
-        return JsonSerializer.Deserialize<EntitySyncPlan>(json) ?? throw new InvalidOperationException($"Plan file '{resolved}' did not contain a valid EntitySync plan.");
+        throw new NotSupportedException("Reviewed chain apply requires .xlsx plans because JSON does not carry verifiable review decisions.");
     }
 
     private static string DefaultFileName(EntitySyncPlan plan, int sequence)
@@ -228,13 +232,13 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         if (PassThru) WriteObject(result);
     }
 
-    private void WriteResultAndIntegrationLink(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)
+    private void WriteResultAndIntegrationLink(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result, HaloEntityAdapter? haloAdapter)
     {
         WriteResult(result);
         if (!result.Success) return;
         if (RequiresHaloNCentralSiteLink(plan, item))
         {
-            WriteHaloNCentralSiteLink(item, request, result);
+            WriteHaloNCentralSiteLink(item, request, result, haloAdapter);
             return;
         }
 
@@ -247,9 +251,9 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             return;
         }
 
-        var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration client link.");
+        var requiredHaloAdapter = haloAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration client link.");
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
-        WriteResult(haloAdapter.UpsertNCentralClientLinkAsync(item.Source.Id, item.Source.Name, targetId, targetName, CancellationToken.None).GetAwaiter().GetResult());
+        WriteResult(requiredHaloAdapter.UpsertNCentralClientLinkAsync(item.Source.Id, item.Source.Name, targetId, targetName, CancellationToken.None).GetAwaiter().GetResult());
     }
 
     private static bool RequiresHaloNCentralClientLink(EntitySyncPlan plan, EntitySyncPlanItem item)
@@ -270,7 +274,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             && !string.IsNullOrWhiteSpace(item.Source.Id);
     }
 
-    private void WriteHaloNCentralSiteLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)
+    private void WriteHaloNCentralSiteLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result, HaloEntityAdapter? haloAdapter)
     {
         var targetId = result.Id ?? item.Target?.Id;
         var customerId = request.CustomFields.TryGetValue("NCentralCustomerId", out var linkedCustomerId) ? linkedCustomerId : item.Source.GetExternalId("NCentralCustomerId");
@@ -280,10 +284,10 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             return;
         }
 
-        var haloAdapter = ConnectionRegistry.Get("HaloPSA") as HaloEntityAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration site link.");
+        var requiredHaloAdapter = haloAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration site link.");
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
         var haloClientName = item.Source.GetCustomField("HaloPsaClientName") ?? string.Empty;
-        WriteResult(haloAdapter.UpsertNCentralSiteLinkAsync(item.Source.Id, item.Source.Name, haloClientName, targetId, targetName, customerId, CancellationToken.None).GetAwaiter().GetResult());
+        WriteResult(requiredHaloAdapter.UpsertNCentralSiteLinkAsync(item.Source.Id, item.Source.Name, haloClientName, targetId, targetName, customerId, CancellationToken.None).GetAwaiter().GetResult());
     }
 
 }

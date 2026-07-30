@@ -36,7 +36,8 @@ public sealed class SetEntitySyncCustomPropertyCommand : PSCmdlet
     {
         try
         {
-            var adapter = ConnectionRegistry.Get(Vendor) as NCentralEntityAdapter ?? throw new InvalidOperationException("Set-EntitySyncCustomProperty currently supports only N-central connections.");
+            using var lease = ConnectionRegistry.Acquire(Vendor);
+            var adapter = lease.Connection.Adapter as NCentralEntityAdapter ?? throw new InvalidOperationException("Set-EntitySyncCustomProperty currently supports only N-central connections.");
             if (!EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("N-central custom property updates currently support EntityType Customer.");
 
             if (!Apply)

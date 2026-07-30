@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Core\EntitySyncPlanArtifactSanitizer.cs" Link="EntitySyncPlanArtifactSanitizer.cs" />
+    <Compile Include="..\Core\EntitySyncPlanWorkbook.cs" Link="EntitySyncPlanWorkbook.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\LISSTech.EntitySync.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LISSTech.EntitySync" />
+  </ItemGroup>
+</Project>

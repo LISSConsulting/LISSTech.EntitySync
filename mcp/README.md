@@ -41,11 +41,26 @@ The root `.env.example` lists the minimal local Compose variables. `docker-compo
 
 DPAPI-backed EntitySync profiles are Windows-only and are intentionally not mounted into the Linux container. Use Coolify secret environment variables for container deployments.
 
+Remote `connect_vendor` calls cannot supply endpoints or credentials. Those values are server-managed, and vendor base URLs must use HTTPS. A connection receives a stable ID and generation; use distinct connection IDs when a future configuration provider exposes multiple accounts for the same vendor.
+
+## Safe Workflow
+
+1. Call `connect_vendor` for the source and target and retain both connection IDs.
+2. Call `create_sync_plan` with those connection IDs. Planning performs no writes.
+3. Call `get_sync_plan` until every page has been inspected.
+4. Call `approve_sync_plan` with the final inspected digest.
+5. Call `apply_sync_plan` with `apply=false` for a dry run.
+6. Call `apply_sync_plan` with `apply=true` only after review. Approval is consumed, so the plan cannot be replayed.
+
+Plans expire after four hours and are bound to the exact source and target connection generations used during planning. Reconnecting either account invalidates existing plans. Each tenant is limited to 20 retained plans, 32 connections, and 5,000 source or target entities per plan side.
+
+HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integration-link writebacks that currently exist only in the reviewed PowerShell executor. The MCP application executor rejects those workflows instead of performing incomplete target-only writes.
+
 ## Operational Model
 
-- Run exactly one replica. Connected adapters and generated plans are held in memory and are shared by clients authorized with the deployment's API key.
+- Run exactly one replica. Connections and plans are partitioned by `MCP_TENANT_ID`, but one API key still represents one trusted deployment principal.
 - A restart clears connections and plans. Reconnect vendors and create a fresh plan after each deployment or restart.
-- Creating a plan is read-only. Applying writes still requires `apply=true`; the default is a dry run.
+- Creating a plan is read-only. Applying writes requires digest approval and `apply=true`; the default is a dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
 - Rotate `MCP_API_KEY` in Coolify and redeploy if the key is disclosed.
 

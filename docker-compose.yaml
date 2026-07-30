@@ -6,6 +6,7 @@ services:
     environment:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       MCP_API_KEY: "${MCP_API_KEY:?MCP_API_KEY must be set}"
+      MCP_TENANT_ID: "${MCP_TENANT_ID:-default}"
       MCP_TRANSPORT: http
       HALO_BASE_URL: "${HALO_BASE_URL:-}"
       HALO_CLIENT_ID: "${HALO_CLIENT_ID:-}"

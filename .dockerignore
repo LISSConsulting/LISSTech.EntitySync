@@ -11,10 +11,8 @@ Tests
 docs
 en-US
 specs
-src/bin
-src/obj
-mcp/bin
-mcp/obj
+**/bin
+**/obj
 *.md
 .env
 .env.*

@@ -1,5 +1,6 @@
 using System.Management.Automation;
 using System.Text.Json;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Commands;
@@ -21,6 +22,8 @@ public sealed class ImportEntitySyncPlanCommand : PSCmdlet
         }
 
         var json = File.ReadAllText(resolved);
-        WriteObject(JsonSerializer.Deserialize<EntitySyncPlan>(json) ?? throw new InvalidOperationException("Plan file did not contain a valid EntitySync plan."));
+        var plan = JsonSerializer.Deserialize<EntitySyncPlan>(json) ?? throw new InvalidOperationException("Plan file did not contain a valid EntitySync plan.");
+        ReviewedPlanPolicy.PrepareForReview(plan);
+        WriteObject(plan);
     }
 }

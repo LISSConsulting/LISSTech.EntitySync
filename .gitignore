@@ -7,6 +7,10 @@ src/obj/
 Release/
 dist/
 artifacts/
+!src/Artifacts/
+!src/Artifacts/**
+src/Artifacts/bin/
+src/Artifacts/obj/
 
 # Module build artifacts. Keep the manifest in source control.
 Module/*.dll

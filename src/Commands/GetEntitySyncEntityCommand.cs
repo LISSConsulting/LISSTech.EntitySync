@@ -79,7 +79,8 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             var entityType = DynamicValue<string?>("EntityType", null) ?? throw new InvalidOperationException("EntityType is required.");
             var query = new EntityQuery { EntityType = entityType, Search = Search, IncludeInactive = IncludeInactive, FullObjects = FullObjects, IncludeSiteDetails = FullObjects, ThrottleLimit = ThrottleLimit };
             if (Count > 0) query.Count = Count;
-            var adapter = ConnectionRegistry.Get(Vendor);
+            using var lease = ConnectionRegistry.Acquire(Vendor);
+            var adapter = lease.Connection.Adapter;
             if (adapter is HaloEntityAdapter haloQueryAdapter && !FullObjects) query.RequiredCustomFieldName = string.Join(',', haloQueryAdapter.NetSuiteCustomerIdField, haloQueryAdapter.NetSuiteCustomerNameField);
             var traces = new ConcurrentQueue<string>();
             var progress = new ConcurrentQueue<EntitySyncProgress>();

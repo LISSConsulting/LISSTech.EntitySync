@@ -22,7 +22,8 @@ public sealed class TestEntitySyncConnectionCommand : PSCmdlet
         try
         {
             Vendor = NormalizeVendorAlias(Vendor);
-            WriteObject(ConnectionRegistry.Get(Vendor).TestConnectionAsync(CancellationToken.None).GetAwaiter().GetResult());
+            using var lease = ConnectionRegistry.Acquire(Vendor);
+            WriteObject(lease.Connection.Adapter.TestConnectionAsync(CancellationToken.None).GetAwaiter().GetResult());
         }
         catch (Exception ex)
         {

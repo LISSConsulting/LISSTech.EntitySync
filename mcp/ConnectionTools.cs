@@ -6,6 +6,7 @@ using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using ModelContextProtocol.Server;
 
@@ -15,37 +16,31 @@ namespace LISSTech.EntitySync.Mcp;
 public static class ConnectionTools
 {
     [McpServerTool]
-    [Description("Connect to a vendor using a named EntitySync profile or the default profile. Profile credentials are DPAPI-protected and never returned through MCP. Environment variables are used only when no matching profile exists. Do not pass secrets as tool arguments.")]
-    public static string ConnectVendor(
-        SyncSession session,
+    [Description("Connect a tenant-scoped vendor adapter using server-managed configuration. Remote callers cannot supply endpoints or credentials.")]
+    public static async Task<string> ConnectVendor(
+        IEntityConnectionRepository connections,
+        McpRequestContext context,
         [Description("Vendor name: HaloPSA, NetSuite, NCentral, or Bill.com")] string vendor,
-        [Description("EntitySync profile name. Omit to use the default profile.")] string? profileName = null,
-        [Description("Legacy direct HaloPSA base URL. Prefer profileName or the default profile.")] string? haloBaseUrl = null,
-        [Description("Legacy direct HaloPSA client ID. Prefer profileName or the default profile.")] string? haloClientId = null,
-        [Description("Legacy direct HaloPSA client secret. Do not pass secrets through chat; use an EntitySync profile.")] string? haloClientSecret = null,
-        [Description("Legacy direct NetSuite account ID. Prefer profileName or the default profile.")] string? netSuiteAccountId = null,
-        [Description("Legacy direct NetSuite consumer key. Do not pass secrets through chat; use an EntitySync profile.")] string? netSuiteConsumerKey = null,
-        [Description("Legacy direct NetSuite consumer secret. Do not pass secrets through chat; use an EntitySync profile.")] string? netSuiteConsumerSecret = null,
-        [Description("Legacy direct NetSuite token ID. Do not pass secrets through chat; use an EntitySync profile.")] string? netSuiteTokenId = null,
-        [Description("Legacy direct NetSuite token secret. Do not pass secrets through chat; use an EntitySync profile.")] string? netSuiteTokenSecret = null,
-        [Description("Legacy direct NCentral base URL. Prefer profileName or the default profile.")] string? ncentralBaseUrl = null,
-        [Description("Legacy direct NCentral API token. Do not pass secrets through chat; use an EntitySync profile.")] string? ncentralUserApiToken = null,
-        [Description("Legacy direct NCentral service organization ID. Prefer profileName or the default profile.")] string? ncentralServiceOrgId = null,
-        [Description("Legacy direct Bill.com API token. Do not pass secrets through chat; use an EntitySync profile.")] string? billComApiToken = null)
+        [Description("Stable connection ID. Use distinct IDs for multiple accounts of the same vendor.")] string? connectionId = null,
+        [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
+        CancellationToken cancellationToken = default)
     {
+        IEntityAdapter? adapter = null;
         try
         {
             var normalized = EntitySyncVendors.Normalize(vendor);
-            var profile = FindProfile(normalized, profileName);
-
+            if (!context.AllowProfiles && !string.IsNullOrWhiteSpace(profileName)) throw new InvalidOperationException("Profiles are disabled for remote MCP transport.");
+            var profile = context.AllowProfiles ? FindProfile(normalized, profileName) : null;
             if (normalized.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             {
-                var baseUrl = Resolve(haloBaseUrl, profile, "HaloBaseUrl", "HALO_BASE_URL");
-                var clientId = Resolve(haloClientId, profile, "HaloClientId", "HALO_CLIENT_ID");
-                var clientSecret = Resolve(haloClientSecret, profile, "HaloClientSecret", "HALO_CLIENT_SECRET");
-                var scope = ResolveOptional(profile, "HaloScope") ?? "all";
-                var token = GetHaloAccessToken(baseUrl, clientId, clientSecret, scope);
-                var adapter = new HaloEntityAdapter(new HaloOptions
+                var baseUrl = RequireHttps(Resolve(profile, "HaloBaseUrl", "HALO_BASE_URL"), normalized);
+                var token = await GetHaloAccessTokenAsync(
+                    baseUrl,
+                    Resolve(profile, "HaloClientId", "HALO_CLIENT_ID"),
+                    Resolve(profile, "HaloClientSecret", "HALO_CLIENT_SECRET"),
+                    ResolveOptional(profile, "HaloScope") ?? "all",
+                    cancellationToken).ConfigureAwait(false);
+                adapter = new HaloEntityAdapter(new HaloOptions
                 {
                     BaseUrl = baseUrl,
                     AccessToken = token,
@@ -62,27 +57,25 @@ public static class ConnectionTools
                     AccountManagerField = ResolveOptional(profile, "HaloAccountManagerField") ?? "CFassignedtam",
                     NCentralIntegrationId = ResolveInt(profile, "HaloNCentralIntegrationId", 0, "HALO_NCENTRAL_INTEGRATION_ID")
                 });
-                ConnectionRegistry.Set(adapter);
             }
             else if (normalized.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
             {
-                var adapter = new NetSuiteEntityAdapter(new NetSuiteOptions
+                adapter = new NetSuiteEntityAdapter(new NetSuiteOptions
                 {
-                    AccountId = Resolve(netSuiteAccountId, profile, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID"),
-                    ConsumerKey = Resolve(netSuiteConsumerKey, profile, "NetSuiteConsumerKey", "NETSUITE_CONSUMER_KEY"),
-                    ConsumerSecret = Resolve(netSuiteConsumerSecret, profile, "NetSuiteConsumerSecret", "NETSUITE_CONSUMER_SECRET"),
-                    TokenId = Resolve(netSuiteTokenId, profile, "NetSuiteTokenId", "NETSUITE_TOKEN_ID"),
-                    TokenSecret = Resolve(netSuiteTokenSecret, profile, "NetSuiteTokenSecret", "NETSUITE_TOKEN_SECRET")
+                    AccountId = Resolve(profile, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID"),
+                    ConsumerKey = Resolve(profile, "NetSuiteConsumerKey", "NETSUITE_CONSUMER_KEY"),
+                    ConsumerSecret = Resolve(profile, "NetSuiteConsumerSecret", "NETSUITE_CONSUMER_SECRET"),
+                    TokenId = Resolve(profile, "NetSuiteTokenId", "NETSUITE_TOKEN_ID"),
+                    TokenSecret = Resolve(profile, "NetSuiteTokenSecret", "NETSUITE_TOKEN_SECRET")
                 });
-                ConnectionRegistry.Set(adapter);
             }
             else if (normalized.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
             {
-                var adapter = new NCentralEntityAdapter(new NCentralOptions
+                adapter = new NCentralEntityAdapter(new NCentralOptions
                 {
-                    BaseUrl = Resolve(ncentralBaseUrl, profile, "NCentralBaseUrl", "NCENTRAL_BASE_URL"),
-                    UserApiToken = Resolve(ncentralUserApiToken, profile, "NCentralUserApiToken", "NCENTRAL_USER_API_TOKEN"),
-                    ServiceOrgId = Resolve(ncentralServiceOrgId, profile, "NCentralServiceOrgId", "NCENTRAL_SERVICE_ORG_ID"),
+                    BaseUrl = RequireHttps(Resolve(profile, "NCentralBaseUrl", "NCENTRAL_BASE_URL"), normalized),
+                    UserApiToken = Resolve(profile, "NCentralUserApiToken", "NCENTRAL_USER_API_TOKEN"),
+                    ServiceOrgId = Resolve(profile, "NCentralServiceOrgId", "NCENTRAL_SERVICE_ORG_ID"),
                     SoapUsername = ResolveOptional(profile, "NCentralSoapUsername", "NCENTRAL_SOAP_USERNAME") ?? string.Empty,
                     SoapPassword = ResolveOptional(profile, "NCentralSoapPassword", "NCENTRAL_SOAP_PASSWORD") ?? string.Empty,
                     SoapEndpointPath = ResolveOptional(profile, "NCentralSoapEndpointPath", "NCENTRAL_SOAP_ENDPOINT_PATH") ?? "dms2/services2/ServerEI2",
@@ -91,117 +84,141 @@ public static class ConnectionTools
                     NetSuiteIdPropertyLabel = ResolveOptional(profile, "NCentralNetSuiteIdPropertyLabel", "NCENTRAL_NETSUITE_ID_PROPERTY_LABEL") ?? "NetSuite Customer ID",
                     NetSuiteNamePropertyLabel = ResolveOptional(profile, "NCentralNetSuiteNamePropertyLabel", "NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL") ?? "NetSuite Customer Name"
                 });
-                ConnectionRegistry.Set(adapter);
             }
             else if (EntitySyncVendors.IsBillCom(normalized))
             {
-                var adapter = new BillComEntityAdapter(new BillComOptions
+                adapter = new BillComEntityAdapter(new BillComOptions
                 {
-                    BaseUrl = ResolveOptional(profile, "BillComBaseUrl", "BILLCOM_BASE_URL") ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields",
-                    ApiToken = Resolve(billComApiToken, profile, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN"),
+                    BaseUrl = RequireHttps(ResolveOptional(profile, "BillComBaseUrl", "BILLCOM_BASE_URL") ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields", normalized),
+                    ApiToken = Resolve(profile, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN"),
                     ClientFieldName = ResolveOptional(profile, "BillComClientFieldName", "BILLCOM_CLIENT_FIELD_NAME") ?? "Client"
                 });
-                ConnectionRegistry.Set(adapter);
             }
             else
             {
-                return JsonSerializer.Serialize(new { success = false, error = $"Unsupported vendor '{vendor}'. Use HaloPSA, NetSuite, NCentral, or Bill.com." });
+                return Error($"Unsupported vendor '{vendor}'.");
             }
 
-            return JsonSerializer.Serialize(new { success = true, vendor = normalized, profile = profile?.Name, message = $"Connected to {normalized}." });
+            var registration = connections.Register(context.TenantId, connectionId, adapter);
+            adapter = null;
+            return JsonSerializer.Serialize(new { success = true, registration.Id, registration.Vendor, registration.Generation, profile = profile?.Name });
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            return JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            throw;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Error(ex.Message);
+        }
+        catch
+        {
+            return Error("Connection failed. Check server logs for the correlated operation.");
+        }
+        finally
+        {
+            if (adapter is IDisposable disposable) disposable.Dispose();
         }
     }
 
     [McpServerTool]
-    [Description("List EntitySync connection profiles without returning paths or decrypted settings.")]
-    public static string ListProfiles()
+    [Description("List local EntitySync profiles. Profiles are disabled over remote HTTP transport.")]
+    public static string ListProfiles(McpRequestContext context)
     {
+        if (!context.AllowProfiles) return Error("Profiles are disabled for remote MCP transport.");
         try
         {
-            var profiles = EntitySyncProfileStore.ListProfiles().Select(profile => new
-            {
-                profile.Name,
-                profile.IsDefault,
-                profile.Vendors
-            });
+            var profiles = EntitySyncProfileStore.ListProfiles().Select(profile => new { profile.Name, profile.IsDefault, profile.Vendors });
             return JsonSerializer.Serialize(new { success = true, profiles });
         }
-        catch (Exception ex)
+        catch
         {
-            return JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            return Error("Profile listing failed.");
         }
     }
 
     [McpServerTool]
-    [Description("Test connectivity to a connected vendor adapter.")]
+    [Description("Test a tenant-scoped vendor connection.")]
     public static async Task<string> TestConnection(
-        [Description("Vendor name to test")] string vendor)
+        IEntityConnectionRepository connections,
+        McpRequestContext context,
+        [Description("Vendor name")] string vendor,
+        [Description("Connection ID. Required when multiple connections exist for this vendor.")] string? connectionId = null,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var normalized = EntitySyncVendors.Normalize(vendor);
-            var adapter = ConnectionRegistry.Get(normalized);
-            var result = await adapter.TestConnectionAsync(CancellationToken.None);
-            return JsonSerializer.Serialize(new { success = true, vendor = normalized, connected = result });
+            using var lease = connections.Acquire(context.TenantId, vendor, connectionId);
+            var connection = lease.Connection;
+            var connected = await connection.Adapter.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.Serialize(new { success = true, connection.Id, connection.Vendor, connected });
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            return JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            throw;
+        }
+        catch
+        {
+            return Error("Connection test failed.");
         }
     }
 
     [McpServerTool]
-    [Description("List all currently connected vendor adapters.")]
-    public static string ListConnections(SyncSession session)
+    [Description("List tenant-scoped connected vendor adapters.")]
+    public static string ListConnections(IEntityConnectionRepository connections, McpRequestContext context)
     {
-        return JsonSerializer.Serialize(new { vendors = session.ConnectedVendors });
+        var result = connections.List(context.TenantId).Select(connection => new { connection.Id, connection.Vendor, connection.Generation });
+        return JsonSerializer.Serialize(new { success = true, connections = result });
     }
 
     [McpServerTool]
-    [Description("Read entities from a connected vendor. Returns ExternalEntity records as JSON.")]
+    [Description("Read a bounded page of canonical entities from a tenant-scoped connection.")]
     public static async Task<string> GetEntities(
-        [Description("Vendor to read from")] string vendor,
-        [Description("Entity type: HaloPSA=Client/Site, NetSuite=Customer, NCentral=Customer/Site, Bill.com=Client")] string entityType = "Customer",
+        IEntityConnectionRepository connections,
+        McpRequestContext context,
+        [Description("Vendor name")] string vendor,
+        [Description("Entity type")] string entityType = "Customer",
+        [Description("Connection ID. Required when multiple connections exist for this vendor.")] string? connectionId = null,
         [Description("Optional name search filter")] string? search = null,
         [Description("Include inactive entities")] bool includeInactive = false,
-        [Description("Max entities to return (0 = all)")] int count = 0)
+        [Description("Maximum entities, from 1 through 1000")] int count = 100,
+        CancellationToken cancellationToken = default)
     {
+        if (count is < 1 or > 1000) return Error("Count must be between 1 and 1000.");
         try
         {
-            var normalized = EntitySyncVendors.Normalize(vendor);
-            var adapter = ConnectionRegistry.Get(normalized);
-            var query = new EntityQuery
+            using var lease = connections.Acquire(context.TenantId, vendor, connectionId);
+            var connection = lease.Connection;
+            var entities = await connection.Adapter.GetEntitiesAsync(new EntityQuery
             {
                 EntityType = entityType,
                 Search = search,
                 IncludeInactive = includeInactive,
-                FullObjects = false
-            };
-            if (count > 0) query.Count = count;
-
-            var entities = await adapter.GetEntitiesAsync(query, CancellationToken.None);
-            var result = entities.Select(e => new
+                FullObjects = false,
+                Count = count
+            }, cancellationToken).ConfigureAwait(false);
+            var result = entities.Take(count).Select(entity => new
             {
-                e.Vendor,
-                e.EntityType,
-                e.Id,
-                e.Name,
-                e.Email,
-                e.Phone,
-                e.Website,
-                e.IsActive,
-                externalIds = e.ExternalIds,
-                customFields = e.CustomFields
+                entity.Vendor,
+                entity.EntityType,
+                entity.Id,
+                entity.Name,
+                entity.Email,
+                entity.Phone,
+                entity.Website,
+                entity.IsActive,
+                externalIds = FilterFields(entity.ExternalIds),
+                customFields = FilterFields(entity.CustomFields)
             });
-            return JsonSerializer.Serialize(new { success = true, count = entities.Count, entities = result });
+            return JsonSerializer.Serialize(new { success = true, count = Math.Min(entities.Count, count), entities = result });
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            return JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            throw;
+        }
+        catch
+        {
+            return Error("Entity read failed.");
         }
     }
 
@@ -211,13 +228,11 @@ public static class ConnectionTools
         var selected = string.IsNullOrWhiteSpace(profileName)
             ? profiles.FirstOrDefault(profile => profile.IsDefault)
             : profiles.FirstOrDefault(profile => profile.Name.Equals(profileName.Trim(), StringComparison.OrdinalIgnoreCase));
-
         if (selected == null)
         {
             if (!string.IsNullOrWhiteSpace(profileName)) throw new InvalidOperationException($"EntitySync profile '{profileName.Trim()}' was not found.");
             return null;
         }
-
         var vendorProfile = EntitySyncProfileStore.LoadProfile(selected.Name)
             .FirstOrDefault(profile => EntitySyncVendors.Normalize(profile.Vendor).Equals(vendor, StringComparison.OrdinalIgnoreCase));
         if (vendorProfile == null)
@@ -225,21 +240,14 @@ public static class ConnectionTools
             if (!string.IsNullOrWhiteSpace(profileName)) throw new InvalidOperationException($"EntitySync profile '{selected.Name}' does not contain vendor '{vendor}'.");
             return null;
         }
-
         return new ResolvedVendorProfile(selected.Name, vendorProfile.Settings);
     }
 
-    private static string Resolve(string? value, ResolvedVendorProfile? profile, string profileKey, params string[] envVars)
+    private static string Resolve(ResolvedVendorProfile? profile, string profileKey, params string[] envVars)
     {
+        var value = ResolveOptional(profile, profileKey, envVars);
         if (!string.IsNullOrWhiteSpace(value)) return value;
-        var profileValue = ResolveOptional(profile, profileKey);
-        if (!string.IsNullOrWhiteSpace(profileValue)) return profileValue;
-        foreach (var env in envVars)
-        {
-            var envValue = Environment.GetEnvironmentVariable(env);
-            if (!string.IsNullOrWhiteSpace(envValue)) return envValue;
-        }
-        throw new InvalidOperationException($"Missing required value. Pass the parameter or set {string.Join(" or ", envVars)}.");
+        throw new InvalidOperationException($"Missing required server configuration: {string.Join(" or ", envVars)}.");
     }
 
     private static string? ResolveOptional(ResolvedVendorProfile? profile, string profileKey, params string[] envVars)
@@ -247,8 +255,8 @@ public static class ConnectionTools
         if (profile?.Settings.TryGetValue(profileKey, out var profileValue) == true && !string.IsNullOrWhiteSpace(profileValue)) return profileValue;
         foreach (var env in envVars)
         {
-            var envValue = Environment.GetEnvironmentVariable(env);
-            if (!string.IsNullOrWhiteSpace(envValue)) return envValue;
+            var value = Environment.GetEnvironmentVariable(env);
+            if (!string.IsNullOrWhiteSpace(value)) return value;
         }
         return null;
     }
@@ -258,10 +266,17 @@ public static class ConnectionTools
         var value = ResolveOptional(profile, profileKey, envVars);
         if (string.IsNullOrWhiteSpace(value)) return defaultValue;
         if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result)) return result;
-        throw new InvalidOperationException($"EntitySync profile setting '{profileKey}' must be an integer.");
+        throw new InvalidOperationException($"Server configuration '{profileKey}' must be an integer.");
     }
 
-    private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)
+    private static string RequireHttps(string value, string vendor)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{vendor} server configuration must use an absolute HTTPS URL.");
+        return uri.AbsoluteUri;
+    }
+
+    private static async Task<string> GetHaloAccessTokenAsync(string baseUrl, string clientId, string clientSecret, string scope, CancellationToken cancellationToken)
     {
         using var httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -271,14 +286,25 @@ public static class ConnectionTools
             ["client_secret"] = clientSecret,
             ["scope"] = scope
         });
-        using var response = httpClient.PostAsync("auth/token", content).GetAwaiter().GetResult();
-        var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"HaloPSA token request failed with HTTP {(int)response.StatusCode}: {body}");
-        using var doc = JsonDocument.Parse(body);
-        return doc.RootElement.GetProperty("access_token").GetString()
-            ?? throw new InvalidOperationException("HaloPSA token response did not include access_token.");
+        using var response = await httpClient.PostAsync("auth/token", content, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"HaloPSA token request failed with HTTP {(int)response.StatusCode}.");
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return document.RootElement.GetProperty("access_token").GetString() ?? throw new InvalidOperationException("HaloPSA token response did not include an access token.");
     }
 
+    private static IReadOnlyDictionary<string, TValue> FilterFields<TValue>(IReadOnlyDictionary<string, TValue> fields)
+    {
+        return fields.Where(pair => !IsSensitiveName(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSensitiveName(string name)
+    {
+        var normalized = name.Replace("_", string.Empty, StringComparison.Ordinal).Replace("-", string.Empty, StringComparison.Ordinal);
+        return new[] { "password", "secret", "token", "authorization", "credential", "apikey", "privatekey" }
+            .Any(term => normalized.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string Error(string message) => JsonSerializer.Serialize(new { success = false, error = message });
     private sealed record ResolvedVendorProfile(string Name, IReadOnlyDictionary<string, string> Settings);
 }

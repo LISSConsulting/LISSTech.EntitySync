@@ -8,10 +8,24 @@
     <OutputPath>../Build/Module</OutputPath>
     <TargetFramework>net8.0</TargetFramework>
     <TargetName>LISSTech.EntitySync</TargetName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="System.Management.Automation" Version="7.4.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Commands\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="Core\LISSTech.EntitySync.Core.csproj" />
+    <ProjectReference Include="Ports\LISSTech.EntitySync.Ports.csproj" />
+    <ProjectReference Include="Matching\LISSTech.EntitySync.Matching.csproj" />
+    <ProjectReference Include="Mapping\LISSTech.EntitySync.Mapping.csproj" />
+    <ProjectReference Include="Planning\LISSTech.EntitySync.Planning.csproj" />
+    <ProjectReference Include="Adapters\LISSTech.EntitySync.Adapters.csproj" />
+    <ProjectReference Include="Runtime\LISSTech.EntitySync.Runtime.csproj" />
+    <ProjectReference Include="Artifacts\LISSTech.EntitySync.Artifacts.csproj" />
+    <ProjectReference Include="Application\LISSTech.EntitySync.Application.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\en-US\*" CopyToOutputDirectory="PreserveNewest" Link="en-US\%(Filename)%(Extension)" />

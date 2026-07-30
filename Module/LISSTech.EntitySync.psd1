@@ -1,5 +1,16 @@
 @{
   RootModule           = 'LISSTech.EntitySync.dll'
+  RequiredAssemblies   = @(
+    'LISSTech.EntitySync.Core.dll'
+    'LISSTech.EntitySync.Ports.dll'
+    'LISSTech.EntitySync.Matching.dll'
+    'LISSTech.EntitySync.Mapping.dll'
+    'LISSTech.EntitySync.Planning.dll'
+    'LISSTech.EntitySync.Adapters.dll'
+    'LISSTech.EntitySync.Runtime.dll'
+    'LISSTech.EntitySync.Artifacts.dll'
+    'LISSTech.EntitySync.Application.dll'
+  )
   ModuleVersion        = '26.7.0'
   CompatiblePSEditions = @('Core')
   GUID                 = '6f7c17c1-7a36-4c7f-a5f7-197ffceec0ee'
@@ -31,6 +42,15 @@
   AliasesToExport      = @()
   FileList             = @(
     'LISSTech.EntitySync.dll'
+    'LISSTech.EntitySync.Core.dll'
+    'LISSTech.EntitySync.Ports.dll'
+    'LISSTech.EntitySync.Matching.dll'
+    'LISSTech.EntitySync.Mapping.dll'
+    'LISSTech.EntitySync.Planning.dll'
+    'LISSTech.EntitySync.Adapters.dll'
+    'LISSTech.EntitySync.Runtime.dll'
+    'LISSTech.EntitySync.Artifacts.dll'
+    'LISSTech.EntitySync.Application.dll'
     'en-US\about_LISSTech.EntitySync.help.txt'
   )
   PrivateData          = @{

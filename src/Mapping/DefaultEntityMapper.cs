@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 
@@ -206,30 +205,10 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     }
 
     // Matches the LTAC customer-scope slug contract in specs/001-ltac-sync-adapter/contracts/ltac-sync-rpc.md.
-    internal static bool IsValidLtacSlug(string? slug) => !string.IsNullOrEmpty(slug) && LtacSlugPattern().IsMatch(slug);
+    internal static bool IsValidLtacSlug(string? slug) => EntityScopeSlug.IsValid(slug);
 
     internal static string DeriveLtacSlug(string? displayName, string? fallbackId)
     {
-        var basis = !string.IsNullOrWhiteSpace(displayName) ? displayName : fallbackId ?? string.Empty;
-        var slug = ToLtacSlugCandidate(basis);
-        if (IsValidLtacSlug(slug)) return slug;
-
-        var fallbackIdSlug = ToLtacSlugCandidate(fallbackId);
-        if (!IsValidLtacSlug(fallbackIdSlug)) return $"customer-{fallbackId}".Trim('-');
-        var fallbackSlug = ToLtacSlugCandidate($"customer {fallbackIdSlug}");
-        return IsValidLtacSlug(fallbackSlug) ? fallbackSlug : $"customer-{fallbackId}".Trim('-');
+        return EntityScopeSlug.Derive(displayName, fallbackId);
     }
-
-    private static string ToLtacSlugCandidate(string? value)
-    {
-        var slug = LtacSlugSeparatorPattern().Replace(value ?? string.Empty, "-").Trim('-');
-        if (slug.Length > 64) slug = slug[..64].Trim('-');
-        return slug;
-    }
-
-    [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]$", RegexOptions.Compiled)]
-    private static partial Regex LtacSlugPattern();
-
-    [GeneratedRegex("[^A-Za-z0-9_-]+", RegexOptions.Compiled)]
-    private static partial Regex LtacSlugSeparatorPattern();
 }

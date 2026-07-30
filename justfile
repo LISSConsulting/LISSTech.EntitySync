@@ -17,6 +17,7 @@ mcp_project       := project_root / "mcp" / "LISSTech.EntitySync.Mcp.csproj"
 mcp_publish_dir   := project_root / "Build" / "Mcp"
 nswag_config      := project_root / "nswag.json"
 generated_client  := project_root / "src" / "Adapters" / "LTAC" / "Generated" / "AgentControllerClient.g.cs"
+platform_tests     := project_root / "Tests" / "LISSTech.EntitySync.Platform.Tests" / "LISSTech.EntitySync.Platform.Tests.csproj"
 signing_cert      := env("CODE_SIGNING_CERTIFICATE_THUMBPRINT", "")
 timestamp_url     := env("TIMESTAMP_URL", "http://timestamp.digicert.com")
 psgallery_key     := env("PSGALLERY_API_KEY", "")
@@ -62,6 +63,10 @@ restore:
     Invoke-JustTimed -Icon '📥' -Fallback '[restore]' -Text 'Restoring dependencies' -Script {
         dotnet restore '{{ source_project }}' --verbosity minimal
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet restore '{{ mcp_project }}' --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet restore '{{ platform_tests }}' --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         dotnet tool restore
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
@@ -74,6 +79,8 @@ build: init restore
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🔨' -Fallback '[build]' -Text 'Building {{ module_name }} into Build\Module' -Script {
+        Get-ChildItem '{{ build_module_dir }}' -Filter 'LISSTech.EntitySync*.dll' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+        Get-ChildItem '{{ build_module_dir }}' -Filter 'LISSTech.EntitySync*.pdb' -File -ErrorAction SilentlyContinue | Remove-Item -Force
         dotnet build '{{ source_project }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $manifest = '{{ build_manifest }}'
@@ -91,6 +98,8 @@ analyze: restore
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🔬' -Fallback '[analyze]' -Text 'Running C# analyzers' -Script {
         dotnet build '{{ source_project }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal -p:RunAnalyzers=true -p:TreatWarningsAsErrors=true
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        dotnet build '{{ mcp_project }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal -p:RunAnalyzers=true -p:TreatWarningsAsErrors=true
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
@@ -197,11 +206,13 @@ test: build
         } finally {
             $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH = $old
         }
+        dotnet test '{{ platform_tests }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
 # Full local quality gate
 [group('quality')]
-check: check-agentcontroller-client lint analyze test-load test
+check: check-agentcontroller-client lint analyze test-load test mcp-build mcp-compose-config
 
 # Generate external help from docs/ into source en-US; build copies it into Build/Module
 [group('docs')]
@@ -300,9 +311,13 @@ clean:
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🧹' -Fallback '[clean]' -Text 'Removing Build and Release artifacts' -Script {
-        foreach ($path in @('{{ build_dir }}', '{{ release_dir }}', '{{ project_root }}\src\obj', '{{ project_root }}\mcp\obj')) {
+        foreach ($path in @('{{ build_dir }}', '{{ release_dir }}')) {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
         }
+        Get-ChildItem '{{ project_root }}\src', '{{ project_root }}\mcp', '{{ project_root }}\tests' -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object Name -In @('bin', 'obj') |
+            Sort-Object FullName -Descending |
+            Remove-Item -Recurse -Force -ErrorAction Stop
     }
 
 # Build the EntitySync MCP server as a self-contained single-file binary
@@ -336,5 +351,8 @@ mcp-docker-build:
 
 # Validate the Coolify Compose model without starting it
 [group('mcp')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
 mcp-compose-config:
+    $env:MCP_API_KEY = 'compose-validation-key-32-characters'
     docker compose --file '{{ project_root }}\docker-compose.yaml' config --quiet

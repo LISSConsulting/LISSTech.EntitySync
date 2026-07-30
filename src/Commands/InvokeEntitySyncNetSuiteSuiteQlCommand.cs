@@ -15,7 +15,8 @@ public sealed class InvokeEntitySyncNetSuiteSuiteQlCommand : PSCmdlet
     {
         try
         {
-            var adapter = ConnectionRegistry.Get("NetSuite") as NetSuiteEntityAdapter
+            using var lease = ConnectionRegistry.Acquire("NetSuite");
+            var adapter = lease.Connection.Adapter as NetSuiteEntityAdapter
                 ?? throw new InvalidOperationException("The active NetSuite connection is not a NetSuite adapter. Run Connect-EntitySyncVendor -Vendor NetSuite first.");
             adapter.Trace = WriteVerbose;
             try

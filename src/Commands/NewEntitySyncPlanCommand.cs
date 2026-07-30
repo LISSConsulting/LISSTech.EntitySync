@@ -89,8 +89,10 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         {
             TargetVendor = NormalizeVendorAlias(TargetVendor);
             SourceVendor = NormalizeVendorAlias(SourceVendor);
-            var sourceAdapter = ConnectionRegistry.Get(SourceVendor);
-            var targetAdapter = ConnectionRegistry.Get(TargetVendor);
+            using var sourceLease = ConnectionRegistry.Acquire(SourceVendor);
+            using var targetLease = ConnectionRegistry.Acquire(TargetVendor);
+            var sourceAdapter = sourceLease.Connection.Adapter;
+            var targetAdapter = targetLease.Connection.Adapter;
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
             var targetEntityType = DynamicValue<string?>("TargetEntityType", null) ?? DefaultEntityType(TargetVendor);
             var isLtacSnapshot = IsLtacSnapshotPlan(sourceEntityType);

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Core;
 
@@ -6,24 +5,24 @@ namespace LISSTech.EntitySync.Runtime;
 
 public static class ConnectionRegistry
 {
-    private static readonly ConcurrentDictionary<string, IEntityAdapter> Adapters = new(StringComparer.OrdinalIgnoreCase);
+    private const string PowerShellTenant = "powershell";
+    private static readonly InMemoryEntityConnectionRepository ConnectionsRepository = new();
 
     public static void Set(IEntityAdapter adapter)
     {
-        Adapters[EntitySyncVendors.Normalize(adapter.Vendor)] = adapter;
+        var vendor = EntitySyncVendors.Normalize(adapter.Vendor);
+        ConnectionsRepository.Register(PowerShellTenant, vendor.ToLowerInvariant(), adapter);
     }
 
-    public static IEntityAdapter Get(string vendor)
+    public static IEntityConnectionLease Acquire(string vendor)
     {
-        if (Adapters.TryGetValue(EntitySyncVendors.Normalize(vendor), out var adapter)) return adapter;
-        throw new InvalidOperationException($"No EntitySync connection exists for vendor '{vendor}'. Run Connect-EntitySyncVendor first.");
+        return ConnectionsRepository.Acquire(PowerShellTenant, vendor);
     }
 
     public static IReadOnlyList<EntitySyncConnection> Connections()
     {
-        return Adapters
-            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(pair => new EntitySyncConnection { Vendor = pair.Key, Adapter = pair.Value })
+        return ConnectionsRepository.List(PowerShellTenant)
+            .Select(connection => new EntitySyncConnection { Vendor = connection.Vendor, Adapter = connection.Adapter })
             .ToArray();
     }
 }

@@ -7,7 +7,12 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
+using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Mapping;
+using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Mcp;
+using LISSTech.EntitySync.Ports;
+using LISSTech.EntitySync.Runtime;
 
 var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio").Trim().ToLowerInvariant();
 
@@ -39,7 +44,7 @@ static async Task RunStdioAsync(string[] args)
         .WithStdioServerTransport()
         .WithToolsFromAssembly();
 
-    builder.Services.AddSingleton<SyncSession>();
+    AddEntitySyncPlatform(builder.Services, new McpRequestContext("local", true));
 
     await builder.Build().RunAsync();
 }
@@ -57,7 +62,8 @@ static async Task RunHttpAsync(string[] args)
         .WithHttpTransport(options => options.Stateless = true)
         .WithToolsFromAssembly();
 
-    builder.Services.AddSingleton<SyncSession>();
+    var tenantId = Environment.GetEnvironmentVariable("MCP_TENANT_ID")?.Trim();
+    AddEntitySyncPlatform(builder.Services, new McpRequestContext(string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId, false));
 
     var app = builder.Build();
 
@@ -79,6 +85,17 @@ static async Task RunHttpAsync(string[] args)
     app.MapMcp("/mcp");
 
     await app.RunAsync();
+}
+
+static void AddEntitySyncPlatform(IServiceCollection services, McpRequestContext context)
+{
+    services.AddSingleton(context);
+    services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
+    services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
+    services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
+    services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
+    services.AddSingleton<EntitySyncPlanner>();
+    services.AddSingleton<EntitySyncService>();
 }
 
 static bool HasValidBearerToken(HttpRequest request, string expectedToken)

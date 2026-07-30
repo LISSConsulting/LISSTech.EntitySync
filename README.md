@@ -105,19 +105,18 @@ $customerPlan | Invoke-EntitySyncPlan -Apply -PassThru
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'monospace', 'fontSize': '13px', 'primaryColor': '#2E71B8', 'primaryBorderColor': '#000', 'primaryTextColor': '#000', 'lineColor': '#000'}}}%%
 graph LR
-    A["🎮 PowerShell Cmdlets<br/>binary module"] --> B["🔌 ConnectionRegistry<br/>active adapters"]
-    M["🌐 MCP Server<br/>stdio / HTTP"] --> B
-    B --> C["🟦 NetSuite Adapter<br/>customers"]
-    B --> D["🟩 HaloPSA Adapter<br/>clients & sites"]
-    B --> K["🟧 N-central Adapter<br/>customers & sites"]
-    B --> L["🟥 AgentController Adapter<br/>customer scopes<br/>(target only)"]
-    C --> E["📦 ExternalEntity<br/>canonical model"]
-    D --> E
-    K --> E
-    L --> E
-    E --> F["🧠 WeightedEntityMatcher<br/>explainable scoring"]
-    F --> G["📋 EntitySyncPlan<br/>None / Link / Create / Review"]
-    G --> H{"🧨 Invoke-EntitySyncPlan<br/>-Apply required"}
+    A["🎮 PowerShell Host"] --> U["⚙️ Application<br/>plan / inspect / approve / apply"]
+    M["🌐 MCP Host<br/>stdio / HTTP"] --> U
+    U --> P["🔌 Ports<br/>connections / plans / vendor capabilities"]
+    U --> E["📦 Core<br/>canonical entities / immutable execution metadata"]
+    P --> C["🟦 NetSuite Adapter"]
+    P --> D["🟩 HaloPSA Adapter"]
+    P --> K["🟧 N-central Adapter"]
+    P --> L["🟥 AgentController Adapter"]
+    P --> R["🗄️ Runtime Adapters<br/>tenant connections / plan state"]
+    E --> F["🧠 Matching + Mapping<br/>pure policies"]
+    F --> G["📋 EntitySyncPlan<br/>digest / expiry / connection generations"]
+    G --> H{"🧨 Approval + Apply<br/>single-use transition"}
     H -->|"WhatIf / Review"| I["🛑 no vendor writes"]
     H -->|"approved actions"| J["✍️ adapter writes"]
 
@@ -129,7 +128,7 @@ graph LR
     classDef red fill:#DA5657,stroke:#000,stroke-width:3px,color:#fff,font-weight:bold
     classDef green fill:#C7F464,stroke:#000,stroke-width:3px,color:#000,font-weight:bold
 
-    class A,B,M blue
+    class A,M,U,P,R blue
     class C,D mint
     class K orange
     class L red2
@@ -141,8 +140,9 @@ graph LR
 | Layer | Role | Brutal truth |
 |---|---|---|
 | 🎮 **Cmdlets** | Operator surface | PowerShell objects in, PowerShell objects out. No GUI ceremony. |
-| 🌐 **MCP server** | Agent surface | The same guarded sync engine over local stdio or authenticated Streamable HTTP. |
-| 🔌 **Adapters** | Vendor IO | NetSuite, HaloPSA, N-central, and LTAC specifics live at the edge, not smeared through sync logic. |
+| 🌐 **MCP server** | Agent surface | Thin transport tools over the Application layer; remote callers cannot supply vendor secrets or endpoints. |
+| ⚙️ **Application** | Use cases | Tenant-scoped connections, complete plan inspection, digest approval, expiry, stale-connection rejection, and replay prevention. |
+| 🔌 **Ports and adapters** | Vendor and persistence boundaries | Core/Application do not reference concrete vendor or runtime assemblies. |
 | 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
 | 📋 **Plan** | Change manifest | Sync becomes an Excel-reviewable artifact before it becomes vendor mutation. |
@@ -400,7 +400,7 @@ Requires [PowerShell 7.4+](https://learn.microsoft.com/powershell/), [.NET 8 SDK
 
 ```powershell
 just              # list recipes
-just build        # compile src/LISSTech.EntitySync.csproj into Module/
+just build        # compile the module and supporting assemblies into Build/Module/
 just test-load    # import the module and list exported commands
 just test         # run Pester tests
 just mcp-build    # publish the MCP executable
@@ -417,19 +417,21 @@ just clean        # remove compiled output
 ```text
 📦 LISSTech.EntitySync
 ├── 📜 Module/
-│   └── LISSTech.EntitySync.psd1        # module manifest; compiled DLL lands here
+│   └── LISSTech.EntitySync.psd1        # source module manifest
 ├── 📚 docs/                            # external help markdown
 ├── 🌎 en-US/                           # about topic source
-├── 🧪 Tests/                           # Pester tests
+├── 🧪 Tests/                           # Pester + platform architecture tests
 ├── 🌐 mcp/                             # stdio + Streamable HTTP MCP host and Dockerfile
 ├── 🧬 src/
 │   ├── Adapters/                       # HaloPSA + NetSuite + N-central + AgentController vendor IO
+│   ├── Application/                    # planning, inspection, approval, and execution use cases
+│   ├── Artifacts/                      # Excel/JSON plan boundary
 │   ├── Commands/                       # public PowerShell cmdlets
 │   ├── Core/                           # canonical models + plan types
 │   ├── Mapping/                        # vendor-to-canonical mapping
 │   ├── Matching/                       # weighted explainable matching
 │   ├── Ports/                          # adapter abstractions
-│   └── Runtime/                        # connection registry/runtime state
+│   └── Runtime/                        # in-memory implementations of connection and plan ports
 ├── docker-compose.yaml                 # Coolify-ready MCP application
 ├── justfile                            # build/test automation
 └── README.md

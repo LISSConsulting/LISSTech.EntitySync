@@ -1,7 +1,6 @@
 using System.Net.Http.Headers;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Core;
-using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.LTAC;
@@ -206,7 +205,7 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
             var customer = customers[i];
             var prefix = $"customers[{i}]";
             if (string.IsNullOrWhiteSpace(customer.Slug)) errors.Add($"{prefix}.slug is required");
-            else if (!DefaultEntityMapper.IsValidLtacSlug(customer.Slug)) errors.Add($"{prefix}.slug must match the LTAC customer-scope contract");
+            else if (!EntityScopeSlug.IsValid(customer.Slug)) errors.Add($"{prefix}.slug must match the LTAC customer-scope contract");
             if (string.IsNullOrWhiteSpace(customer.DisplayName)) errors.Add($"{prefix}.display_name is required");
             if (string.IsNullOrWhiteSpace(customer.NCentralCustomerId)) errors.Add($"{prefix}.ncentral_customer_id is required");
         }

@@ -4939,7 +4939,7 @@ namespace EntitySyncTests
 
         $tableNs = [System.Xml.XmlNamespaceManager]::new($table.NameTable)
         $tableNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
-        $table.SelectSingleNode('//x:table[@ref=''A1:N2'']', $tableNs) | Should -Not -BeNullOrEmpty
+        $table.SelectSingleNode('//x:table[@ref=''A1:O2'']', $tableNs) | Should -Not -BeNullOrEmpty
       }
       finally {
         $zip.Dispose()
@@ -5003,7 +5003,7 @@ namespace EntitySyncTests
 
         $sheetNs = [System.Xml.XmlNamespaceManager]::new($sheet.NameTable)
         $sheetNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
-        $rule = $sheet.SelectSingleNode('//x:conditionalFormatting[@sqref=''A2:N1048576'']/x:cfRule[@type=''expression'' and @dxfId=''0'']', $sheetNs)
+        $rule = $sheet.SelectSingleNode('//x:conditionalFormatting[@sqref=''A2:O1048576'']/x:cfRule[@type=''expression'' and @dxfId=''0'']', $sheetNs)
         $rule | Should -Not -BeNullOrEmpty
         $rule.formula | Should -Be 'AND($F2<>"",$E2<>$F2)'
         $sheet.SelectSingleNode('//x:sheetFormatPr[@defaultRowHeight=''17'' and @customHeight=''1'']', $sheetNs) | Should -Not -BeNullOrEmpty
@@ -5024,7 +5024,7 @@ namespace EntitySyncTests
         $tableNs = [System.Xml.XmlNamespaceManager]::new($table.NameTable)
         $tableNs.AddNamespace('x', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
         $table.SelectSingleNode('//x:tableStyleInfo[@name=''TableStyleMedium12'']', $tableNs) | Should -Not -BeNullOrEmpty
-        $table.SelectSingleNode('//x:table[@ref=''A1:N2'']', $tableNs) | Should -Not -BeNullOrEmpty
+        $table.SelectSingleNode('//x:table[@ref=''A1:O2'']', $tableNs) | Should -Not -BeNullOrEmpty
 
         $relationshipNs = [System.Xml.XmlNamespaceManager]::new($relationships.NameTable)
         $relationshipNs.AddNamespace('r', 'http://schemas.openxmlformats.org/package/2006/relationships')
