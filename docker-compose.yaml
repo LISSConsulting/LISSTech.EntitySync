@@ -5,8 +5,11 @@ services:
       dockerfile: mcp/Dockerfile
     environment:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
-      MCP_API_KEY: "${MCP_API_KEY:?MCP_API_KEY must be set}"
-      MCP_TENANT_ID: "${MCP_TENANT_ID:-default}"
+      MCP_OAUTH_AUTHORITY: "${MCP_OAUTH_AUTHORITY:?MCP_OAUTH_AUTHORITY must be set}"
+      MCP_OAUTH_RESOURCE: "${MCP_OAUTH_RESOURCE:?MCP_OAUTH_RESOURCE must be set}"
+      MCP_OAUTH_AUDIENCE: "${MCP_OAUTH_AUDIENCE:?MCP_OAUTH_AUDIENCE must be set}"
+      MCP_OAUTH_SCOPES: "${MCP_OAUTH_SCOPES:-mcp:tools}"
+      MCP_OAUTH_REQUIRED_SCOPE: "${MCP_OAUTH_REQUIRED_SCOPE:-mcp:tools}"
       MCP_TRANSPORT: http
       HALO_BASE_URL: "${HALO_BASE_URL:-}"
       HALO_CLIENT_ID: "${HALO_CLIENT_ID:-}"

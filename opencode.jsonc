@@ -8,8 +8,12 @@
       "timeout": 30000,
     },
     "entitysync": {
-      "type": "local",
-      "command": ["cmd.exe", "/d", "/c", "%USERPROFILE%\\scoop\\apps\\lisstech-entitysync-mcp\\current\\lisstech-entitysync-mcp.exe"],
+      "type": "remote",
+      "url": "https://r8cbfsebyth7rjc9byiemefq.clfy-b.lissonline.com/mcp",
+      "oauth": {
+        "clientId": "6b7d46a4-a4cd-488a-9738-63f532197790",
+        "scope": "https://r8cbfsebyth7rjc9byiemefq.clfy-b.lissonline.com/mcp/mcp.tools offline_access",
+      },
       "enabled": true,
       "timeout": 180000,
     },

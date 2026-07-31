@@ -11,18 +11,24 @@ HTTP mode serves:
 
 | Route | Authentication | Purpose |
 |---|---|---|
-| `/mcp` | `Authorization: Bearer <MCP_API_KEY>` | Streamable HTTP MCP endpoint |
+| `/mcp` | OAuth 2.1 bearer access token | Streamable HTTP MCP endpoint |
+| `/.well-known/oauth-protected-resource/mcp` | None | RFC 9728 protected-resource metadata |
 | `/health` | None | Container and Coolify health probe |
+
+HTTP mode is an OAuth resource server; it does not issue tokens or handle interactive login. It validates signed JWT access tokens through the configured authorization server, including signature, issuer, expiration, audience, and scope. The OAuth access token is never forwarded to vendor APIs.
 
 ## Coolify Deployment
 
-1. Create a Docker Compose resource from this Git repository.
-2. Use the root `docker-compose.yaml` Compose file.
-3. Set `MCP_API_KEY` as a secret environment variable. It must contain at least 32 characters; generate one with `openssl rand -hex 32`.
-4. Add the environment variables for the vendors the server will use.
-5. Assign a domain to the `entitysync-mcp` service on container port `8080`.
-6. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}`.
-7. Configure the MCP client with URL `https://<domain>/mcp` and an `Authorization: Bearer <MCP_API_KEY>` header.
+1. Configure an OAuth 2.1 authorization server that issues signed JWT access tokens and exposes OAuth authorization-server metadata plus OIDC/JWKS discovery. Register `https://<domain>/mcp` as the resource/audience and allow the `mcp:tools` scope. Enable dynamic client registration when the MCP clients require it, or register those clients manually.
+2. Create a Docker Compose resource from this Git repository and use the root `docker-compose.yaml` Compose file.
+3. Set `MCP_OAUTH_AUTHORITY` to the authorization server issuer URL.
+4. Set `MCP_OAUTH_RESOURCE` to the canonical public MCP URL, such as `https://<domain>/mcp`. This exact value is advertised to MCP clients as the OAuth resource.
+5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
+6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
+7. Add the environment variables for the vendors the server will use.
+8. Assign the domain to the `entitysync-mcp` service on container port `8080`.
+9. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.
+10. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
@@ -58,11 +64,11 @@ HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integ
 
 ## Operational Model
 
-- Run exactly one replica. Connections and plans are partitioned by `MCP_TENANT_ID`, but one API key still represents one trusted deployment principal.
+- Run exactly one replica. Connections and plans are partitioned by the validated OAuth `sub` claim, so each authorization-server subject has isolated in-memory state.
 - A restart clears connections and plans. Reconnect vendors and create a fresh plan after each deployment or restart.
 - Creating a plan is read-only. Applying writes requires digest approval and `apply=true`; the default is a dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
-- Rotate `MCP_API_KEY` in Coolify and redeploy if the key is disclosed.
+- Access-token lifetime, revocation, user consent, client registration, and signing-key rotation belong to the authorization server. The MCP server refreshes signing keys from its discovery metadata.
 
 ## Local Development
 

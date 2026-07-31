@@ -354,5 +354,7 @@ mcp-docker-build:
 [script('pwsh', '-NoProfile')]
 [extension('.ps1')]
 mcp-compose-config:
-    $env:MCP_API_KEY = 'compose-validation-key-32-characters'
+    $env:MCP_OAUTH_AUTHORITY = 'https://auth.example.com'
+    $env:MCP_OAUTH_RESOURCE = 'https://mcp.example.com/mcp'
+    $env:MCP_OAUTH_AUDIENCE = 'https://mcp.example.com/mcp'
     docker compose --file '{{ project_root }}\docker-compose.yaml' config --quiet

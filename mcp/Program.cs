@@ -1,10 +1,11 @@
-using System.Security.Cryptography;
-using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
+using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 
 using LISSTech.EntitySync.Application;
@@ -44,52 +45,96 @@ static async Task RunStdioAsync(string[] args)
         .WithStdioServerTransport()
         .WithToolsFromAssembly();
 
-    AddEntitySyncPlatform(builder.Services, new McpRequestContext("local", true));
+    builder.Services.AddSingleton(new McpRequestContext("local", true));
+    AddEntitySyncPlatform(builder.Services);
 
     await builder.Build().RunAsync();
 }
 
 static async Task RunHttpAsync(string[] args)
 {
-    var apiKey = Environment.GetEnvironmentVariable("MCP_API_KEY");
-    if (string.IsNullOrWhiteSpace(apiKey) || apiKey.Length < 32)
-        throw new InvalidOperationException("MCP_API_KEY must contain at least 32 characters when MCP_TRANSPORT=http.");
+    var authority = RequireHttpsUri("MCP_OAUTH_AUTHORITY");
+    var resource = RequireHttpsUri("MCP_OAUTH_RESOURCE");
+    var audience = (Environment.GetEnvironmentVariable("MCP_OAUTH_AUDIENCE") ?? resource).Trim();
+    if (string.IsNullOrWhiteSpace(audience))
+        throw new InvalidOperationException("MCP_OAUTH_AUDIENCE must contain the access-token audience when MCP_TRANSPORT=http.");
+
+    var scopes = (Environment.GetEnvironmentVariable("MCP_OAUTH_SCOPES") ?? "mcp:tools")
+        .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Distinct(StringComparer.Ordinal)
+        .ToArray();
+    if (scopes.Length == 0)
+        throw new InvalidOperationException("MCP_OAUTH_SCOPES must contain at least one OAuth scope value.");
+
+    var requiredScope = (Environment.GetEnvironmentVariable("MCP_OAUTH_REQUIRED_SCOPE") ?? "mcp:tools").Trim();
+    if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
+        throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
     var builder = WebApplication.CreateBuilder(args);
+
+    builder.Services
+        .AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+            options.DefaultChallengeScheme = McpAuthenticationDefaults.AuthenticationScheme;
+        })
+        .AddJwtBearer(options =>
+        {
+            options.Authority = authority;
+            options.Audience = audience;
+            options.MapInboundClaims = false;
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidAudience = audience,
+                NameClaimType = "name",
+                RoleClaimType = "roles"
+            };
+        })
+        .AddMcp(options =>
+        {
+            options.ResourceMetadata = new()
+            {
+                Resource = resource,
+                ResourceName = "LISSTech EntitySync MCP Server",
+                AuthorizationServers = { authority },
+                ScopesSupported = scopes,
+                BearerMethodsSupported = ["header"]
+            };
+        });
+
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("mcp", policy => policy
+            .RequireAuthenticatedUser()
+            .RequireAssertion(context => HasScope(context.User, requiredScope)));
+    });
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<McpRequestContext>();
 
     builder.Services
         .AddMcpServer()
         .WithHttpTransport(options => options.Stateless = true)
         .WithToolsFromAssembly();
 
-    var tenantId = Environment.GetEnvironmentVariable("MCP_TENANT_ID")?.Trim();
-    AddEntitySyncPlatform(builder.Services, new McpRequestContext(string.IsNullOrWhiteSpace(tenantId) ? "default" : tenantId, false));
+    AddEntitySyncPlatform(builder.Services);
 
     var app = builder.Build();
 
-    app.UseWhen(
-        context => context.Request.Path.StartsWithSegments("/mcp"),
-        branch => branch.Use(async (context, next) =>
-        {
-            if (!HasValidBearerToken(context.Request, apiKey))
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                context.Response.Headers["WWW-Authenticate"] = "Bearer";
-                return;
-            }
-
-            await next(context);
-        }));
+    app.UseAuthentication();
+    app.UseAuthorization();
 
     app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
-    app.MapMcp("/mcp");
+    app.MapMcp("/mcp").RequireAuthorization("mcp");
 
     await app.RunAsync();
 }
 
-static void AddEntitySyncPlatform(IServiceCollection services, McpRequestContext context)
+static void AddEntitySyncPlatform(IServiceCollection services)
 {
-    services.AddSingleton(context);
     services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
     services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
     services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
@@ -98,14 +143,23 @@ static void AddEntitySyncPlatform(IServiceCollection services, McpRequestContext
     services.AddSingleton<EntitySyncService>();
 }
 
-static bool HasValidBearerToken(HttpRequest request, string expectedToken)
+static string RequireHttpsUri(string variableName)
 {
-    const string bearerPrefix = "Bearer ";
-    var authorization = request.Headers["Authorization"].ToString();
-    if (!authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase)) return false;
+    var value = Environment.GetEnvironmentVariable(variableName)?.Trim();
+    if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+        || !string.IsNullOrEmpty(uri.UserInfo)
+        || !string.IsNullOrEmpty(uri.Query)
+        || !string.IsNullOrEmpty(uri.Fragment))
+        throw new InvalidOperationException($"{variableName} must be an absolute HTTPS URI without user info, a query, or a fragment when MCP_TRANSPORT=http.");
 
-    var suppliedToken = authorization[bearerPrefix.Length..].Trim();
-    return CryptographicOperations.FixedTimeEquals(
-        Encoding.UTF8.GetBytes(suppliedToken),
-        Encoding.UTF8.GetBytes(expectedToken));
+    return uri.AbsoluteUri;
+}
+
+static bool HasScope(System.Security.Claims.ClaimsPrincipal principal, string requiredScope)
+{
+    return principal.Claims
+        .Where(claim => claim.Type is "scope" or "scp")
+        .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        .Contains(requiredScope, StringComparer.Ordinal);
 }

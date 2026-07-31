@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mcp;
@@ -5,6 +6,7 @@ using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
+using Microsoft.AspNetCore.Http;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -365,6 +367,32 @@ public sealed class PlatformTests
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.GetSyncPlan)));
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.ApproveSyncPlan)));
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.ApplySyncPlan)));
+    }
+
+    [Fact]
+    public void HttpMcpContextUsesAuthenticatedOAuthSubjectAsTenant()
+    {
+        var httpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "oauth-subject")], "Bearer"))
+        };
+        var context = new McpRequestContext(new HttpContextAccessor { HttpContext = httpContext });
+
+        Assert.Equal("oauth-subject", context.TenantId);
+        Assert.False(context.AllowProfiles);
+    }
+
+    [Fact]
+    public void HttpMcpContextRejectsMissingOAuthSubject()
+    {
+        var httpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(authenticationType: "Bearer"))
+        };
+        var context = new McpRequestContext(new HttpContextAccessor { HttpContext = httpContext });
+
+        var exception = Assert.Throws<InvalidOperationException>(() => context.TenantId);
+        Assert.Contains("'sub' claim", exception.Message, StringComparison.Ordinal);
     }
 
     private static EntitySyncService CreateService(IEntityConnectionRepository connections, IEntitySyncPlanRepository? plans = null)
