@@ -8,6 +8,9 @@ public sealed class CreateEntitySyncPlanRequest
     public string TargetVendor { get; init; } = string.Empty;
     public string? TargetConnectionId { get; init; }
     public string? SourceEntityType { get; init; }
+    public string? SourceSearch { get; init; }
+    public int? SourceCount { get; init; }
+    public string? SourceEntityId { get; init; }
     public string? TargetEntityType { get; init; }
     public bool CreateMissing { get; init; }
     public bool IncludeInactive { get; init; }
@@ -31,7 +34,9 @@ public sealed record EntitySyncPlanItemView(
     string Action,
     string MatchType,
     int Score,
+    string SourceId,
     string Source,
+    string? TargetId,
     string? Target,
     IReadOnlyList<string> Reasons);
 

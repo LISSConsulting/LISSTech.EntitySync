@@ -4,7 +4,11 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Application;
 
-public sealed class EntitySyncPlanner(IEntityConnectionRepository connections, IEntitySyncPlanRepository plans, IEntityMatcher matcher)
+public sealed class EntitySyncPlanner(
+    IEntityConnectionRepository connections,
+    IEntitySyncPlanRepository plans,
+    IEntityExclusionRepository exclusions,
+    IEntityMatcher matcher)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
 
@@ -22,12 +26,63 @@ public sealed class EntitySyncPlanner(IEntityConnectionRepository connections, I
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
 
-        var sourceQuery = new EntityQuery { EntityType = sourceType, IncludeInactive = request.IncludeInactive, Count = MaxEntitiesPerPlanSide + 1 };
+        var sourceQuery = new EntityQuery
+        {
+            EntityType = sourceType,
+            Search = request.SourceSearch?.Trim(),
+            IncludeInactive = request.IncludeInactive,
+            Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
+        };
         var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
 
         var sources = await sourceConnection.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
+        if (request.SourceEntityId is not null)
+        {
+            var expectedSourceId = request.SourceEntityId.Trim();
+            sources = sources
+                .Where(source => source.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (sources.Count != 1)
+                throw new ArgumentException(
+                    $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
+                    nameof(request));
+        }
         var targets = await targetConnection.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyDictionary<string, EntityExclusion> exclusionsBySourceId;
+        if (request.CreateMissing)
+        {
+            var exclusionRoute = EntityExclusionRoute.Create(
+                request.TenantId,
+                sourceVendor,
+                sourceConnection.Id,
+                sourceType,
+                targetVendor,
+                targetConnection.Id,
+                targetType);
+            try
+            {
+                var activeExclusions = await exclusions.ListActiveAsync(exclusionRoute, cancellationToken).ConfigureAwait(false);
+                exclusionsBySourceId = activeExclusions.ToDictionary(
+                    exclusion => exclusion.SourceEntityId,
+                    StringComparer.OrdinalIgnoreCase);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new EntityExclusionUnavailableException(
+                    "Permanent exclusions could not be obtained; create-missing planning is blocked.",
+                    ex);
+            }
+        }
+        else
+        {
+            exclusionsBySourceId = new Dictionary<string, EntityExclusion>(StringComparer.OrdinalIgnoreCase);
+        }
         if (sources.Count > MaxEntitiesPerPlanSide || targets.Count > MaxEntitiesPerPlanSide)
             throw new InvalidOperationException($"A plan is limited to {MaxEntitiesPerPlanSide} source and target entities. Narrow the synchronization scope.");
 
@@ -69,7 +124,23 @@ public sealed class EntitySyncPlanner(IEntityConnectionRepository connections, I
         };
 
         var index = matcher.CreateIndex(targets, options);
-        foreach (var source in sources) plan.Items.Add(CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks));
+        foreach (var source in sources)
+        {
+            if (exclusionsBySourceId.TryGetValue(source.Id, out var exclusion))
+            {
+                plan.Items.Add(new EntitySyncPlanItem
+                {
+                    Source = source,
+                    Action = "None",
+                    MatchType = "PersistentExclusion",
+                    Status = "Excluded",
+                    Reasons = [$"Permanently excluded: {exclusion.Reason}"]
+                });
+                continue;
+            }
+
+            plan.Items.Add(CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks));
+        }
         plans.Add(plan);
         return plan;
     }
@@ -143,6 +214,18 @@ public sealed class EntitySyncPlanner(IEntityConnectionRepository connections, I
         if (request.ReviewScore is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(request), "Review score must be between 0 and 100.");
         if (request.AutoLinkScore is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(request), "Auto-link score must be between 0 and 100.");
         if (request.ReviewScore > request.AutoLinkScore) throw new ArgumentException("Review score cannot exceed auto-link score.", nameof(request));
+        if (request.SourceSearch is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.SourceSearch)) throw new ArgumentException("Source search cannot be blank when supplied.", nameof(request));
+            if (request.SourceSearch.Trim().Length > 512) throw new ArgumentException("Source search cannot exceed 512 characters.", nameof(request));
+        }
+        if (request.SourceCount is <= 0 or > MaxEntitiesPerPlanSide)
+            throw new ArgumentOutOfRangeException(nameof(request), $"Source count must be between 1 and {MaxEntitiesPerPlanSide}.");
+        if (request.SourceEntityId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.SourceEntityId)) throw new ArgumentException("Source entity ID cannot be blank when supplied.", nameof(request));
+            if (request.SourceEntityId.Trim().Length > 512) throw new ArgumentException("Source entity ID cannot exceed 512 characters.", nameof(request));
+        }
     }
 
     private static void ValidateWorkflow(string sourceVendor, string targetVendor)

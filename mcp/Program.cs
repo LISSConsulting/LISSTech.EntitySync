@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
+using Npgsql;
 
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Mapping;
@@ -129,6 +130,7 @@ static async Task RunHttpAsync(string[] args)
     AddEntitySyncPlatform(builder.Services);
 
     var app = builder.Build();
+    await EntitySyncDatabaseMigrator.ApplyAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
     if (oauthChallengeHints is not null)
     {
         app.Use(async (context, next) =>
@@ -162,12 +164,20 @@ static async Task RunHttpAsync(string[] args)
 
 static void AddEntitySyncPlatform(IServiceCollection services)
 {
+    var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL")?.Trim();
+    if (string.IsNullOrWhiteSpace(connectionString))
+        throw new InvalidOperationException("DATABASE_URL is required. EntitySync refuses to run without durable exclusion storage.");
+
+    var dataSource = NpgsqlDataSource.Create(connectionString);
+    services.AddSingleton(dataSource);
     services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
     services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
+    services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
     services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
     services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
     services.AddSingleton<EntitySyncPlanner>();
     services.AddSingleton<EntitySyncService>();
+    services.AddSingleton<EntityExclusionService>();
 }
 
 static string RequireHttpsUri(string variableName)

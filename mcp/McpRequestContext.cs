@@ -36,5 +36,20 @@ public sealed class McpRequestContext
         }
     }
 
+    public string Actor
+    {
+        get
+        {
+            if (tenantId != null) return tenantId;
+            var user = httpContextAccessor?.HttpContext?.User;
+            var actor = user?.FindFirstValue("preferred_username")
+                ?? user?.FindFirstValue("name")
+                ?? user?.FindFirstValue("sub");
+            if (string.IsNullOrWhiteSpace(actor))
+                throw new InvalidOperationException("The authenticated OAuth access token is missing an operator identity claim.");
+            return actor;
+        }
+    }
+
     public bool AllowProfiles { get; }
 }

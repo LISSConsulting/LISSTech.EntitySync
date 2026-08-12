@@ -282,6 +282,57 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task McpFocusedPlanUsesBoundedQueryAndExactSourceId()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var source = new FakeAdapter("NetSuite", [Source("1815", "Other"), Source("1816", "Degmor Enterprises Inc")]);
+        connections.Register("tenant", "netsuite", source);
+        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
+        var service = CreateService(connections);
+
+        var response = await SyncTools.CreateSyncPlan(
+            service,
+            new McpRequestContext("tenant", false),
+            "NetSuite",
+            "HaloPSA",
+            sourceConnectionId: "netsuite",
+            targetConnectionId: "halo",
+            sourceEntityType: "Customer",
+            targetEntityType: "Client",
+            createMissing: true,
+            sourceSearch: "Degmor",
+            sourceCount: 10,
+            sourceEntityId: "1816",
+            cancellationToken: CancellationToken.None);
+
+        using var document = JsonDocument.Parse(response);
+        var root = document.RootElement;
+        Assert.True(root.GetProperty("success").GetBoolean());
+        Assert.Equal(1, root.GetProperty("totalItems").GetInt32());
+        Assert.Equal("1816", root.GetProperty("items")[0].GetProperty("sourceId").GetString());
+        Assert.Equal("Degmor Enterprises Inc", root.GetProperty("items")[0].GetProperty("source").GetString());
+        Assert.Equal("1816", root.GetProperty("sourceSelection").GetProperty("entityId").GetString());
+        Assert.Equal("Degmor", source.LastQuery?.Search);
+        Assert.Equal(10, source.LastQuery?.Count);
+    }
+
+    [Fact]
+    public async Task FocusedPlanRejectsSourceIdOutsideBoundedQueryBeforeReadingTargets()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1815", "Other")]));
+        var target = new FakeAdapter("HaloPSA");
+        connections.Register("tenant", "halo", target);
+        var service = CreateService(connections);
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.CreatePlanAsync(Request("Degmor", 10, "1816"), CancellationToken.None));
+
+        Assert.Contains("Source entity ID '1816'", error.Message, StringComparison.Ordinal);
+        Assert.Null(target.LastQuery);
+    }
+
+    [Fact]
     public void ApplicationAssemblyDoesNotReferenceAdaptersRuntimeOrPowerShell()
     {
         var references = typeof(EntitySyncService).Assembly.GetReferencedAssemblies().Select(reference => reference.Name).ToArray();
@@ -630,6 +681,122 @@ public sealed class PlatformTests
         Assert.Contains("HTTPS", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task CreateMissingMarksPersistentlyExcludedSourcesAsNonExecutable()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme"), Source("2", "Ignored")]));
+        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
+        var exclusions = new InMemoryEntityExclusionRepository();
+        var route = EntityExclusionRoute.Create("tenant", "NetSuite", "netsuite", "Customer", "HaloPSA", "halo", "Client");
+        await exclusions.AddAsync(route, "2", "Ignored", "Not a managed client", "operator", CancellationToken.None);
+        var service = CreateService(connections, exclusions: exclusions);
+
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+
+        Assert.Equal("Create", plan.Items.Single(item => item.Source.Id == "1").Action);
+        var excluded = plan.Items.Single(item => item.Source.Id == "2");
+        Assert.Equal("None", excluded.Action);
+        Assert.Equal("PersistentExclusion", excluded.MatchType);
+        Assert.Equal("Excluded", excluded.Status);
+        Assert.Contains("Not a managed client", excluded.Reasons.Single(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EmptyExclusionPolicyAllowsCreateMissing()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
+
+        var plan = await CreateService(connections).CreatePlanAsync(Request(), CancellationToken.None);
+
+        Assert.Equal("Create", Assert.Single(plan.Items).Action);
+    }
+
+    [Fact]
+    public async Task CreateMissingFailsClosedWhenExclusionsCannotBeRead()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
+        var service = CreateService(connections, exclusions: new FailingEntityExclusionRepository());
+
+        var error = await Assert.ThrowsAsync<EntityExclusionUnavailableException>(
+            () => service.CreatePlanAsync(Request(), CancellationToken.None));
+
+        Assert.Equal("Permanent exclusions could not be obtained; create-missing planning is blocked.", error.Message);
+        Assert.Equal("Exclusion storage unavailable.", error.InnerException?.Message);
+    }
+
+    [Fact]
+    public async Task ApplyFailsClosedWhenExclusionsCannotBeRevalidated()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        var target = new FakeAdapter("HaloPSA");
+        connections.Register("tenant", "halo", target);
+        var exclusions = new ToggleEntityExclusionRepository();
+        var service = CreateService(connections, exclusions: exclusions);
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+        var inspected = service.GetPlan("tenant", plan.Id);
+        service.ApprovePlan("tenant", plan.Id, inspected.Digest);
+        exclusions.FailReads = true;
+
+        var error = await Assert.ThrowsAsync<EntityExclusionUnavailableException>(
+            () => service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None));
+
+        Assert.Equal("Permanent exclusions could not be obtained; create actions are blocked.", error.Message);
+        Assert.Equal("Exclusion storage unavailable.", error.InnerException?.Message);
+        Assert.Equal(0, target.CreateCalls);
+    }
+
+    [Fact]
+    public async Task ApplyRejectsAPlanWhenSourceWasExcludedAfterPlanning()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        var target = new FakeAdapter("HaloPSA");
+        connections.Register("tenant", "halo", target);
+        var exclusions = new InMemoryEntityExclusionRepository();
+        var service = CreateService(connections, exclusions: exclusions);
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+        var inspected = service.GetPlan("tenant", plan.Id);
+        service.ApprovePlan("tenant", plan.Id, inspected.Digest);
+        var route = EntityExclusionRoute.Create("tenant", "NetSuite", "netsuite", "Customer", "HaloPSA", "halo", "Client");
+        await exclusions.AddAsync(route, "1", "Acme", "Excluded after review", "operator", CancellationToken.None);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None));
+
+        Assert.Contains("changed after planning", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, target.CreateCalls);
+    }
+
+    [Fact]
+    public async Task AgentControllerRoutesRejectPermanentExclusions()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "ncentral", new FakeAdapter("NCentral"));
+        connections.Register("tenant", "agentcontroller", new FakeAdapter("AgentController"));
+        var service = new EntityExclusionService(connections, new InMemoryEntityExclusionRepository());
+        var request = new EntityExclusionRouteRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NCentral",
+            SourceConnectionId = "ncentral",
+            SourceEntityType = "CustomerScope",
+            TargetVendor = "AgentController",
+            TargetConnectionId = "agentcontroller",
+            TargetEntityType = "Customer"
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AddAsync(request, "1", "Acme", "Ignore", "operator", CancellationToken.None));
+
+        Assert.Contains("does not permit exclusions", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static HttpResponseMessage JsonResponse(HttpStatusCode statusCode, string body)
     {
         return new HttpResponseMessage(statusCode)
@@ -680,21 +847,36 @@ public sealed class PlatformTests
         }
     }
 
-    private static EntitySyncService CreateService(IEntityConnectionRepository connections, IEntitySyncPlanRepository? plans = null)
+    private static EntitySyncService CreateService(
+        IEntityConnectionRepository connections,
+        IEntitySyncPlanRepository? plans = null,
+        IEntityExclusionRepository? exclusions = null)
     {
         plans ??= new InMemoryEntitySyncPlanRepository();
-        return new EntitySyncService(new EntitySyncPlanner(connections, plans, new WeightedEntityMatcher()), connections, plans, new DefaultEntityMapper());
+        exclusions ??= new InMemoryEntityExclusionRepository();
+        return new EntitySyncService(
+            new EntitySyncPlanner(connections, plans, exclusions, new WeightedEntityMatcher()),
+            connections,
+            plans,
+            exclusions,
+            new DefaultEntityMapper());
     }
 
-    private static CreateEntitySyncPlanRequest Request() => new()
-    {
-        TenantId = "tenant",
-        SourceVendor = "NetSuite",
-        SourceConnectionId = "netsuite",
-        TargetVendor = "HaloPSA",
-        TargetConnectionId = "halo",
-        CreateMissing = true
-    };
+    private static CreateEntitySyncPlanRequest Request(
+        string? sourceSearch = null,
+        int? sourceCount = null,
+        string? sourceEntityId = null) => new()
+        {
+            TenantId = "tenant",
+            SourceVendor = "NetSuite",
+            SourceConnectionId = "netsuite",
+            SourceSearch = sourceSearch,
+            SourceCount = sourceCount,
+            SourceEntityId = sourceEntityId,
+            TargetVendor = "HaloPSA",
+            TargetConnectionId = "halo",
+            CreateMissing = true
+        };
 
     private static ExternalEntity Source(string id, string name) => new()
     {
@@ -705,16 +887,46 @@ public sealed class PlatformTests
         ExternalIds = { ["NetSuiteInternalId"] = id }
     };
 
+    private sealed class FailingEntityExclusionRepository : IEntityExclusionRepository
+    {
+        public Task<IReadOnlyList<EntityExclusion>> ListActiveAsync(EntityExclusionRoute route, CancellationToken cancellationToken) =>
+            Task.FromException<IReadOnlyList<EntityExclusion>>(new InvalidOperationException("Exclusion storage unavailable."));
+
+        public Task<EntityExclusion> AddAsync(EntityExclusionRoute route, string sourceEntityId, string sourceName, string reason, string actor, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<bool> RevokeAsync(EntityExclusionRoute route, string sourceEntityId, string actor, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class ToggleEntityExclusionRepository : IEntityExclusionRepository
+    {
+        public bool FailReads { get; set; }
+
+        public Task<IReadOnlyList<EntityExclusion>> ListActiveAsync(EntityExclusionRoute route, CancellationToken cancellationToken) =>
+            FailReads
+                ? Task.FromException<IReadOnlyList<EntityExclusion>>(new InvalidOperationException("Exclusion storage unavailable."))
+                : Task.FromResult<IReadOnlyList<EntityExclusion>>(Array.Empty<EntityExclusion>());
+
+        public Task<EntityExclusion> AddAsync(EntityExclusionRoute route, string sourceEntityId, string sourceName, string reason, string actor, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<bool> RevokeAsync(EntityExclusionRoute route, string sourceEntityId, string actor, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class FakeAdapter(string vendor, IReadOnlyList<ExternalEntity>? entities = null, Func<Task>? beforeCreate = null) : IEntityAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
         public int CreateCalls { get; private set; }
         public bool Disposed { get; private set; }
+        public EntityQuery? LastQuery { get; private set; }
 
         public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            LastQuery = query;
             return Task.FromResult(entities ?? (IReadOnlyList<ExternalEntity>)Array.Empty<ExternalEntity>());
         }
 

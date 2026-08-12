@@ -10,7 +10,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Create a tenant-scoped entity synchronization plan. Planning is read-only. Inspect every page and approve its digest before apply. Workflows requiring source integration-link writebacks must use PowerShell.")]
+    [Description("Create a tenant-scoped entity synchronization plan. Planning is read-only. Use sourceSearch/sourceCount to bound focused plans and sourceEntityId to assert the exact immutable source ID. Inspect every page and approve its digest before apply. Workflows requiring source integration-link writebacks must use PowerShell.")]
     public static async Task<string> CreateSyncPlan(
         EntitySyncService service,
         McpRequestContext context,
@@ -26,6 +26,9 @@ public static class SyncTools
         [Description("Review score threshold from 0 through 100")] int reviewScore = 70,
         [Description("Source external ID used for matching and apply")] string? sourceExternalIdName = null,
         [Description("Target custom field used for matching and apply")] string? targetCustomFieldName = null,
+        [Description("Optional vendor-side source name search used to bound focused plans")] string? sourceSearch = null,
+        [Description("Optional maximum source entities from 1 through 5000")] int? sourceCount = null,
+        [Description("Optional immutable source entity ID; the bounded source query must return exactly this entity")] string? sourceEntityId = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -38,6 +41,9 @@ public static class SyncTools
                 TargetVendor = targetVendor,
                 TargetConnectionId = targetConnectionId,
                 SourceEntityType = sourceEntityType,
+                SourceSearch = sourceSearch,
+                SourceCount = sourceCount,
+                SourceEntityId = sourceEntityId,
                 TargetEntityType = targetEntityType,
                 CreateMissing = createMissing,
                 IncludeInactive = includeInactive,
@@ -57,6 +63,7 @@ public static class SyncTools
                 plan.SourceEntityType,
                 plan.TargetVendor,
                 plan.TargetEntityType,
+                sourceSelection = new { search = sourceSearch, count = sourceCount, entityId = sourceEntityId },
                 actions = plan.Items.GroupBy(item => item.Action).ToDictionary(group => group.Key, group => group.Count()),
                 page.TotalItems,
                 page.Page,
@@ -68,6 +75,10 @@ public static class SyncTools
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (EntityExclusionUnavailableException)
+        {
+            return Error("Permanent exclusions could not be obtained; create-missing planning is blocked.");
         }
         catch (ArgumentException ex)
         {
@@ -139,6 +150,10 @@ public static class SyncTools
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (EntityExclusionUnavailableException)
+        {
+            return Error("Permanent exclusions could not be obtained; create actions are blocked.");
         }
         catch
         {

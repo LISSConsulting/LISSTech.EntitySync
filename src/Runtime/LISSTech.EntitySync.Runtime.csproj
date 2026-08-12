@@ -6,9 +6,13 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Npgsql" Version="8.0.9" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Core\LISSTech.EntitySync.Core.csproj" />
     <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\db\migrations\*.sql" Link="Database\Migrations\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

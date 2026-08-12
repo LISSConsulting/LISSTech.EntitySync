@@ -1,8 +1,29 @@
 services:
+  entitysync-db:
+    image: postgres:18-trixie@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-entitysync}"
+      POSTGRES_USER: "${POSTGRES_USER:-entitysync}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+    volumes:
+      - entitysync-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   entitysync-mcp:
     build:
       context: .
       dockerfile: mcp/Dockerfile
+    depends_on:
+      entitysync-db:
+        condition: service_healthy
     environment:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       MCP_OAUTH_AUTHORITY: "${MCP_OAUTH_AUTHORITY:?MCP_OAUTH_AUTHORITY must be set}"
@@ -13,6 +34,7 @@ services:
       MCP_OAUTH_AUTHORIZATION_ENDPOINT: "${MCP_OAUTH_AUTHORIZATION_ENDPOINT:-}"
       MCP_OAUTH_TOKEN_ENDPOINT: "${MCP_OAUTH_TOKEN_ENDPOINT:-}"
       MCP_OAUTH_PUBLIC_CLIENT_ID: "${MCP_OAUTH_PUBLIC_CLIENT_ID:-}"
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable exclusions}"
       MCP_TRANSPORT: http
       HALO_BASE_URL: "${HALO_BASE_URL:-}"
       HALO_CLIENT_ID: "${HALO_CLIENT_ID:-}"
@@ -61,3 +83,6 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
+
+volumes:
+  entitysync-db-data:

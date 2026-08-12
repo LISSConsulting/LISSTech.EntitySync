@@ -10,6 +10,7 @@ COPY src/Planning/LISSTech.EntitySync.Planning.csproj src/Planning/
 COPY src/Application/LISSTech.EntitySync.Application.csproj src/Application/
 COPY src/Adapters/LISSTech.EntitySync.Adapters.csproj src/Adapters/
 COPY src/Runtime/LISSTech.EntitySync.Runtime.csproj src/Runtime/
+COPY db/migrations/ db/migrations/
 COPY mcp/LISSTech.EntitySync.Mcp.csproj mcp/
 RUN dotnet restore mcp/LISSTech.EntitySync.Mcp.csproj
 

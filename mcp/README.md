@@ -26,10 +26,11 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
-7. Add the environment variables for the vendors the server will use.
-8. Assign the domain to the `entitysync-mcp` service on container port `8080`.
-9. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.
-10. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
+7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions a dedicated PostgreSQL 18 service and persistent volume for permanent exclusions.
+8. Add the environment variables for the vendors the server will use.
+9. Assign the domain to the `entitysync-mcp` service on container port `8080`.
+10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.
+11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
@@ -51,18 +52,39 @@ DPAPI-backed EntitySync profiles are Windows-only and are intentionally not moun
 
 Remote `connect_vendor` calls cannot supply endpoints or credentials. Those values are server-managed, and vendor base URLs must use HTTPS. A connection receives a stable ID and generation; use distinct connection IDs when a future configuration provider exposes multiple accounts for the same vendor.
 
+Permanent exclusions are stored in PostgreSQL and scoped to the exact tenant, source/target vendors, connection IDs, and entity types. Manage them with `list_entity_exclusions`, `add_entity_exclusion`, and `remove_entity_exclusion`; use immutable vendor source IDs, never names. An empty exclusion list is valid. If exclusion storage cannot be read, `create_sync_plan` with `createMissing=true` fails before returning a plan, and apply revalidates exclusions before any create. AgentController authoritative customer-scope routes reject exclusions because omitting a row could retire an existing scope.
+
 For AgentController, the MCP host uses the configured Entra service principal with the OAuth 2.0 `client_credentials` grant, then exchanges that Entra access token at `POST /v1/operator-token/exchange`. The exchange response supplies the operations/PostgREST base URL and short-lived bearer token; callers cannot provide either value. Configure `AGENTCONTROLLER_ENTRA_SCOPE` as the AgentController application audience plus `/.default`. The service principal must be assigned the `EntitySync.CustomerScopeSync` Entra app role and registered in AgentController with only `customer_scope_sync:write`. Tokens remain in memory and a rejected operations token is exchanged once before one retry.
 
 ## Safe Workflow
 
 1. Call `connect_vendor` for the source and target and retain both connection IDs.
-2. Call `create_sync_plan` with those connection IDs. Planning performs no writes.
+2. Call `create_sync_plan` with those connection IDs. Planning performs no writes. For a focused plan, pass `sourceSearch` and `sourceCount` to bound the vendor query and `sourceEntityId` to require the exact immutable vendor ID. A missing or duplicate exact ID fails before target discovery.
 3. Call `get_sync_plan` until every page has been inspected.
 4. Call `approve_sync_plan` with the final inspected digest.
 5. Call `apply_sync_plan` with `apply=false` for a dry run.
 6. Call `apply_sync_plan` with `apply=true` only after review. Approval is consumed, so the plan cannot be replayed.
 
 Plans expire after four hours and are bound to the exact source and target connection generations used during planning. Reconnecting either account invalidates existing plans. Each tenant is limited to 20 retained plans, 32 connections, and 5,000 source or target entities per plan side.
+
+Focused one-customer example:
+
+```json
+{
+  "sourceVendor": "NetSuite",
+  "targetVendor": "HaloPSA",
+  "sourceConnectionId": "netsuite",
+  "targetConnectionId": "halopsa",
+  "sourceEntityType": "Customer",
+  "targetEntityType": "Client",
+  "sourceSearch": "Degmor",
+  "sourceCount": 10,
+  "sourceEntityId": "1816",
+  "createMissing": true
+}
+```
+
+Plan pages expose `sourceId` and `targetId` alongside display names so approval can be based on immutable identities. `sourceEntityId` is an assertion over the bounded vendor query, not a name match; combine it with a selective `sourceSearch` when the vendor account is large.
 
 HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integration-link writebacks that currently exist only in the reviewed PowerShell executor. The MCP application executor rejects those workflows instead of performing incomplete target-only writes.
 
