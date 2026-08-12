@@ -25,6 +25,7 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 4. Set `MCP_OAUTH_RESOURCE` to the canonical public MCP URL, such as `https://<domain>/mcp`. This exact value is advertised to MCP clients as the OAuth resource.
 5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
+   For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
 7. Add the environment variables for the vendors the server will use.
 8. Assign the domain to the `entitysync-mcp` service on container port `8080`.
 9. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.

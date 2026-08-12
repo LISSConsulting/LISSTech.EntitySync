@@ -399,6 +399,62 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public void OAuthChallengeHintsExposeExplicitEndpointsAndPublicClient()
+    {
+        var hints = OAuthChallengeHints.Create(
+            "https://login.example.test/tenant/oauth2/v2.0/authorize",
+            "https://login.example.test/tenant/oauth2/v2.0/token",
+            "public-client-id",
+            ["api://entitysync/mcp.tools", "offline_access"]);
+
+        var challenges = hints!.Append(
+            ["Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/mcp\""]);
+
+        Assert.Equal(
+            "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/mcp\", authorization_endpoint=\"https://login.example.test/tenant/oauth2/v2.0/authorize\", token_endpoint=\"https://login.example.test/tenant/oauth2/v2.0/token\", client_id=\"public-client-id\", scope=\"api://entitysync/mcp.tools offline_access\"",
+            Assert.Single(challenges));
+    }
+
+    [Fact]
+    public void OAuthChallengeHintsRequireCompleteSafeConfiguration()
+    {
+        Assert.Null(OAuthChallengeHints.Create(null, null, null, ["mcp.tools"]));
+
+        var partial = Assert.Throws<InvalidOperationException>(
+            () => OAuthChallengeHints.Create(
+                "https://login.example.test/authorize",
+                null,
+                "public-client-id",
+                ["mcp.tools"]));
+        Assert.Contains("must be configured together", partial.Message, StringComparison.Ordinal);
+
+        var unsafeClient = Assert.Throws<InvalidOperationException>(
+            () => OAuthChallengeHints.Create(
+                "https://login.example.test/authorize",
+                "https://login.example.test/token",
+                "client\r\ninjected",
+                ["mcp.tools"]));
+        Assert.Contains("cannot be emitted safely", unsafeClient.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OAuthChallengeHintsLeaveUnrelatedChallengesUnchanged()
+    {
+        var hints = OAuthChallengeHints.Create(
+            "https://login.example.test/authorize",
+            "https://login.example.test/token",
+            "public-client-id",
+            ["mcp.tools"]);
+        string[] original =
+        [
+            "Basic realm=\"legacy\"",
+            "Bearer realm=\"api\""
+        ];
+
+        Assert.Equal(original, hints!.Append(original));
+    }
+
+    [Fact]
     public async Task AgentControllerProviderUsesExactClientCredentialsAndExchangeContracts()
     {
         using var handler = new RecordingHttpMessageHandler((_, index) => index switch

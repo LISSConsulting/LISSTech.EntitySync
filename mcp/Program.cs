@@ -65,6 +65,12 @@ static async Task RunHttpAsync(string[] args)
         .ToArray();
     if (scopes.Length == 0)
         throw new InvalidOperationException("MCP_OAUTH_SCOPES must contain at least one OAuth scope value.");
+    var oauthChallengeHints = OAuthChallengeHints.Create(
+        Environment.GetEnvironmentVariable("MCP_OAUTH_AUTHORIZATION_ENDPOINT"),
+        Environment.GetEnvironmentVariable("MCP_OAUTH_TOKEN_ENDPOINT"),
+        Environment.GetEnvironmentVariable("MCP_OAUTH_PUBLIC_CLIENT_ID"),
+        scopes);
+
 
     var requiredScope = (Environment.GetEnvironmentVariable("MCP_OAUTH_REQUIRED_SCOPE") ?? "mcp:tools").Trim();
     if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
@@ -123,6 +129,27 @@ static async Task RunHttpAsync(string[] args)
     AddEntitySyncPlatform(builder.Services);
 
     var app = builder.Build();
+    if (oauthChallengeHints is not null)
+    {
+        app.Use(async (context, next) =>
+        {
+            context.Response.OnStarting(() =>
+            {
+                if (context.Response.StatusCode == StatusCodes.Status401Unauthorized
+                    && context.Request.Path.StartsWithSegments("/mcp"))
+                {
+                    var challenges = context.Response.Headers["WWW-Authenticate"]
+                        .Select(value => value ?? string.Empty);
+                    context.Response.Headers["WWW-Authenticate"] = oauthChallengeHints.Append(challenges);
+                }
+
+                return Task.CompletedTask;
+            });
+
+            await next(context);
+        });
+    }
+
 
     app.UseAuthentication();
     app.UseAuthorization();
@@ -162,4 +189,89 @@ static bool HasScope(System.Security.Claims.ClaimsPrincipal principal, string re
         .Where(claim => claim.Type is "scope" or "scp")
         .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         .Contains(requiredScope, StringComparer.Ordinal);
+}
+
+
+internal sealed class OAuthChallengeHints
+{
+    private OAuthChallengeHints(
+        string authorizationEndpoint,
+        string tokenEndpoint,
+        string clientId,
+        string scopes)
+    {
+        AuthorizationEndpoint = authorizationEndpoint;
+        TokenEndpoint = tokenEndpoint;
+        ClientId = clientId;
+        Scopes = scopes;
+    }
+
+    private string AuthorizationEndpoint { get; }
+
+    private string TokenEndpoint { get; }
+
+    private string ClientId { get; }
+
+    private string Scopes { get; }
+
+    internal static OAuthChallengeHints? Create(
+        string? authorizationEndpoint,
+        string? tokenEndpoint,
+        string? clientId,
+        IEnumerable<string> scopes)
+    {
+        var values = new[] { authorizationEndpoint, tokenEndpoint, clientId };
+        if (values.All(string.IsNullOrWhiteSpace))
+            return null;
+
+        if (values.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidOperationException(
+                "MCP_OAUTH_AUTHORIZATION_ENDPOINT, MCP_OAUTH_TOKEN_ENDPOINT, and MCP_OAUTH_PUBLIC_CLIENT_ID must be configured together.");
+
+        var joinedScopes = string.Join(' ', scopes);
+        return new OAuthChallengeHints(
+            ValidateHttpsEndpoint(authorizationEndpoint!, "MCP_OAUTH_AUTHORIZATION_ENDPOINT"),
+            ValidateHttpsEndpoint(tokenEndpoint!, "MCP_OAUTH_TOKEN_ENDPOINT"),
+            ValidateQuotedValue(clientId!, "MCP_OAUTH_PUBLIC_CLIENT_ID"),
+            ValidateQuotedValue(joinedScopes, "MCP_OAUTH_SCOPES"));
+    }
+
+    internal string[] Append(IEnumerable<string> challenges)
+    {
+        return challenges
+            .Select(challenge =>
+            {
+                if (!challenge.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                    || !challenge.Contains("resource_metadata=", StringComparison.OrdinalIgnoreCase)
+                    || challenge.Contains("authorization_endpoint=", StringComparison.OrdinalIgnoreCase))
+                    return challenge;
+
+                return $"{challenge}, authorization_endpoint=\"{AuthorizationEndpoint}\", token_endpoint=\"{TokenEndpoint}\", client_id=\"{ClientId}\", scope=\"{Scopes}\"";
+            })
+            .ToArray();
+    }
+
+    private static string ValidateHttpsEndpoint(string value, string variableName)
+    {
+        var trimmed = value.Trim();
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+            || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Fragment))
+            throw new InvalidOperationException(
+                $"{variableName} must be an absolute HTTPS URI without user info or a fragment when configured.");
+
+        return uri.AbsoluteUri;
+    }
+
+    private static string ValidateQuotedValue(string value, string variableName)
+    {
+        var trimmed = value.Trim();
+        if (string.IsNullOrEmpty(trimmed)
+            || trimmed.Any(character => character is '"' or '\\' or '\r' or '\n' || char.IsControl(character)))
+            throw new InvalidOperationException(
+                $"{variableName} contains characters that cannot be emitted safely in an OAuth challenge.");
+
+        return trimmed;
+    }
 }
