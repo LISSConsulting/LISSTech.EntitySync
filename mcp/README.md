@@ -41,6 +41,7 @@ Configure only the vendors the deployment needs. The MCP `connect_vendor` tool r
 | HaloPSA | `HALO_BASE_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET` |
 | NetSuite | `NETSUITE_ACCOUNT_ID`, `NETSUITE_CONSUMER_KEY`, `NETSUITE_CONSUMER_SECRET`, `NETSUITE_TOKEN_ID`, `NETSUITE_TOKEN_SECRET` |
 | N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID` |
+| AgentController | `AGENTCONTROLLER_AUTH_BASE_URL`, `AGENTCONTROLLER_ENTRA_TENANT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_SECRET`, `AGENTCONTROLLER_ENTRA_SCOPE` |
 | Bill.com | `BILLCOM_API_TOKEN` |
 
 The root `.env.example` lists the minimal local Compose variables. `docker-compose.yaml` also passes through optional adapter settings documented in the main README.
@@ -48,6 +49,8 @@ The root `.env.example` lists the minimal local Compose variables. `docker-compo
 DPAPI-backed EntitySync profiles are Windows-only and are intentionally not mounted into the Linux container. Use Coolify secret environment variables for container deployments.
 
 Remote `connect_vendor` calls cannot supply endpoints or credentials. Those values are server-managed, and vendor base URLs must use HTTPS. A connection receives a stable ID and generation; use distinct connection IDs when a future configuration provider exposes multiple accounts for the same vendor.
+
+For AgentController, the MCP host uses the configured Entra service principal with the OAuth 2.0 `client_credentials` grant, then exchanges that Entra access token at `POST /v1/operator-token/exchange`. The exchange response supplies the operations/PostgREST base URL and short-lived bearer token; callers cannot provide either value. Configure `AGENTCONTROLLER_ENTRA_SCOPE` as the AgentController application audience plus `/.default`. The service principal must be assigned the `EntitySync.CustomerScopeSync` Entra app role and registered in AgentController with only `customer_scope_sync:write`. Tokens remain in memory and a rejected operations token is exchanged once before one retry.
 
 ## Safe Workflow
 

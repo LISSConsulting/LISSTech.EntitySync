@@ -28,6 +28,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\src\Core\LISSTech.EntitySync.Core.csproj" />
     <ProjectReference Include="..\src\Ports\LISSTech.EntitySync.Ports.csproj" />
     <ProjectReference Include="..\src\Application\LISSTech.EntitySync.Application.csproj" />

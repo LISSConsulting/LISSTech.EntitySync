@@ -470,7 +470,11 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             BearerToken = UnwrapSecureString(sessionToken, "Session.Token"),
             BearerTokenProvider = string.IsNullOrWhiteSpace(deviceAssetOpsProfileName)
                 ? null
-                : () => RefreshDeviceAssetOpsToken(deviceAssetOpsProfileName)
+                : ct =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.FromResult(RefreshDeviceAssetOpsToken(deviceAssetOpsProfileName));
+                }
         };
         var sessionAdapter = new LTACEntityAdapter(sessionOptions);
         ConnectionRegistry.Set(sessionAdapter);

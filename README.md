@@ -351,6 +351,11 @@ This command updates existing custom-property values only; create the custom-pro
 | `LTAC_BEARER_TOKEN` | `-Token` |
 | _DeviceAssetOps session_ | `-Session` (`OpsBaseUrl` plus SecureString token) |
 | _operator session JWT_ | `-SecureToken` (`SecureString`, manual mode) |
+| `AGENTCONTROLLER_AUTH_BASE_URL` | MCP server-managed AgentController API/auth URL |
+| `AGENTCONTROLLER_ENTRA_TENANT_ID` | MCP EntitySync service-principal tenant |
+| `AGENTCONTROLLER_ENTRA_CLIENT_ID` | MCP EntitySync service-principal application ID |
+| `AGENTCONTROLLER_ENTRA_CLIENT_SECRET` | MCP EntitySync service-principal secret |
+| `AGENTCONTROLLER_ENTRA_SCOPE` | MCP AgentController audience plus `/.default` |
 
 `Connect-EntitySyncVendor -Vendor AgentController -Session $session` (`LTAC` is also accepted and normalizes to `AgentController`) registers a target-only adapter for syncing one complete N-central Customer-plus-Site snapshot into AgentController customer scopes. Build that snapshot with `-SourceEntityType CustomerScope`; separate Customer or Site plans cannot be applied because the AgentController RPC retires N-central scopes absent from its authoritative payload. The session should come from `LISSTech.DeviceAssetOps` after authenticating through the AgentController API/auth base URL (`https://api-agent-controller.clfy-b.lissonline.com`); it carries the declared ops/PostgREST base URL (`https://ops-agent-controller.clfy-b.lissonline.com`) and a SecureString JWT. AgentController has no customer-scope read endpoint, so plans never return target candidates. Site-derived scopes carry their parent N-central customer's identifier as `ncentral_parent_customer_id`. `Token` never appears in the returned connection object. See `specs/001-ltac-sync-adapter/spec.md`.
 
@@ -358,7 +363,7 @@ AgentController apply calls exactly `POST /rpc/sync_ncentral_customers`; connect
 
 `-SecureToken` accepts a `SecureString` for manual mode. Prefer `-Session` for normal cross-module use because it carries endpoint metadata and the SecureString token together. The SecureString is unwrapped in-process and used only for the AgentController authorization header. `-Session`, `-Token`, and `-SecureToken` are separate parameter sets; pass exactly one.
 
-AgentController credentials are treated as connection-only secrets. `Test-EntitySyncConnection` calls the generated `has_scope` client operation and succeeds only when the token grants `operator_access:write` or administrator access. The bearer token is omitted from connection output, plans, results, and adapter errors. AgentController apply sends one generated-client request only when every row in the complete `CustomerScope` snapshot is approved and valid; otherwise the entire batch is blocked before HTTP.
+AgentController credentials are treated as connection-only secrets. Local PowerShell sessions and the MCP `connect_vendor` tool both validate the generated `has_scope` operation and succeed only when the exchanged token grants `customer_scope_sync:write` or administrator access. For MCP deployments, EntitySync obtains an Entra token with the server-managed `AGENTCONTROLLER_*` client credentials, exchanges it at `POST /v1/operator-token/exchange`, and uses the returned `ops_base_url`; remote callers cannot inject the endpoint or credentials. The Entra service principal must hold app role `EntitySync.CustomerScopeSync` and its AgentController registry row must grant only `customer_scope_sync:write`. Bearer tokens remain in memory, are omitted from connection output, plans, results, and adapter errors, and are re-exchanged once after a 401 or 403. AgentController apply sends one generated-client request only when every row in the complete `CustomerScope` snapshot is approved and valid; otherwise the entire batch is blocked before HTTP.
 
 ---
 

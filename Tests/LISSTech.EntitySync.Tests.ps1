@@ -22,6 +22,7 @@ namespace EntitySyncTests
     using System.Net;
     using System.Net.Sockets;
     using System.Text;
+    using System.Threading;
     using System.Threading.Tasks;
 
     public sealed class OneShotHttpServer : IDisposable
@@ -132,9 +133,10 @@ namespace EntitySyncTests
     {
         public static string NextToken { get; set; } = string.Empty;
 
-        public static string GetToken()
+        public static Task<string> GetToken(CancellationToken cancellationToken)
         {
-            return NextToken;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(NextToken);
         }
     }
 
@@ -913,7 +915,7 @@ namespace EntitySyncTests
         $server.Wait()
         $server.RequestText | Should -Match '^POST /rpc/has_scope HTTP/1\.1'
         $requestBody = $server.RequestText.Substring($server.RequestText.IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
-        $requestBody.p_scope | Should -Be 'operator_access:write'
+        $requestBody.p_scope | Should -Be 'customer_scope_sync:write'
       }
       finally {
         $server.Dispose()
@@ -3130,8 +3132,8 @@ namespace EntitySyncTests
     $server.Start()
     $options = New-TestLTACOptions -BaseUrl $server.BaseUrl -BearerToken 'agentcontroller-old-token'
     [EntitySyncTests.TokenProvider]::NextToken = 'agentcontroller-new-token'
-    $options.BearerTokenProvider = [Func[string]][EntitySyncTests.TokenProvider]::GetToken
-    $options.BearerTokenProvider.Invoke() | Should -Be 'agentcontroller-new-token'
+    $options.BearerTokenProvider = [Func[System.Threading.CancellationToken, System.Threading.Tasks.Task[string]]][EntitySyncTests.TokenProvider]::GetToken
+    $options.BearerTokenProvider.Invoke([System.Threading.CancellationToken]::None).GetAwaiter().GetResult() | Should -Be 'agentcontroller-new-token'
     $adapter = New-TestLTACAdapter -Options $options
 
     try {

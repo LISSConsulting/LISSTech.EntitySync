@@ -10,5 +10,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="LISSTech.EntitySync" />
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
   </ItemGroup>
 </Project>

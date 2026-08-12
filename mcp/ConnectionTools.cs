@@ -5,6 +5,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
@@ -20,7 +21,7 @@ public static class ConnectionTools
     public static async Task<string> ConnectVendor(
         IEntityConnectionRepository connections,
         McpRequestContext context,
-        [Description("Vendor name: HaloPSA, NetSuite, NCentral, or Bill.com")] string vendor,
+        [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, or Bill.com")] string vendor,
         [Description("Stable connection ID. Use distinct IDs for multiple accounts of the same vendor.")] string? connectionId = null,
         [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
         CancellationToken cancellationToken = default)
@@ -84,6 +85,15 @@ public static class ConnectionTools
                     NetSuiteIdPropertyLabel = ResolveOptional(profile, "NCentralNetSuiteIdPropertyLabel", "NCENTRAL_NETSUITE_ID_PROPERTY_LABEL") ?? "NetSuite Customer ID",
                     NetSuiteNamePropertyLabel = ResolveOptional(profile, "NCentralNetSuiteNamePropertyLabel", "NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL") ?? "NetSuite Customer Name"
                 });
+            }
+            else if (EntitySyncVendors.IsAgentController(normalized))
+            {
+                if (profile != null)
+                {
+                    return Error("AgentController profiles are managed through the local EntitySync profile store. The MCP server does not accept profile credentials.");
+                }
+
+                adapter = await ConnectAgentControllerAsync(cancellationToken).ConfigureAwait(false);
             }
             else if (EntitySyncVendors.IsBillCom(normalized))
             {
@@ -274,6 +284,64 @@ public static class ConnectionTools
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"{vendor} server configuration must use an absolute HTTPS URL.");
         return uri.AbsoluteUri;
+    }
+
+    private static Task<IEntityAdapter> ConnectAgentControllerAsync(CancellationToken cancellationToken)
+    {
+        var environment = new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            ["AGENTCONTROLLER_AUTH_BASE_URL"] = Environment.GetEnvironmentVariable("AGENTCONTROLLER_AUTH_BASE_URL"),
+            ["AGENTCONTROLLER_ENTRA_TENANT_ID"] = Environment.GetEnvironmentVariable("AGENTCONTROLLER_ENTRA_TENANT_ID"),
+            ["AGENTCONTROLLER_ENTRA_CLIENT_ID"] = Environment.GetEnvironmentVariable("AGENTCONTROLLER_ENTRA_CLIENT_ID"),
+            ["AGENTCONTROLLER_ENTRA_CLIENT_SECRET"] = Environment.GetEnvironmentVariable("AGENTCONTROLLER_ENTRA_CLIENT_SECRET"),
+            ["AGENTCONTROLLER_ENTRA_SCOPE"] = Environment.GetEnvironmentVariable("AGENTCONTROLLER_ENTRA_SCOPE")
+        };
+
+        return ConnectAgentControllerAsync(
+            environment,
+            static configuration => new AgentControllerTokenProvider(configuration),
+            static options => new LTACEntityAdapter(options),
+            cancellationToken);
+    }
+
+    internal static async Task<IEntityAdapter> ConnectAgentControllerAsync(
+        IReadOnlyDictionary<string, string?> environment,
+        Func<AgentControllerProviderConfiguration, AgentControllerTokenProvider> providerFactory,
+        Func<LTACOptions, IEntityAdapter> adapterFactory,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(providerFactory);
+        ArgumentNullException.ThrowIfNull(adapterFactory);
+
+        var configuration = AgentControllerProviderConfiguration.FromEnvironment(environment);
+        var provider = providerFactory(configuration)
+            ?? throw new InvalidOperationException("AgentController token provider creation failed.");
+        try
+        {
+            var initial = await provider.AcquireAsync(cancellationToken).ConfigureAwait(false);
+            return adapterFactory(new LTACOptions
+            {
+                BaseUrl = initial.OpsBaseUrl.AbsoluteUri,
+                BearerToken = initial.AccessToken,
+                BearerTokenProvider = async ct =>
+                {
+                    var refreshed = await provider.AcquireAsync(ct).ConfigureAwait(false);
+                    if (!initial.OpsBaseUrl.Equals(refreshed.OpsBaseUrl))
+                    {
+                        throw new InvalidOperationException(
+                            "AgentController authorization endpoint changed; reconnect the vendor connection.");
+                    }
+                    return refreshed.AccessToken;
+                },
+                BearerTokenProviderOwner = provider
+            });
+        }
+        catch
+        {
+            provider.Dispose();
+            throw;
+        }
     }
 
     private static async Task<string> GetHaloAccessTokenAsync(string baseUrl, string clientId, string clientSecret, string scope, CancellationToken cancellationToken)

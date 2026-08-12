@@ -1,7 +1,10 @@
 using System.Security.Claims;
+using System.Net;
+using System.Text.Json;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mcp;
+using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
@@ -393,6 +396,232 @@ public sealed class PlatformTests
 
         var exception = Assert.Throws<InvalidOperationException>(() => context.TenantId);
         Assert.Contains("'sub' claim", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AgentControllerProviderUsesExactClientCredentialsAndExchangeContracts()
+    {
+        using var handler = new RecordingHttpMessageHandler((_, index) => index switch
+        {
+            0 => JsonResponse(HttpStatusCode.OK, """{"access_token":"entra-access-token","expires_in":3600}"""),
+            1 => JsonResponse(
+                HttpStatusCode.OK,
+                """{"token_type":"Bearer","access_token":"ltac-access-token","expires_in":900,"ops_base_url":"https://ops.example.test/","subject":"entitysync","role":"api_operator","customer_slugs":[],"scope":"customer_scope_sync:write"}"""),
+            _ => throw new InvalidOperationException("Unexpected AgentController token request.")
+        });
+        using var provider = new AgentControllerTokenProvider(
+            new AgentControllerProviderConfiguration(
+                "https://auth.example.test/",
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+                "client-secret",
+                "api://agent-controller/.default",
+                AgentControllerTokenProvider.DefaultInternalScope,
+                AgentControllerTokenProvider.DefaultExchangePath),
+            handler);
+
+        var exchange = await provider.AcquireAsync(CancellationToken.None);
+
+        Assert.Equal("ltac-access-token", exchange.AccessToken);
+        Assert.Equal(900, exchange.ExpiresInSeconds);
+        Assert.Equal("https://ops.example.test/", exchange.OpsBaseUrl.AbsoluteUri);
+        Assert.Equal("customer_scope_sync:write", exchange.InternalScope);
+        Assert.Equal(2, handler.Requests.Count);
+
+        var entraRequest = handler.Requests[0];
+        Assert.Equal(HttpMethod.Post, entraRequest.Method);
+        Assert.Equal(
+            "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/oauth2/v2.0/token",
+            entraRequest.Uri.AbsoluteUri);
+        Assert.Equal("application/x-www-form-urlencoded", entraRequest.ContentType);
+        var form = ParseForm(entraRequest.Body);
+        Assert.Equal("client_credentials", form["grant_type"]);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", form["client_id"]);
+        Assert.Equal("client-secret", form["client_secret"]);
+        Assert.Equal("api://agent-controller/.default", form["scope"]);
+
+        var exchangeRequest = handler.Requests[1];
+        Assert.Equal(HttpMethod.Post, exchangeRequest.Method);
+        Assert.Equal(
+            "https://auth.example.test/v1/operator-token/exchange",
+            exchangeRequest.Uri.AbsoluteUri);
+        Assert.Equal("application/json", exchangeRequest.ContentType);
+        using var payload = JsonDocument.Parse(exchangeRequest.Body);
+        Assert.Equal(2, payload.RootElement.EnumerateObject().Count());
+        Assert.Equal(
+            "entra-access-token",
+            payload.RootElement.GetProperty("entra_access_token").GetString());
+        Assert.Equal(
+            0,
+            payload.RootElement.GetProperty("requested_customer_slugs").GetArrayLength());
+        Assert.False(payload.RootElement.TryGetProperty("requested_scope", out _));
+    }
+
+    [Fact]
+    public async Task AgentControllerProviderErrorsDoNotDiscloseCredentialsOrTokens()
+    {
+        const string clientSecret = "client-secret-do-not-disclose";
+        const string entraToken = "entra-token-do-not-disclose";
+        using var handler = new RecordingHttpMessageHandler((_, index) => index switch
+        {
+            0 => JsonResponse(
+                HttpStatusCode.OK,
+                $$"""{"access_token":"{{entraToken}}","expires_in":3600}"""),
+            1 => JsonResponse(
+                HttpStatusCode.Unauthorized,
+                $$"""{"message":"{{clientSecret}} {{entraToken}}"}"""),
+            _ => throw new InvalidOperationException("Unexpected AgentController token request.")
+        });
+        using var provider = new AgentControllerTokenProvider(
+            new AgentControllerProviderConfiguration(
+                "https://auth.example.test/",
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+                clientSecret,
+                "api://agent-controller/.default",
+                AgentControllerTokenProvider.DefaultInternalScope,
+                AgentControllerTokenProvider.DefaultExchangePath),
+            handler);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.AcquireAsync(CancellationToken.None));
+
+        Assert.DoesNotContain(clientSecret, error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(entraToken, error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("HTTP 401", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(clientSecret, provider.Configuration.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, """{"code":"PGRST301","message":"expired","details":null,"hint":null}""")]
+    [InlineData(HttpStatusCode.OK, "false")]
+    public async Task AgentControllerConnectionUsesExchangeOpsUrlAndRefreshesRejectedToken(
+        HttpStatusCode firstProbeStatus,
+        string firstProbeBody)
+    {
+        using var handler = new RecordingHttpMessageHandler((_, index) => index switch
+        {
+            0 => JsonResponse(HttpStatusCode.OK, """{"access_token":"entra-token-one","expires_in":3600}"""),
+            1 => JsonResponse(
+                HttpStatusCode.OK,
+                """{"token_type":"Bearer","access_token":"ltac-token-one","expires_in":900,"ops_base_url":"https://ops.example.test/","subject":"entitysync","role":"api_operator","customer_slugs":[],"scope":"customer_scope_sync:write"}"""),
+            2 => JsonResponse(firstProbeStatus, firstProbeBody),
+            3 => JsonResponse(HttpStatusCode.OK, """{"access_token":"entra-token-two","expires_in":3600}"""),
+            4 => JsonResponse(
+                HttpStatusCode.OK,
+                """{"token_type":"Bearer","access_token":"ltac-token-two","expires_in":900,"ops_base_url":"https://ops.example.test/","subject":"entitysync","role":"api_operator","customer_slugs":[],"scope":"customer_scope_sync:write"}"""),
+            5 => JsonResponse(HttpStatusCode.OK, "true"),
+            _ => throw new InvalidOperationException("Unexpected AgentController request.")
+        });
+        var environment = new Dictionary<string, string?>
+        {
+            ["AGENTCONTROLLER_AUTH_BASE_URL"] = "https://auth.example.test/",
+            ["AGENTCONTROLLER_ENTRA_TENANT_ID"] = "11111111-1111-1111-1111-111111111111",
+            ["AGENTCONTROLLER_ENTRA_CLIENT_ID"] = "22222222-2222-2222-2222-222222222222",
+            ["AGENTCONTROLLER_ENTRA_CLIENT_SECRET"] = "client-secret",
+            ["AGENTCONTROLLER_ENTRA_SCOPE"] = "api://agent-controller/.default"
+        };
+        using var adapterHttpClient = new HttpClient(handler, disposeHandler: false);
+        var adapter = await ConnectionTools.ConnectAgentControllerAsync(
+            environment,
+            configuration => new AgentControllerTokenProvider(configuration, handler),
+            options => new LTACEntityAdapter(options, adapterHttpClient),
+            CancellationToken.None);
+
+        try
+        {
+            Assert.True(await adapter.TestConnectionAsync(CancellationToken.None));
+        }
+        finally
+        {
+            (adapter as IDisposable)?.Dispose();
+        }
+
+        Assert.Equal(6, handler.Requests.Count);
+        Assert.Equal(
+            "https://ops.example.test/rpc/has_scope",
+            handler.Requests[2].Uri.AbsoluteUri);
+        Assert.Equal(
+            "https://ops.example.test/rpc/has_scope",
+            handler.Requests[5].Uri.AbsoluteUri);
+        Assert.Equal("Bearer", handler.Requests[2].AuthorizationScheme);
+        Assert.Equal("ltac-token-one", handler.Requests[2].AuthorizationParameter);
+        Assert.Equal("Bearer", handler.Requests[5].AuthorizationScheme);
+        Assert.Equal("ltac-token-two", handler.Requests[5].AuthorizationParameter);
+        using var hasScopePayload = JsonDocument.Parse(handler.Requests[5].Body);
+        Assert.Equal(
+            "customer_scope_sync:write",
+            hasScopePayload.RootElement.GetProperty("p_scope").GetString());
+    }
+
+    [Fact]
+    public void AgentControllerEnvironmentValidationDoesNotDiscloseSecret()
+    {
+        const string secret = "never-disclose-this-secret";
+        var environment = new Dictionary<string, string?>
+        {
+            ["AGENTCONTROLLER_AUTH_BASE_URL"] = "http://auth.example.test/",
+            ["AGENTCONTROLLER_ENTRA_TENANT_ID"] = "11111111-1111-1111-1111-111111111111",
+            ["AGENTCONTROLLER_ENTRA_CLIENT_ID"] = "22222222-2222-2222-2222-222222222222",
+            ["AGENTCONTROLLER_ENTRA_CLIENT_SECRET"] = secret,
+            ["AGENTCONTROLLER_ENTRA_SCOPE"] = "api://agent-controller/.default"
+        };
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => AgentControllerTokenProvider.FromEnvironment(environment));
+
+        Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
+        Assert.Contains("HTTPS", error.Message, StringComparison.Ordinal);
+    }
+
+    private static HttpResponseMessage JsonResponse(HttpStatusCode statusCode, string body)
+    {
+        return new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+        };
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseForm(string body)
+    {
+        return body
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(pair => pair.Split('=', 2))
+            .ToDictionary(
+                pair => Uri.UnescapeDataString(pair[0].Replace('+', ' ')),
+                pair => Uri.UnescapeDataString(pair[1].Replace('+', ' ')),
+                StringComparer.Ordinal);
+    }
+
+    private sealed record RecordedHttpRequest(
+        HttpMethod Method,
+        Uri Uri,
+        string Body,
+        string? ContentType,
+        string? AuthorizationScheme,
+        string? AuthorizationParameter);
+
+    private sealed class RecordingHttpMessageHandler(
+        Func<RecordedHttpRequest, int, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        public List<RecordedHttpRequest> Requests { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var recorded = new RecordedHttpRequest(
+                request.Method,
+                request.RequestUri ?? throw new InvalidOperationException("Request URI is required."),
+                request.Content == null
+                    ? string.Empty
+                    : await request.Content.ReadAsStringAsync(cancellationToken),
+                request.Content?.Headers.ContentType?.MediaType,
+                request.Headers.Authorization?.Scheme,
+                request.Headers.Authorization?.Parameter);
+            Requests.Add(recorded);
+            return responder(recorded, Requests.Count - 1);
+        }
     }
 
     private static EntitySyncService CreateService(IEntityConnectionRepository connections, IEntitySyncPlanRepository? plans = null)
