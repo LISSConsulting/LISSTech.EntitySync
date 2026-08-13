@@ -1356,7 +1356,7 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at the 30-second operation ceiling when Retry-After is missing' {
     $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
       [System.Reflection.BindingFlags]'Public, Static'
@@ -1364,17 +1364,16 @@ namespace EntitySyncTests
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
 
-    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
-    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    # attempt -> expected seconds = min(30, 15 * 2^attempt).
     $expectations = @{
       0 = 15
       1 = 30
-      2 = 60
-      3 = 120
-      4 = 240
-      5 = 300
-      6 = 300
-      7 = 300
+      2 = 30
+      3 = 30
+      4 = 30
+      5 = 30
+      6 = 30
+      7 = 30
     }
     foreach ($entry in $expectations.GetEnumerator()) {
       $delay = $method.Invoke($null, @($response, [int]$entry.Key))
@@ -1606,7 +1605,7 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at the 30-second operation ceiling when Retry-After is missing' {
     $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
       [System.Reflection.BindingFlags]'Public, Static'
@@ -1614,17 +1613,16 @@ namespace EntitySyncTests
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
 
-    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
-    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    # attempt -> expected seconds = min(30, 15 * 2^attempt).
     $expectations = @{
       0 = 15
       1 = 30
-      2 = 60
-      3 = 120
-      4 = 240
-      5 = 300
-      6 = 300
-      7 = 300
+      2 = 30
+      3 = 30
+      4 = 30
+      5 = 30
+      6 = 30
+      7 = 30
     }
     foreach ($entry in $expectations.GetEnumerator()) {
       $delay = $method.Invoke($null, @($response, [int]$entry.Key))
@@ -2024,7 +2022,7 @@ namespace EntitySyncTests
     [int]$pastDelay.TotalSeconds | Should -Be 15
   }
 
-  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at 300 seconds when Retry-After is missing' {
+  It 'Returns exponential backoff from RateLimitHelper.RateLimitDelay capped at the 30-second operation ceiling when Retry-After is missing' {
     $method = [LISSTech.EntitySync.Adapters.RateLimitHelper].GetMethod(
       'RateLimitDelay',
       [System.Reflection.BindingFlags]'Public, Static'
@@ -2032,17 +2030,16 @@ namespace EntitySyncTests
     $method | Should -Not -BeNullOrEmpty
     $response = [System.Net.Http.HttpResponseMessage]::new()
 
-    # attempt -> expected seconds = min(300, 15 * 2^attempt). 0..4 climb the ladder;
-    # attempt 4 (240s) and beyond cap at the 300s ceiling.
+    # attempt -> expected seconds = min(30, 15 * 2^attempt).
     $expectations = @{
       0 = 15
       1 = 30
-      2 = 60
-      3 = 120
-      4 = 240
-      5 = 300
-      6 = 300
-      7 = 300
+      2 = 30
+      3 = 30
+      4 = 30
+      5 = 30
+      6 = 30
+      7 = 30
     }
     foreach ($entry in $expectations.GetEnumerator()) {
       $delay = $method.Invoke($null, @($response, [int]$entry.Key))
@@ -5342,11 +5339,13 @@ namespace EntitySyncTests
     [LISSTech.EntitySync.Core.EntityNormalizer]::NormalizeName('The Limited Company Shop LLC') | Should -Be 'limited company shop'
   }
 
-  It 'Shares the throttle/retry helper constants across the three HTTP-retry adapters (HaloPSA, N-central, NetSuite) so they cannot drift' {
-    $haloConst = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MinimumRequestIntervalMs
-    $haloMax = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MaxRateLimitRetries
-    $haloConst | Should -Be 500
-    $haloMax | Should -Be 6
+  It 'Shares the outbound spacing and retry constants across credential-bearing adapters so they cannot drift' {
+    $flags = [System.Reflection.BindingFlags]'NonPublic, Static'
+    $factoryType = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester].Assembly.GetType('LISSTech.EntitySync.Adapters.VendorHttpClientFactory', $true)
+    $spacing = $factoryType.GetField('MinimumRequestInterval', $flags).GetValue($null)
+    $maxRetries = [LISSTech.EntitySync.Adapters.RateLimitedHttpRequester]::MaxRateLimitRetries
+    [int]$spacing.TotalMilliseconds | Should -Be 500
+    $maxRetries | Should -Be 6
 
     # The three adapters used to each carry a private copy of these constants; the consolidation
     # removed them, so reflection against the adapter types must not find the field anymore.

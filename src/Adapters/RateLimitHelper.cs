@@ -10,19 +10,26 @@ namespace LISSTech.EntitySync.Adapters;
 /// </summary>
 public static class RateLimitHelper
 {
-    // Honours the Retry-After response header (delta-seconds first, then
-    // absolute date), falling through to an exponential backoff capped at 300
-    // seconds when the server does not advertise a wait. Used by HaloPSA,
-    // N-central, and NetSuite adapters via RateLimitedHttpRequester.SendAsync.
+    public static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
+
+    // Header-derived and fallback delays share one hard ceiling. A vendor cannot
+    // suspend a request beyond the caller's bounded retry budget.
     public static TimeSpan RateLimitDelay(HttpResponseMessage response, int attempt)
     {
-        if (response.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero) return delta;
-        if (response.Headers.RetryAfter?.Date is DateTimeOffset date)
+        TimeSpan delay;
+        if (response.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
         {
-            var delay = date - DateTimeOffset.UtcNow;
-            if (delay > TimeSpan.Zero) return delay;
+            delay = delta;
+        }
+        else if (response.Headers.RetryAfter?.Date is DateTimeOffset date && date > DateTimeOffset.UtcNow)
+        {
+            delay = date - DateTimeOffset.UtcNow;
+        }
+        else
+        {
+            delay = TimeSpan.FromSeconds(15 * Math.Pow(2, attempt));
         }
 
-        return TimeSpan.FromSeconds(Math.Min(300, 15 * Math.Pow(2, attempt)));
+        return delay > MaximumRetryDelay ? MaximumRetryDelay : delay;
     }
 }

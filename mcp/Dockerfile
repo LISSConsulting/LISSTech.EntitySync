@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine@sha256:8a80a27ddac789b4cb6d09d244f9c8d840da599c5ad22f7233c04be470e55261 AS build
 
 WORKDIR /src
 
@@ -16,6 +16,9 @@ RUN dotnet restore mcp/LISSTech.EntitySync.Mcp.csproj
 
 COPY src/ src/
 COPY mcp/ mcp/
+# The container deliberately publishes framework-dependent, multi-file output:
+# the pinned aspnet runtime image supplies the shared framework. Local release
+# builds remain self-contained single files as configured by the project.
 RUN dotnet publish mcp/LISSTech.EntitySync.Mcp.csproj \
     --configuration Release \
     --no-restore \
@@ -23,7 +26,7 @@ RUN dotnet publish mcp/LISSTech.EntitySync.Mcp.csproj \
     --property:PublishSingleFile=false \
     --property:SelfContained=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine@sha256:b288317d8ed45bb763fa95dbc807cf9d36e3bf9373ec2fac6b6548675f1f4b23 AS runtime
 
 WORKDIR /app
 COPY --from=build /app/publish .

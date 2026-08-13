@@ -5,6 +5,7 @@ namespace LISSTech.EntitySync.Mcp;
 
 public sealed class McpRequestContext
 {
+    private const int MaximumIdentityClaimLength = 512;
     private readonly IHttpContextAccessor? httpContextAccessor;
     private readonly string? tenantId;
 
@@ -26,13 +27,8 @@ public sealed class McpRequestContext
         get
         {
             if (tenantId != null) return tenantId;
-
-            var user = httpContextAccessor?.HttpContext?.User;
-            var subject = user?.Identity?.IsAuthenticated == true ? user.FindFirstValue("sub") : null;
-            if (string.IsNullOrWhiteSpace(subject))
-                throw new InvalidOperationException("The authenticated OAuth access token is missing the required 'sub' claim.");
-
-            return subject;
+            var identity = GetHttpIdentity();
+            return identity.Issuer + "::" + identity.Subject;
         }
     }
 
@@ -41,15 +37,56 @@ public sealed class McpRequestContext
         get
         {
             if (tenantId != null) return tenantId;
-            var user = httpContextAccessor?.HttpContext?.User;
-            var actor = user?.FindFirstValue("preferred_username")
-                ?? user?.FindFirstValue("name")
-                ?? user?.FindFirstValue("sub");
-            if (string.IsNullOrWhiteSpace(actor))
-                throw new InvalidOperationException("The authenticated OAuth access token is missing an operator identity claim.");
-            return actor;
+            var identity = GetHttpIdentity();
+            return identity.Issuer + "::" + identity.Subject;
         }
     }
 
     public bool AllowProfiles { get; }
+
+    internal static bool HasValidHttpIdentity(ClaimsPrincipal? user)
+    {
+        try
+        {
+            _ = GetIdentity(user);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private OAuthIdentity GetHttpIdentity() => GetIdentity(httpContextAccessor?.HttpContext?.User);
+
+    private static OAuthIdentity GetIdentity(ClaimsPrincipal? user)
+    {
+        if (user?.Identity?.IsAuthenticated != true)
+            throw new InvalidOperationException("An authenticated OAuth identity is required.");
+
+        var subject = GetSingleClaim(user, "sub");
+        var issuer = GetSingleClaim(user, "iss");
+        if (!Uri.TryCreate(issuer, UriKind.Absolute, out var issuerUri)
+            || !issuerUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(issuerUri.UserInfo)
+            || !string.IsNullOrEmpty(issuerUri.Query)
+            || !string.IsNullOrEmpty(issuerUri.Fragment))
+            throw new InvalidOperationException("The authenticated OAuth access token has an invalid 'iss' claim.");
+
+        return new OAuthIdentity(issuerUri.AbsoluteUri.TrimEnd('/'), subject);
+    }
+
+    private static string GetSingleClaim(ClaimsPrincipal user, string type)
+    {
+        var values = user.FindAll(type).Select(claim => claim.Value).ToArray();
+        if (values.Length != 1 || string.IsNullOrWhiteSpace(values[0]))
+            throw new InvalidOperationException($"The authenticated OAuth access token must contain exactly one nonblank '{type}' claim.");
+
+        var value = values[0].Trim();
+        if (value.Length > MaximumIdentityClaimLength || value.Any(char.IsControl))
+            throw new InvalidOperationException($"The authenticated OAuth access token has an invalid '{type}' claim.");
+        return value;
+    }
+
+    private sealed record OAuthIdentity(string Issuer, string Subject);
 }

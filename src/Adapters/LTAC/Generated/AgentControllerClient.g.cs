@@ -195,7 +195,7 @@ namespace LISSTech.EntitySync.Adapters.LTAC
                         }
                         else
                         {
-                            var responseData_ = response_.Content == null ? null : await response_.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            var responseData_ = response_.Content == null ? null : await response_.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                             throw new AgentControllerApiException("The HTTP status code of the response was not expected (" + status_ + ").", status_, responseData_, headers_, null);
                         }
                     }
@@ -336,7 +336,7 @@ namespace LISSTech.EntitySync.Adapters.LTAC
                         }
                         else
                         {
-                            var responseData_ = response_.Content == null ? null : await response_.Content.ReadAsStringAsync().ConfigureAwait(false);
+                            var responseData_ = response_.Content == null ? null : await response_.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                             throw new AgentControllerApiException("The HTTP status code of the response was not expected (" + status_ + ").", status_, responseData_, headers_, null);
                         }
                     }
@@ -378,7 +378,7 @@ namespace LISSTech.EntitySync.Adapters.LTAC
 
             if (ReadResponseAsString)
             {
-                var responseText = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
                     var typedBody = System.Text.Json.JsonSerializer.Deserialize<T>(responseText, JsonSerializerSettings);
@@ -394,7 +394,7 @@ namespace LISSTech.EntitySync.Adapters.LTAC
             {
                 try
                 {
-                    using (var responseStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                    using (var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
                     {
                         var typedBody = await System.Text.Json.JsonSerializer.DeserializeAsync<T>(responseStream, JsonSerializerSettings, cancellationToken).ConfigureAwait(false);
                         return new ObjectResponseResult<T>(typedBody!, string.Empty);

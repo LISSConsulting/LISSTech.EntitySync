@@ -113,12 +113,7 @@ static async Task RunHttpAsync(string[] args)
             };
         });
 
-    builder.Services.AddAuthorization(options =>
-    {
-        options.AddPolicy("mcp", policy => policy
-            .RequireAuthenticatedUser()
-            .RequireAssertion(context => HasScope(context.User, requiredScope)));
-    });
+    builder.Services.AddAuthorization(options => McpAuthorization.AddPolicy(options, requiredScope));
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<McpRequestContext>();
 
@@ -191,14 +186,6 @@ static string RequireHttpsUri(string variableName)
         throw new InvalidOperationException($"{variableName} must be an absolute HTTPS URI without user info, a query, or a fragment when MCP_TRANSPORT=http.");
 
     return uri.AbsoluteUri;
-}
-
-static bool HasScope(System.Security.Claims.ClaimsPrincipal principal, string requiredScope)
-{
-    return principal.Claims
-        .Where(claim => claim.Type is "scope" or "scp")
-        .SelectMany(claim => claim.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-        .Contains(requiredScope, StringComparer.Ordinal);
 }
 
 

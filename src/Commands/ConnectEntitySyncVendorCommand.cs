@@ -571,7 +571,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope)
     {
-        using var httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)) };
+        using var httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)));
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
@@ -597,7 +597,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope, string tokenPath)
     {
-        using var httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)) };
+        using var httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(baseUrl)));
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",

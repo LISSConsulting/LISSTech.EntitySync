@@ -25,7 +25,6 @@ services:
       entitysync-db:
         condition: service_healthy
     environment:
-      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       MCP_OAUTH_AUTHORITY: "${MCP_OAUTH_AUTHORITY:?MCP_OAUTH_AUTHORITY must be set}"
       MCP_OAUTH_RESOURCE: "${MCP_OAUTH_RESOURCE:?MCP_OAUTH_RESOURCE must be set}"
       MCP_OAUTH_AUDIENCE: "${MCP_OAUTH_AUDIENCE:?MCP_OAUTH_AUDIENCE must be set}"

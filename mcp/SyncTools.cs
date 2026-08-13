@@ -155,10 +155,28 @@ public static class SyncTools
         {
             return Error("Permanent exclusions could not be obtained; create actions are blocked.");
         }
+        catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
+        {
+            return Error(ex.Message);
+        }
+        catch (ArgumentException ex)
+        {
+            return Error(ex.Message);
+        }
         catch
         {
-            return Error("Plan apply failed. The plan may be stale, unapproved, consumed, or bound to a replaced connection.");
+            return Error("Plan apply failed unexpectedly. Check the server logs for the correlated operation.");
         }
+    }
+
+    private static bool IsSafeApplyStateError(string message)
+    {
+        return message is
+            "A plan connection changed after planning; create a new plan."
+            or "Permanent exclusions changed after planning; create and inspect a new plan."
+            or "Plan must be approved before apply."
+            or "Approved plan digest no longer matches the plan."
+            or "Plan is already being applied or has been consumed.";
     }
 
     private static string Error(string message) => JsonSerializer.Serialize(new { success = false, error = message });

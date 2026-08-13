@@ -12,6 +12,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
     public const string ClientExternalIdName = "BillSpendClientId";
     public const string ClientUuidExternalIdName = "BillSpendUuid";
     public const string HaloClientCustomFieldName = "CFBillSpendClientID";
+    private const int MaximumPagesPerQuery = 100;
 
     private readonly BillComOptions options;
     private readonly HttpClient httpClient;
@@ -25,7 +26,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         if (string.IsNullOrWhiteSpace(options.BaseUrl)) throw new ArgumentException("Bill.com base URL is required.", nameof(options));
         if (string.IsNullOrWhiteSpace(options.ClientFieldName)) throw new ArgumentException("Bill.com client custom field name is required.", nameof(options));
 
-        httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)) };
+        httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         httpClient.DefaultRequestHeaders.Add("ApiToken", options.ApiToken);
     }
@@ -43,9 +44,15 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         var entities = new List<ExternalEntity>();
         var nextPage = string.Empty;
         var requestedTotal = query.Count;
+        var visitedPages = new HashSet<string>(StringComparer.Ordinal);
+        var pagesRead = 0;
 
         do
         {
+            if (++pagesRead > MaximumPagesPerQuery)
+                throw new InvalidOperationException($"Bill.com query exceeded the {MaximumPagesPerQuery}-page scan limit.");
+            if (!visitedPages.Add(nextPage))
+                throw new InvalidOperationException("Bill.com query returned a repeated continuation token.");
             var pageSize = Math.Min(requestedTotal.GetValueOrDefault(100), 100);
             using var document = await GetValuesPageAsync(clientField.Id, pageSize, nextPage, cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
@@ -59,7 +66,10 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
                 if (requestedTotal.HasValue && entities.Count >= requestedTotal.Value) return entities;
             }
 
+            var previousPage = nextPage;
             nextPage = root.GetString("nextPage") ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(nextPage) && nextPage.Equals(previousPage, StringComparison.Ordinal))
+                throw new InvalidOperationException("Bill.com query returned a repeated continuation token.");
         }
         while (!string.IsNullOrWhiteSpace(nextPage));
 

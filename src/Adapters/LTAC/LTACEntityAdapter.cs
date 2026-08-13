@@ -19,8 +19,7 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     public LTACEntityAdapter(LTACOptions options)
     {
         this.options = options;
-        httpClient = new HttpClient();
-        httpClient.BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl));
+        httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         SetAuthorization(options.BearerToken);
         client = new AgentControllerClient(UrlHelpers.EnsureTrailingSlash(options.BaseUrl), httpClient);

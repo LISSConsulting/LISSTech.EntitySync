@@ -1,3 +1,4 @@
+using LISSTech.EntitySync.Adapters;
 using System.Text;
 using System.Text.Json;
 
@@ -16,7 +17,7 @@ internal sealed class AgentControllerTokenProvider : IDisposable
     internal const string DefaultInternalScope = "customer_scope_sync:write";
     internal const string DefaultExchangePath = "v1/operator-token/exchange";
 
-    private static readonly HttpClient SharedHttpClient = new();
+    private static readonly HttpClient SharedHttpClient = VendorHttpClientFactory.Create();
     private readonly HttpClient httpClient;
     private readonly AgentControllerProviderConfiguration configuration;
     private readonly bool disposeHttpClient;
@@ -31,7 +32,7 @@ internal sealed class AgentControllerTokenProvider : IDisposable
         HttpMessageHandler handler)
         : this(
             configuration,
-            new HttpClient(handler ?? throw new ArgumentNullException(nameof(handler)), disposeHandler: true),
+            VendorHttpClientFactory.Create(null, handler ?? throw new ArgumentNullException(nameof(handler)), minimumRequestInterval: TimeSpan.Zero),
             disposeHttpClient: true)
     {
     }

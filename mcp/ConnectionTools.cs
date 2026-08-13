@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json;
+using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
@@ -27,9 +28,13 @@ public static class ConnectionTools
         CancellationToken cancellationToken = default)
     {
         IEntityAdapter? adapter = null;
+        IEntityConnectionAdmission? admission = null;
         try
         {
+            var tenantId = context.TenantId;
             var normalized = EntitySyncVendors.Normalize(vendor);
+            admission = connections.BeginRegistration(tenantId, connectionId, normalized);
+            connectionId = admission.ConnectionId;
             if (!context.AllowProfiles && !string.IsNullOrWhiteSpace(profileName)) throw new InvalidOperationException("Profiles are disabled for remote MCP transport.");
             var profile = context.AllowProfiles ? FindProfile(normalized, profileName) : null;
             if (normalized.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
@@ -106,10 +111,10 @@ public static class ConnectionTools
             }
             else
             {
-                return Error($"Unsupported vendor '{vendor}'.");
+                return Error("Unsupported vendor.");
             }
 
-            var registration = connections.Register(context.TenantId, connectionId, adapter);
+            var registration = connections.Register(tenantId, connectionId, adapter);
             adapter = null;
             return JsonSerializer.Serialize(new { success = true, registration.Id, registration.Vendor, registration.Generation, profile = profile?.Name });
         }
@@ -128,6 +133,7 @@ public static class ConnectionTools
         finally
         {
             if (adapter is IDisposable disposable) disposable.Dispose();
+            admission?.Dispose();
         }
     }
 
@@ -195,6 +201,7 @@ public static class ConnectionTools
         CancellationToken cancellationToken = default)
     {
         if (count is < 1 or > 1000) return Error("Count must be between 1 and 1000.");
+        if (search?.Length > 512) return Error("Search cannot exceed 512 characters.");
         try
         {
             using var lease = connections.Acquire(context.TenantId, vendor, connectionId);
@@ -346,7 +353,7 @@ public static class ConnectionTools
 
     private static async Task<string> GetHaloAccessTokenAsync(string baseUrl, string clientId, string clientSecret, string scope, CancellationToken cancellationToken)
     {
-        using var httpClient = new HttpClient { BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/") };
+        using var httpClient = VendorHttpClientFactory.Create(new Uri(baseUrl.TrimEnd('/') + "/"));
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",

@@ -8,7 +8,33 @@ public sealed class InMemoryEntityConnectionRepository : IEntityConnectionReposi
     private const int MaxConnectionsPerTenant = 32;
     private readonly object gate = new();
     private readonly Dictionary<string, ConnectionEntry> connections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> registrationAdmissions = new(StringComparer.OrdinalIgnoreCase);
     private bool disposed;
+
+    public IEntityConnectionAdmission BeginRegistration(string tenantId, string? connectionId, string vendor)
+    {
+        tenantId = Require(tenantId, nameof(tenantId));
+        vendor = EntitySyncVendors.Normalize(vendor);
+        connectionId = string.IsNullOrWhiteSpace(connectionId) ? vendor.ToLowerInvariant() : connectionId.Trim();
+        ValidateConnectionId(connectionId);
+        var key = Key(tenantId, connectionId);
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (!registrationAdmissions.Add(key))
+                throw new InvalidOperationException($"Connection '{connectionId}' is already being configured.");
+            if (!connections.ContainsKey(key)
+                && connections.Values.Count(entry => entry.Current?.TenantId.Equals(tenantId, StringComparison.OrdinalIgnoreCase) == true)
+                    + registrationAdmissions.Count(admission => admission.StartsWith(tenantId + "\n", StringComparison.OrdinalIgnoreCase)) - 1
+                    >= MaxConnectionsPerTenant)
+            {
+                registrationAdmissions.Remove(key);
+                throw new InvalidOperationException($"Tenant connection limit of {MaxConnectionsPerTenant} has been reached.");
+            }
+
+            return new ConnectionAdmission(tenantId, connectionId, () => ReleaseAdmission(key));
+        }
+    }
 
     public EntityConnectionRegistration Register(string tenantId, string? connectionId, IEntityAdapter adapter)
     {
@@ -115,6 +141,14 @@ public sealed class InMemoryEntityConnectionRepository : IEntityConnectionReposi
         foreach (var disposable in disposables.Distinct(ReferenceEqualityComparer.Instance).OfType<IDisposable>()) disposable.Dispose();
     }
 
+    private void ReleaseAdmission(string key)
+    {
+        lock (gate)
+        {
+            registrationAdmissions.Remove(key);
+        }
+    }
+
     private ConnectionEntry ResolveLocked(string tenantId, string vendor, string? connectionId)
     {
         if (!string.IsNullOrWhiteSpace(connectionId))
@@ -169,6 +203,14 @@ public sealed class InMemoryEntityConnectionRepository : IEntityConnectionReposi
         public EntityConnectionRegistration? Current { get; set; } = current;
         public Dictionary<long, int> Leases { get; } = [];
         public Dictionary<long, IDisposable> Retired { get; } = [];
+    }
+
+    private sealed class ConnectionAdmission(string tenantId, string connectionId, Action release) : IEntityConnectionAdmission
+    {
+        private Action? release = release;
+        public string TenantId { get; } = tenantId;
+        public string ConnectionId { get; } = connectionId;
+        public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
     }
 
     private sealed class ConnectionLease(EntityConnectionRegistration connection, Action release) : IEntityConnectionLease

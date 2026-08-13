@@ -11,6 +11,7 @@ namespace LISSTech.EntitySync.Adapters.NCentral;
 public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 1000;
+    private const int MaximumPagesPerQuery = 100;
 
     private readonly NCentralOptions options;
     private readonly HttpClient httpClient;
@@ -22,8 +23,9 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     public NCentralEntityAdapter(NCentralOptions options)
     {
         this.options = options;
-        httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)) };
+        httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)));
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _ = ResolveSoapEndpoint(httpClient.BaseAddress!, options.SoapEndpointPath);
     }
 
     public string Vendor => "NCentral";
@@ -38,7 +40,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         if (!query.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("N-central adapter currently supports EntityType Customer and Site.");
         var customers = new List<ExternalEntity>();
         var pageNumber = 1;
-        while (!query.Count.HasValue || customers.Count < query.Count.Value)
+        while ((!query.Count.HasValue || customers.Count < query.Count.Value) && pageNumber <= MaximumPagesPerQuery)
         {
             var pageSize = Math.Min(DefaultPageSize, query.Count.HasValue ? Math.Max(1, query.Count.Value - customers.Count) : DefaultPageSize);
             using var document = await GetJsonAsync(BuildCustomerListUrl(pageNumber, pageSize), cancellationToken).ConfigureAwait(false);
@@ -59,6 +61,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             if (root.ValueKind == JsonValueKind.Object && root.GetInt("totalPages") is int totalPages && pageNumber >= totalPages) break;
             pageNumber++;
         }
+        if (pageNumber > MaximumPagesPerQuery)
+            throw new InvalidOperationException($"N-central customer query exceeded the {MaximumPagesPerQuery}-page scan limit.");
 
         return customers;
     }
@@ -143,7 +147,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     {
         var serviceOrganizations = new List<EntitySyncLookup>();
         var pageNumber = 1;
-        while (true)
+        while (pageNumber <= MaximumPagesPerQuery)
         {
             using var document = await GetJsonAsync($"api/service-orgs?pageNumber={pageNumber}&pageSize={DefaultPageSize}", cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
@@ -161,6 +165,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             if (root.ValueKind == JsonValueKind.Object && root.GetInt("totalItems") is int totalItems && serviceOrganizations.Count >= totalItems) break;
             pageNumber++;
         }
+        if (pageNumber > MaximumPagesPerQuery)
+            throw new InvalidOperationException($"N-central service-organization query exceeded the {MaximumPagesPerQuery}-page scan limit.");
 
         return serviceOrganizations;
     }
@@ -169,7 +175,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
     {
         var sites = new List<ExternalEntity>();
         var pageNumber = 1;
-        while (!query.Count.HasValue || sites.Count < query.Count.Value)
+        while ((!query.Count.HasValue || sites.Count < query.Count.Value) && pageNumber <= MaximumPagesPerQuery)
         {
             var pageSize = Math.Min(DefaultPageSize, query.Count.HasValue ? Math.Max(1, query.Count.Value - sites.Count) : DefaultPageSize);
             using var document = await GetJsonAsync($"api/sites?pageNumber={pageNumber}&pageSize={pageSize}", cancellationToken).ConfigureAwait(false);
@@ -190,6 +196,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
             if (root.ValueKind == JsonValueKind.Object && root.GetInt("totalItems") is int totalItems && pageNumber * pageSize >= totalItems) break;
             pageNumber++;
         }
+        if (pageNumber > MaximumPagesPerQuery)
+            throw new InvalidOperationException($"N-central site query exceeded the {MaximumPagesPerQuery}-page scan limit.");
 
         await AddParentCustomerNamesAsync(sites, cancellationToken).ConfigureAwait(false);
         return sites;
@@ -587,9 +595,7 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
 
     private async Task<XDocument> InvokeEi2MethodAsync(XElement method, string methodName, CancellationToken cancellationToken)
     {
-        var endpoint = options.SoapEndpointPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
-            ? new Uri(options.SoapEndpointPath, UriKind.Absolute)
-            : new Uri(httpClient.BaseAddress!, options.SoapEndpointPath.TrimStart('/'));
+        var endpoint = ResolveSoapEndpoint(httpClient.BaseAddress!, options.SoapEndpointPath);
         var body = BuildEi2SoapEnvelope(method);
         using var response = await rateLimiter.SendAsync(
             httpClient,
@@ -610,6 +616,21 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         var fault = document.Descendants().FirstOrDefault(element => element.Name.LocalName.Equals("Fault", StringComparison.OrdinalIgnoreCase));
         if (fault != null) throw new InvalidOperationException($"N-central SOAP {methodName} returned a fault: {Preview(fault.Value)}");
         return document;
+    }
+    internal static Uri ResolveSoapEndpoint(Uri baseAddress, string endpointPath)
+    {
+        ArgumentNullException.ThrowIfNull(baseAddress);
+        if (string.IsNullOrWhiteSpace(endpointPath)
+            || Uri.TryCreate(endpointPath, UriKind.Absolute, out _)
+            || endpointPath.StartsWith("//", StringComparison.Ordinal)
+            || endpointPath.Contains('\\'))
+            throw new InvalidOperationException("N-central SOAP endpoint must be a relative path on the configured origin.");
+
+        var endpoint = new Uri(baseAddress, endpointPath.TrimStart('/'));
+        if (!endpoint.Scheme.Equals(baseAddress.Scheme, StringComparison.OrdinalIgnoreCase)
+            || !endpoint.GetLeftPart(UriPartial.Authority).Equals(baseAddress.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("N-central SOAP endpoint must remain on the configured origin.");
+        return endpoint;
     }
 
     private static string BuildEi2SoapEnvelope(XElement method)

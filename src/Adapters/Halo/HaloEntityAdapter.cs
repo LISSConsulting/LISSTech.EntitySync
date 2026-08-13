@@ -12,6 +12,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private const int DefaultEnrichmentConcurrency = 2;
+    private const int MaximumSiteClientScan = 1000;
     private const int CountryLookupId = 74;
     private const int RegionLookupId = 77;
     private const int CustomerRelationshipLookupId = 89;
@@ -30,7 +31,7 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
     public HaloEntityAdapter(HaloOptions options)
     {
         this.options = options;
-        httpClient = new HttpClient { BaseAddress = new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)) };
+        httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)));
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.AccessToken);
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -91,31 +92,35 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     private async Task<IReadOnlyList<ExternalEntity>> GetSitesAsync(EntityQuery query, CancellationToken cancellationToken)
     {
-        var clients = await GetEntitiesAsync(new EntityQuery { EntityType = "Client", IncludeInactive = query.IncludeInactive, ThrottleLimit = query.ThrottleLimit }, cancellationToken).ConfigureAwait(false);
+        var clientCount = query.Count.HasValue
+            ? Math.Min(MaximumSiteClientScan, Math.Max(query.Count.Value, 100))
+            : MaximumSiteClientScan;
+        var clients = await GetEntitiesAsync(new EntityQuery
+        {
+            EntityType = "Client",
+            IncludeInactive = query.IncludeInactive,
+            ThrottleLimit = query.ThrottleLimit,
+            Count = clientCount
+        }, cancellationToken).ConfigureAwait(false);
         var sites = new List<ExternalEntity>();
-        using var throttle = new SemaphoreSlim(query.ThrottleLimit > 0 ? query.ThrottleLimit : DefaultEnrichmentConcurrency);
-        var tasks = clients.Select(async client =>
+        for (var offset = 0; offset < clients.Count; offset += DefaultEnrichmentConcurrency)
         {
-            await throttle.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            var clientBatch = clients.Skip(offset).Take(DefaultEnrichmentConcurrency);
+            var siteBatches = await Task.WhenAll(
+                clientBatch.Select(client => GetClientSitesAsync(client, cancellationToken))).ConfigureAwait(false);
+            foreach (var batch in siteBatches)
             {
-                return await GetClientSitesAsync(client, cancellationToken).ConfigureAwait(false);
-            }
-            finally
-            {
-                throttle.Release();
-            }
-        }).ToArray();
-
-        foreach (var batch in await Task.WhenAll(tasks).ConfigureAwait(false))
-        {
-            foreach (var site in batch)
-            {
-                if (!MatchesSiteQuery(site, query)) continue;
-                sites.Add(site);
-                if (query.Count.HasValue && sites.Count >= query.Count.Value) return sites;
+                foreach (var site in batch)
+                {
+                    if (!MatchesSiteQuery(site, query)) continue;
+                    sites.Add(site);
+                    if (query.Count.HasValue && sites.Count >= query.Count.Value) return sites;
+                }
             }
         }
+
+        if (clients.Count >= MaximumSiteClientScan && (!query.Count.HasValue || sites.Count < query.Count.Value))
+            throw new InvalidOperationException($"HaloPSA site query exceeded the {MaximumSiteClientScan}-client scan limit.");
 
         return sites;
     }

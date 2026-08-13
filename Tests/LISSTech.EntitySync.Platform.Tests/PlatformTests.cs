@@ -428,11 +428,16 @@ public sealed class PlatformTests
     {
         var httpContext = new DefaultHttpContext
         {
-            User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "oauth-subject")], "Bearer"))
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("iss", "https://issuer.example.test/"),
+                new Claim("sub", "oauth-subject")
+            ], "Bearer"))
         };
         var context = new McpRequestContext(new HttpContextAccessor { HttpContext = httpContext });
 
-        Assert.Equal("oauth-subject", context.TenantId);
+        Assert.Equal("https://issuer.example.test::oauth-subject", context.TenantId);
+        Assert.Equal("https://issuer.example.test::oauth-subject", context.Actor);
         Assert.False(context.AllowProfiles);
     }
 

@@ -11,12 +11,13 @@ namespace LISSTech.EntitySync.Adapters.NetSuite;
 public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 {
     private readonly NetSuiteOptions options;
-    private readonly HttpClient httpClient = new();
+    private readonly HttpClient httpClient;
     private readonly RateLimitedHttpRequester rateLimiter = new("NetSuite");
 
     public NetSuiteEntityAdapter(NetSuiteOptions options)
     {
         this.options = options;
+        httpClient = VendorHttpClientFactory.Create();
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
@@ -191,7 +192,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         return builder.Uri;
     }
 
-    private static string BuildCustomerQuery(EntityQuery query)
+    internal static string BuildCustomerQuery(EntityQuery query)
     {
         var fields = string.Join(", ",
             "id",
@@ -212,8 +213,8 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         if (!query.IncludeInactive) filters.Add("isinactive = 'F'");
         if (!string.IsNullOrWhiteSpace(query.Search))
         {
-            var search = EscapeSuiteQlString(query.Search.ToLowerInvariant());
-            filters.Add($"(LOWER(entityid) LIKE '%{search}%' OR LOWER(companyname) LIKE '%{search}%' OR LOWER(email) LIKE '%{search}%')");
+            var search = EscapeSuiteQlLikeLiteral(query.Search.ToLowerInvariant());
+            filters.Add($"(LOWER(entityid) LIKE '%{search}%' ESCAPE '\\' OR LOWER(companyname) LIKE '%{search}%' ESCAPE '\\' OR LOWER(email) LIKE '%{search}%' ESCAPE '\\')");
         }
 
         if (filters.Count > 0) sql.Append(" WHERE ").Append(string.Join(" AND ", filters));
@@ -222,9 +223,13 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         return sql.ToString();
     }
 
-    private static string EscapeSuiteQlString(string value)
+    internal static string EscapeSuiteQlLikeLiteral(string value)
     {
-        return value.Replace("'", "''", StringComparison.Ordinal);
+        return value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal)
+            .Replace("'", "''", StringComparison.Ordinal);
     }
 
     private static string AccountHost(string accountId)

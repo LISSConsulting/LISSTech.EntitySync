@@ -29,6 +29,7 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions a dedicated PostgreSQL 18 service and persistent volume for permanent exclusions.
 8. Add the environment variables for the vendors the server will use.
 9. Assign the domain to the `entitysync-mcp` service on container port `8080`.
+   The reverse proxy must overwrite, not append, forwarded headers. The application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
 10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.
 11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
 
@@ -90,10 +91,12 @@ HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integ
 
 ## Operational Model
 
-- Run exactly one replica. Connections and plans are partitioned by the validated OAuth `sub` claim, so each authorization-server subject has isolated in-memory state.
+- Run exactly one replica. Connections and plans are partitioned by the validated issuer plus OAuth `sub` claim, so equal subjects from different issuers cannot share in-memory state. Permanent exclusion audit actors use the same immutable identity.
 - A restart clears connections and plans. Reconnect vendors and create a fresh plan after each deployment or restart.
 - Creating a plan is read-only. Applying writes requires digest approval and `apply=true`; the default is a dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
+- Credential-bearing vendor clients reject redirects, cap each response at 8 MiB, and share per-origin request spacing and concurrency limits. N-central SOAP endpoints must be relative paths on the configured HTTPS origin. Vendor pagination and Halo site scans fail closed at bounded scan limits.
+- The container image is framework-dependent by design and runs on its digest-pinned ASP.NET runtime image; local release builds remain self-contained single files.
 - Access-token lifetime, revocation, user consent, client registration, and signing-key rotation belong to the authorization server. The MCP server refreshes signing keys from its discovery metadata.
 
 ## Local Development

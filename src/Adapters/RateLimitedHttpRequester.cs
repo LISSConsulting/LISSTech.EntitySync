@@ -1,25 +1,18 @@
 namespace LISSTech.EntitySync.Adapters;
 
 /// <summary>
-/// Throttles outbound HTTP requests to honour Retry-After responses and a
-/// minimum inter-request interval. Shared across every adapter that issues
-/// outbound HTTP so they cannot drift out of sync on the retry policy or
-/// throttle behaviour; currently used by HaloPSA, N-central, and NetSuite.
-/// LTAC is intentionally excluded because its customer-scope write endpoint
-/// does not require outbound HTTP. The Retry-After parsing itself lives in
-/// <see cref="RateLimitHelper.RateLimitDelay"/>.
+/// Applies the shared bounded 429 retry policy. Request spacing, response-size
+/// limits, redirect refusal, and per-origin concurrency are enforced by the
+/// hardened handler created by <see cref="VendorHttpClientFactory"/>.
 /// </summary>
 public sealed class RateLimitedHttpRequester : IDisposable
 {
-    /// <summary>Minimum wall-clock spacing between two outbound HTTP requests on the same adapter.</summary>
-    public const int MinimumRequestIntervalMs = 500;
 
     /// <summary>Maximum number of retries permitted on HTTP 429 TooManyRequests before giving up.</summary>
     public const int MaxRateLimitRetries = 6;
+    public static readonly TimeSpan MaximumTotalRetryDelay = TimeSpan.FromSeconds(90);
 
     private readonly string vendor;
-    private readonly SemaphoreSlim requestThrottle = new(1, 1);
-    private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
 
     public RateLimitedHttpRequester(string vendor)
     {
@@ -28,10 +21,8 @@ public sealed class RateLimitedHttpRequester : IDisposable
     }
 
     /// <summary>
-    /// Sends <paramref name="createRequest"/> through <paramref name="httpClient"/> honouring
-    /// the 429 Retry-After policy and the minimum-interval throttle. The factory closure
-    /// re-runs on every retry so per-attempt headers (for example a freshly signed OAuth
-    /// signature) are not cached.
+    /// Sends <paramref name="createRequest"/> through <paramref name="httpClient"/> and
+    /// recreates the request on every retry so per-attempt headers remain current.
     /// </summary>
     public async Task<HttpResponseMessage> SendAsync(
         HttpClient httpClient,
@@ -42,34 +33,22 @@ public sealed class RateLimitedHttpRequester : IDisposable
         if (httpClient == null) throw new ArgumentNullException(nameof(httpClient));
         if (createRequest == null) throw new ArgumentNullException(nameof(createRequest));
 
+        var totalRetryDelay = TimeSpan.Zero;
         for (var attempt = 0; ; attempt++)
         {
-            await WaitForRequestSlotAsync(cancellationToken).ConfigureAwait(false);
             using var request = createRequest();
             var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= MaxRateLimitRetries) return response;
 
             var delay = RateLimitHelper.RateLimitDelay(response, attempt);
+            if (totalRetryDelay + delay > MaximumTotalRetryDelay) return response;
+            totalRetryDelay += delay;
             trace?.Invoke($"{vendor} rate limit reached. Waiting {(int)delay.TotalSeconds}s before retry {attempt + 1}/{MaxRateLimitRetries}.");
             response.Dispose();
             await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task WaitForRequestSlotAsync(CancellationToken cancellationToken)
-    {
-        await requestThrottle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            var now = DateTimeOffset.UtcNow;
-            if (nextRequestAt > now) await Task.Delay(nextRequestAt - now, cancellationToken).ConfigureAwait(false);
-            nextRequestAt = DateTimeOffset.UtcNow.AddMilliseconds(MinimumRequestIntervalMs);
-        }
-        finally
-        {
-            requestThrottle.Release();
-        }
-    }
 
-    public void Dispose() => requestThrottle.Dispose();
+    public void Dispose() { }
 }
