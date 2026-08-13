@@ -101,6 +101,76 @@ public sealed class HardeningTests
     }
 
     [Fact]
+    public async Task VendorTransportEvictsExcessIdleEndpointGates()
+    {
+        var baseline = VendorHttpPolicyHandler.CachedEndpointGateCount;
+        var gateLimit = baseline + 4;
+
+        for (var index = 0; index < 12; index++)
+        {
+            using var handler = new StaticResponseHandler(() => new HttpResponseMessage(HttpStatusCode.OK));
+            using var client = VendorHttpClientFactory.Create(
+                new Uri($"https://vendor-{Guid.NewGuid():N}.example/"),
+                handler,
+                maximumResponseBytes: 8,
+                maximumConcurrency: 1,
+                minimumRequestInterval: TimeSpan.Zero);
+            using var response = await client.GetAsync("entities");
+        }
+
+        var removed = VendorHttpPolicyHandler.TrimEndpointGates(gateLimit, TimeSpan.MaxValue);
+
+        Assert.True(removed >= 8);
+        Assert.True(VendorHttpPolicyHandler.CachedEndpointGateCount <= gateLimit);
+    }
+
+    [Fact]
+    public async Task VendorTransportDoesNotEvictEndpointGateWithActiveRequest()
+    {
+        var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new BlockingResponseHandler(releaseResponse.Task);
+        using var client = VendorHttpClientFactory.Create(
+            new Uri($"https://active-{Guid.NewGuid():N}.example/"),
+            handler,
+            maximumResponseBytes: 8,
+            maximumConcurrency: 1,
+            minimumRequestInterval: TimeSpan.Zero);
+
+        var request = client.GetAsync("entities");
+        await handler.RequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var countWhileActive = VendorHttpPolicyHandler.CachedEndpointGateCount;
+
+        var removed = VendorHttpPolicyHandler.TrimEndpointGates(0, TimeSpan.Zero);
+
+        Assert.Equal(countWhileActive - 1, removed);
+        Assert.True(VendorHttpPolicyHandler.CachedEndpointGateCount >= 1);
+        releaseResponse.SetResult();
+        using var response = await request;
+    }
+
+    [Fact]
+    public async Task VendorTransportSharesOneEndpointGateAcrossConcurrentRequests()
+    {
+        var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new BlockingResponseHandler(releaseResponses.Task);
+        using var client = VendorHttpClientFactory.Create(
+            new Uri($"https://shared-{Guid.NewGuid():N}.example/"),
+            handler,
+            maximumResponseBytes: 8,
+            maximumConcurrency: 2,
+            minimumRequestInterval: TimeSpan.Zero);
+        var baseline = VendorHttpPolicyHandler.CachedEndpointGateCount;
+
+        var requests = new[] { client.GetAsync("first"), client.GetAsync("second") };
+        await handler.TwoRequestsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(baseline + 1, VendorHttpPolicyHandler.CachedEndpointGateCount);
+        releaseResponses.SetResult();
+        var responses = await Task.WhenAll(requests);
+        foreach (var response in responses) response.Dispose();
+    }
+
+    [Fact]
     public void RegistrationAdmissionsReserveCapacityAndRejectDuplicates()
     {
         using var repository = new InMemoryEntityConnectionRepository();
@@ -217,6 +287,26 @@ public sealed class HardeningTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(responseFactory());
+        }
+    }
+
+    private sealed class BlockingResponseHandler(Task releaseResponse) : HttpMessageHandler
+    {
+        public TaskCompletionSource RequestStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource TwoRequestsStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int requestCount;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref requestCount) == 2) TwoRequestsStarted.SetResult();
+            RequestStarted.TrySetResult();
+            await releaseResponse.WaitAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
 

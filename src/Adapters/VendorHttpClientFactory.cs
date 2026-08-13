@@ -9,6 +9,8 @@ internal static class VendorHttpClientFactory
     internal const int MaximumResponseBytes = 8 * 1024 * 1024;
     internal const int MaximumConnectionsPerOrigin = 8;
     internal static readonly TimeSpan MinimumRequestInterval = TimeSpan.FromMilliseconds(500);
+    internal const int MaximumCachedEndpointGates = 256;
+    internal static readonly TimeSpan EndpointGateIdleLifetime = TimeSpan.FromMinutes(30);
 
     public static HttpClient Create(Uri? baseAddress = null)
     {
@@ -42,6 +44,7 @@ internal static class VendorHttpClientFactory
 internal sealed class VendorHttpPolicyHandler : DelegatingHandler
 {
     private static readonly ConcurrentDictionary<EndpointPolicyKey, EndpointGate> EndpointGates = new();
+    private static long requestsSinceEndpointGateCleanup;
     private readonly int maximumResponseBytes;
     private readonly int maximumConcurrency;
     private readonly TimeSpan minimumRequestInterval;
@@ -68,12 +71,14 @@ internal sealed class VendorHttpPolicyHandler : DelegatingHandler
             throw new InvalidOperationException("Vendor HTTP requests require an absolute URI after BaseAddress resolution.");
 
         var key = new EndpointPolicyKey(uri.GetLeftPart(UriPartial.Authority), maximumConcurrency, minimumRequestInterval);
-        var gate = EndpointGates.GetOrAdd(key, static item => new EndpointGate(item.MaximumConcurrency, item.MinimumRequestInterval));
-        await gate.WaitForStartAsync(cancellationToken).ConfigureAwait(false);
-        await gate.Concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gate = AcquireGate(key);
+        var concurrencyEntered = false;
         HttpResponseMessage? response = null;
         try
         {
+            await gate.WaitForStartAsync(cancellationToken).ConfigureAwait(false);
+            await gate.Concurrency.WaitAsync(cancellationToken).ConfigureAwait(false);
+            concurrencyEntered = true;
             response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
             await BufferBoundedContentAsync(response, maximumResponseBytes, cancellationToken).ConfigureAwait(false);
             return response;
@@ -85,8 +90,55 @@ internal sealed class VendorHttpPolicyHandler : DelegatingHandler
         }
         finally
         {
-            gate.Concurrency.Release();
+            if (concurrencyEntered) gate.Concurrency.Release();
+            gate.Release();
+            if (EndpointGates.Count > VendorHttpClientFactory.MaximumCachedEndpointGates
+                || Interlocked.Increment(ref requestsSinceEndpointGateCleanup) % 64 == 0)
+            {
+                TrimEndpointGates(
+                    VendorHttpClientFactory.MaximumCachedEndpointGates,
+                    VendorHttpClientFactory.EndpointGateIdleLifetime);
+            }
         }
+    }
+
+    private static EndpointGate AcquireGate(EndpointPolicyKey key)
+    {
+        while (true)
+        {
+            var gate = EndpointGates.GetOrAdd(
+                key,
+                static item => new EndpointGate(item.MaximumConcurrency, item.MinimumRequestInterval));
+            if (gate.TryAcquire()) return gate;
+            RemoveExact(key, gate);
+        }
+    }
+
+    internal static int TrimEndpointGates(int maximumCachedGates, TimeSpan idleLifetime)
+    {
+        if (maximumCachedGates < 0) throw new ArgumentOutOfRangeException(nameof(maximumCachedGates));
+        if (idleLifetime < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(idleLifetime));
+
+        var now = DateTimeOffset.UtcNow;
+        var cutoff = idleLifetime == TimeSpan.MaxValue ? DateTimeOffset.MinValue : now - idleLifetime;
+        var candidates = EndpointGates.ToArray();
+        var removed = 0;
+        foreach (var candidate in candidates)
+        {
+            var overCapacity = EndpointGates.Count > maximumCachedGates;
+            if (!candidate.Value.TryRetire(cutoff, overCapacity)) continue;
+            if (RemoveExact(candidate.Key, candidate.Value)) removed++;
+        }
+
+        return removed;
+    }
+
+    internal static int CachedEndpointGateCount => EndpointGates.Count;
+
+    private static bool RemoveExact(EndpointPolicyKey key, EndpointGate gate)
+    {
+        return ((ICollection<KeyValuePair<EndpointPolicyKey, EndpointGate>>)EndpointGates)
+            .Remove(new KeyValuePair<EndpointPolicyKey, EndpointGate>(key, gate));
     }
 
     private static async Task BufferBoundedContentAsync(HttpResponseMessage response, int maximumBytes, CancellationToken cancellationToken)
@@ -127,11 +179,61 @@ internal sealed class VendorHttpPolicyHandler : DelegatingHandler
 
     private readonly record struct EndpointPolicyKey(string Origin, int MaximumConcurrency, TimeSpan MinimumRequestInterval);
 
-    private sealed class EndpointGate(int maximumConcurrency, TimeSpan minimumRequestInterval)
+    private sealed class EndpointGate
     {
+        private readonly object lifecycle = new();
         private readonly SemaphoreSlim schedule = new(1, 1);
+        private readonly TimeSpan minimumRequestInterval;
         private DateTimeOffset nextRequestAt = DateTimeOffset.MinValue;
-        public SemaphoreSlim Concurrency { get; } = new(maximumConcurrency, maximumConcurrency);
+        private DateTimeOffset lastUsedAt = DateTimeOffset.UtcNow;
+        private int users;
+        private bool retired;
+
+        public EndpointGate(int maximumConcurrency, TimeSpan minimumRequestInterval)
+        {
+            this.minimumRequestInterval = minimumRequestInterval;
+            Concurrency = new SemaphoreSlim(maximumConcurrency, maximumConcurrency);
+        }
+
+        public SemaphoreSlim Concurrency { get; }
+
+        public DateTimeOffset LastUsedAt
+        {
+            get
+            {
+                lock (lifecycle) return lastUsedAt;
+            }
+        }
+
+        public bool TryAcquire()
+        {
+            lock (lifecycle)
+            {
+                if (retired) return false;
+                users++;
+                return true;
+            }
+        }
+
+        public void Release()
+        {
+            lock (lifecycle)
+            {
+                if (users <= 0) throw new InvalidOperationException("Endpoint gate user count is invalid.");
+                users--;
+                lastUsedAt = DateTimeOffset.UtcNow;
+            }
+        }
+
+        public bool TryRetire(DateTimeOffset idleCutoff, bool force)
+        {
+            lock (lifecycle)
+            {
+                if (retired || users != 0 || (!force && lastUsedAt > idleCutoff)) return false;
+                retired = true;
+                return true;
+            }
+        }
 
         public async Task WaitForStartAsync(CancellationToken cancellationToken)
         {
