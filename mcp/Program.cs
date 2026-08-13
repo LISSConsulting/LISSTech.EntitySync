@@ -67,6 +67,7 @@ static async Task RunHttpAsync(string[] args)
     if (scopes.Length == 0)
         throw new InvalidOperationException("MCP_OAUTH_SCOPES must contain at least one OAuth scope value.");
     var oauthChallengeHints = OAuthChallengeHints.Create(
+        resource,
         Environment.GetEnvironmentVariable("MCP_OAUTH_AUTHORIZATION_ENDPOINT"),
         Environment.GetEnvironmentVariable("MCP_OAUTH_TOKEN_ENDPOINT"),
         Environment.GetEnvironmentVariable("MCP_OAUTH_PUBLIC_CLIENT_ID"),
@@ -192,34 +193,40 @@ static string RequireHttpsUri(string variableName)
 internal sealed class OAuthChallengeHints
 {
     private OAuthChallengeHints(
-        string authorizationEndpoint,
-        string tokenEndpoint,
-        string clientId,
-        string scopes)
+        string resourceMetadataEndpoint,
+        string? authorizationEndpoint,
+        string? tokenEndpoint,
+        string? clientId,
+        string? scopes)
     {
+        ResourceMetadataEndpoint = resourceMetadataEndpoint;
         AuthorizationEndpoint = authorizationEndpoint;
         TokenEndpoint = tokenEndpoint;
         ClientId = clientId;
         Scopes = scopes;
     }
 
-    private string AuthorizationEndpoint { get; }
+    private string ResourceMetadataEndpoint { get; }
 
-    private string TokenEndpoint { get; }
+    private string? AuthorizationEndpoint { get; }
 
-    private string ClientId { get; }
+    private string? TokenEndpoint { get; }
 
-    private string Scopes { get; }
+    private string? ClientId { get; }
 
-    internal static OAuthChallengeHints? Create(
+    private string? Scopes { get; }
+
+    internal static OAuthChallengeHints Create(
+        string resource,
         string? authorizationEndpoint,
         string? tokenEndpoint,
         string? clientId,
         IEnumerable<string> scopes)
     {
+        var resourceMetadataEndpoint = BuildResourceMetadataEndpoint(resource);
         var values = new[] { authorizationEndpoint, tokenEndpoint, clientId };
         if (values.All(string.IsNullOrWhiteSpace))
-            return null;
+            return new OAuthChallengeHints(resourceMetadataEndpoint, null, null, null, null);
 
         if (values.Any(string.IsNullOrWhiteSpace))
             throw new InvalidOperationException(
@@ -227,6 +234,7 @@ internal sealed class OAuthChallengeHints
 
         var joinedScopes = string.Join(' ', scopes);
         return new OAuthChallengeHints(
+            resourceMetadataEndpoint,
             ValidateHttpsEndpoint(authorizationEndpoint!, "MCP_OAUTH_AUTHORIZATION_ENDPOINT"),
             ValidateHttpsEndpoint(tokenEndpoint!, "MCP_OAUTH_TOKEN_ENDPOINT"),
             ValidateQuotedValue(clientId!, "MCP_OAUTH_PUBLIC_CLIENT_ID"),
@@ -239,13 +247,37 @@ internal sealed class OAuthChallengeHints
             .Select(challenge =>
             {
                 if (!challenge.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-                    || !challenge.Contains("resource_metadata=", StringComparison.OrdinalIgnoreCase)
-                    || challenge.Contains("authorization_endpoint=", StringComparison.OrdinalIgnoreCase))
+                    || !challenge.Contains("resource_metadata=", StringComparison.OrdinalIgnoreCase))
                     return challenge;
 
-                return $"{challenge}, authorization_endpoint=\"{AuthorizationEndpoint}\", token_endpoint=\"{TokenEndpoint}\", client_id=\"{ClientId}\", scope=\"{Scopes}\"";
+                var rewritten = ReplaceResourceMetadata(challenge);
+                if (AuthorizationEndpoint is null
+                    || rewritten.Contains("authorization_endpoint=", StringComparison.OrdinalIgnoreCase))
+                    return rewritten;
+
+                return $"{rewritten}, authorization_endpoint=\"{AuthorizationEndpoint}\", token_endpoint=\"{TokenEndpoint}\", client_id=\"{ClientId}\", scope=\"{Scopes}\"";
             })
             .ToArray();
+    }
+
+    private string ReplaceResourceMetadata(string challenge)
+    {
+        const string marker = "resource_metadata=\"";
+        var valueStart = challenge.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (valueStart < 0) return challenge;
+        valueStart += marker.Length;
+        var valueEnd = challenge.IndexOf('"', valueStart);
+        if (valueEnd < 0) return challenge;
+        return challenge[..valueStart] + ResourceMetadataEndpoint + challenge[valueEnd..];
+    }
+
+    private static string BuildResourceMetadataEndpoint(string resource)
+    {
+        var uri = new Uri(ValidateHttpsEndpoint(resource, "MCP_OAUTH_RESOURCE"));
+        if (!string.IsNullOrEmpty(uri.Query))
+            throw new InvalidOperationException("MCP_OAUTH_RESOURCE must not contain a query.");
+
+        return $"{uri.GetLeftPart(UriPartial.Authority)}/.well-known/oauth-protected-resource{uri.AbsolutePath.TrimEnd('/')}";
     }
 
     private static string ValidateHttpsEndpoint(string value, string variableName)

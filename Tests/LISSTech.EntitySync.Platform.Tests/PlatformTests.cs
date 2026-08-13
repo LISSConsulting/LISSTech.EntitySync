@@ -458,6 +458,7 @@ public sealed class PlatformTests
     public void OAuthChallengeHintsExposeExplicitEndpointsAndPublicClient()
     {
         var hints = OAuthChallengeHints.Create(
+            "https://mcp.example.test/mcp",
             "https://login.example.test/tenant/oauth2/v2.0/authorize",
             "https://login.example.test/tenant/oauth2/v2.0/token",
             "public-client-id",
@@ -472,12 +473,35 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public void OAuthChallengePinsHttpsResourceMetadataBehindReverseProxy()
+    {
+        var hints = OAuthChallengeHints.Create(
+            "https://mcp.example.test/mcp",
+            null,
+            null,
+            null,
+            ["mcp.tools"]);
+
+        var challenges = hints.Append(
+            ["Bearer resource_metadata=\"http://mcp.example.test/.well-known/oauth-protected-resource/mcp\""]);
+
+        Assert.Equal(
+            "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/mcp\"",
+            Assert.Single(challenges));
+    }
+
+    [Fact]
     public void OAuthChallengeHintsRequireCompleteSafeConfiguration()
     {
-        Assert.Null(OAuthChallengeHints.Create(null, null, null, ["mcp.tools"]));
+        var hints = OAuthChallengeHints.Create("https://mcp.example.test/mcp", null, null, null, ["mcp.tools"]);
+        Assert.Equal(
+            "Bearer resource_metadata=\"https://mcp.example.test/.well-known/oauth-protected-resource/mcp\"",
+            Assert.Single(hints.Append(
+                ["Bearer resource_metadata=\"http://internal/.well-known/oauth-protected-resource/mcp\""])));
 
         var partial = Assert.Throws<InvalidOperationException>(
             () => OAuthChallengeHints.Create(
+                "https://mcp.example.test/mcp",
                 "https://login.example.test/authorize",
                 null,
                 "public-client-id",
@@ -486,6 +510,7 @@ public sealed class PlatformTests
 
         var unsafeClient = Assert.Throws<InvalidOperationException>(
             () => OAuthChallengeHints.Create(
+                "https://mcp.example.test/mcp",
                 "https://login.example.test/authorize",
                 "https://login.example.test/token",
                 "client\r\ninjected",
@@ -497,6 +522,7 @@ public sealed class PlatformTests
     public void OAuthChallengeHintsLeaveUnrelatedChallengesUnchanged()
     {
         var hints = OAuthChallengeHints.Create(
+            "https://mcp.example.test/mcp",
             "https://login.example.test/authorize",
             "https://login.example.test/token",
             "public-client-id",
