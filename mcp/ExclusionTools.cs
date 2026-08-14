@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LISSTech.EntitySync.Application;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace LISSTech.EntitySync.Mcp;
@@ -14,6 +15,7 @@ public static class ExclusionTools
     public static async Task<string> ListEntityExclusions(
         EntityExclusionService service,
         McpRequestContext context,
+        ILoggerFactory loggerFactory,
         [Description("Source vendor")] string sourceVendor,
         [Description("Target vendor")] string targetVendor,
         string? sourceConnectionId = null,
@@ -49,8 +51,10 @@ public static class ExclusionTools
         {
             throw;
         }
-        catch
+        catch (Exception ex)
         {
+            loggerFactory.CreateLogger("LISSTech.EntitySync.Mcp.ExclusionTools")
+                .LogError(ex, "Failed to list permanent EntitySync exclusions.");
             return Error("Exclusions could not be obtained. Create-missing planning and apply remain fail-closed.");
         }
     }
