@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 namespace LISSTech.EntitySync.Mcp;
 
@@ -21,6 +23,7 @@ internal sealed class LogfireLoggingSettings
         string serviceVersion)
     {
         LogsEndpoint = logsEndpoint;
+        TracesEndpoint = new Uri(logsEndpoint, "/v1/traces");
         AuthorizationHeader = authorizationHeader;
         ServiceName = serviceName;
         DeploymentEnvironment = deploymentEnvironment;
@@ -28,6 +31,7 @@ internal sealed class LogfireLoggingSettings
     }
 
     internal Uri LogsEndpoint { get; }
+    internal Uri TracesEndpoint { get; }
     internal string AuthorizationHeader { get; }
     internal string ServiceName { get; }
     internal string DeploymentEnvironment { get; }
@@ -108,8 +112,12 @@ internal sealed class LogfireLoggingSettings
 
 internal static class LogfireLogging
 {
-    internal static void Configure(ILoggingBuilder logging, LogfireLoggingSettings settings)
+    internal static void Configure(
+        IServiceCollection services,
+        ILoggingBuilder logging,
+        LogfireLoggingSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(logging);
         ArgumentNullException.ThrowIfNull(settings);
 
@@ -125,18 +133,44 @@ internal static class LogfireLogging
             options.IncludeFormattedMessage = true;
             options.IncludeScopes = true;
             options.ParseStateValues = true;
-            options.SetResourceBuilder(ResourceBuilder.CreateDefault()
-                .AddService(settings.ServiceName, serviceVersion: settings.ServiceVersion)
-                .AddAttributes(new Dictionary<string, object>
-                {
-                    ["deployment.environment.name"] = settings.DeploymentEnvironment
-                }));
+            options.SetResourceBuilder(AddServiceResource(ResourceBuilder.CreateDefault(), settings));
             options.AddOtlpExporter(exporter =>
-            {
-                exporter.Endpoint = settings.LogsEndpoint;
-                exporter.Protocol = OtlpExportProtocol.HttpProtobuf;
-                exporter.Headers = settings.AuthorizationHeader;
-            });
+                ConfigureExporter(exporter, settings.LogsEndpoint, settings));
         });
+
+        services.AddOpenTelemetry()
+            .ConfigureResource(resource => AddServiceResource(resource, settings))
+            .WithTracing(tracing =>
+            {
+                AddAspNetCoreRequestTracing(tracing);
+                tracing.AddOtlpExporter(exporter =>
+                    ConfigureExporter(exporter, settings.TracesEndpoint, settings));
+            });
+    }
+
+    internal static TracerProviderBuilder AddAspNetCoreRequestTracing(TracerProviderBuilder tracing)
+    {
+        ArgumentNullException.ThrowIfNull(tracing);
+        return tracing.AddAspNetCoreInstrumentation();
+    }
+
+    private static ResourceBuilder AddServiceResource(
+        ResourceBuilder resource,
+        LogfireLoggingSettings settings) =>
+        resource
+            .AddService(settings.ServiceName, serviceVersion: settings.ServiceVersion)
+            .AddAttributes(new Dictionary<string, object>
+            {
+                ["deployment.environment.name"] = settings.DeploymentEnvironment
+            });
+
+    private static void ConfigureExporter(
+        OtlpExporterOptions exporter,
+        Uri endpoint,
+        LogfireLoggingSettings settings)
+    {
+        exporter.Endpoint = endpoint;
+        exporter.Protocol = OtlpExportProtocol.HttpProtobuf;
+        exporter.Headers = settings.AuthorizationHeader;
     }
 }

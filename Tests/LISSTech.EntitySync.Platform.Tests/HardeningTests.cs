@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
@@ -17,6 +18,8 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using OpenTelemetry;
+using OpenTelemetry.Trace;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -52,11 +55,51 @@ public sealed class HardeningTests
             "26.8.0");
 
         Assert.Equal("https://logfire-us.pydantic.dev/v1/logs", settings.LogsEndpoint.AbsoluteUri);
+        Assert.Equal("https://logfire-us.pydantic.dev/v1/traces", settings.TracesEndpoint.AbsoluteUri);
         Assert.Equal("lisstech-entitysync-mcp", settings.ServiceName);
         Assert.Equal("Production", settings.DeploymentEnvironment);
         Assert.Equal("26.8.0", settings.ServiceVersion);
         Assert.DoesNotContain(writeToken, settings.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("Authorization", settings.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AspNetCoreRequestTracingExportsCompletedServerSpans()
+    {
+        var exportedSpan = new TaskCompletionSource<ExportedSpan>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        builder.Services.AddOpenTelemetry()
+            .WithTracing(tracing =>
+            {
+                LogfireLogging.AddAspNetCoreRequestTracing(tracing);
+                tracing.AddProcessor(new SimpleActivityExportProcessor(
+                    new RecordingActivityExporter(exportedSpan)));
+            });
+
+        await using var app = builder.Build();
+        app.MapGet("/trace-test", () => "ok");
+        await app.StartAsync();
+        try
+        {
+            var server = app.Services.GetRequiredService<IServer>();
+            var address = server.Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            using var client = new HttpClient { BaseAddress = new Uri(address) };
+            using var response = await client.GetAsync("/trace-test");
+            response.EnsureSuccessStatusCode();
+
+            var span = await exportedSpan.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(ActivityKind.Server, span.Kind);
+            Assert.Equal("GET /trace-test", span.DisplayName);
+            Assert.True(span.Duration > TimeSpan.Zero);
+        }
+        finally
+        {
+            await app.StopAsync();
+        }
     }
 
     [Theory]
@@ -355,6 +398,29 @@ public sealed class HardeningTests
         {
             var value = Request.Headers[header].ToString();
             if (value.Length > 0) claims.Add(new Claim(type, value));
+        }
+    }
+
+    private sealed record ExportedSpan(
+        string DisplayName,
+        ActivityKind Kind,
+        TimeSpan Duration);
+
+    private sealed class RecordingActivityExporter(
+        TaskCompletionSource<ExportedSpan> exportedSpan) : BaseExporter<Activity>
+    {
+        public override ExportResult Export(in Batch<Activity> batch)
+        {
+            foreach (var activity in batch)
+            {
+                if (activity.Kind != ActivityKind.Server) continue;
+                exportedSpan.TrySetResult(new ExportedSpan(
+                    activity.DisplayName,
+                    activity.Kind,
+                    activity.Duration));
+            }
+
+            return ExportResult.Success;
         }
     }
 

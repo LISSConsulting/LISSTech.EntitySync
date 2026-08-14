@@ -84,7 +84,7 @@ static async Task RunHttpAsync(string[] args)
     var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
         builder.Environment.EnvironmentName,
         serviceVersion);
-    LogfireLogging.Configure(builder.Logging, logfireSettings);
+    LogfireLogging.Configure(builder.Services, builder.Logging, logfireSettings);
 
     builder.Services
         .AddAuthentication(options =>
