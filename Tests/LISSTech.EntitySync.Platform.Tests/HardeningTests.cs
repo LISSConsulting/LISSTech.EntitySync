@@ -87,7 +87,11 @@ public sealed class HardeningTests
             var server = app.Services.GetRequiredService<IServer>();
             var address = server.Features.Get<IServerAddressesFeature>()!.Addresses.Single();
             using var client = new HttpClient { BaseAddress = new Uri(address) };
-            using var response = await client.GetAsync("/trace-test");
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/trace-test");
+            request.Headers.TryAddWithoutValidation(
+                "X-Forwarded-For",
+                "192.0.2.10, 198.51.100.24");
+            using var response = await client.SendAsync(request);
             response.EnsureSuccessStatusCode();
 
             var span = await exportedSpan.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -95,6 +99,7 @@ public sealed class HardeningTests
             Assert.Equal(ActivityKind.Server, span.Kind);
             Assert.Equal("GET /trace-test", span.DisplayName);
             Assert.True(span.Duration > TimeSpan.Zero);
+            Assert.Equal("198.51.100.24", span.ClientAddress);
         }
         finally
         {
@@ -404,7 +409,8 @@ public sealed class HardeningTests
     private sealed record ExportedSpan(
         string DisplayName,
         ActivityKind Kind,
-        TimeSpan Duration);
+        TimeSpan Duration,
+        string? ClientAddress);
 
     private sealed class RecordingActivityExporter(
         TaskCompletionSource<ExportedSpan> exportedSpan) : BaseExporter<Activity>
@@ -417,7 +423,8 @@ public sealed class HardeningTests
                 exportedSpan.TrySetResult(new ExportedSpan(
                     activity.DisplayName,
                     activity.Kind,
-                    activity.Duration));
+                    activity.Duration,
+                    activity.GetTagItem("client.address") as string));
             }
 
             return ExportResult.Success;

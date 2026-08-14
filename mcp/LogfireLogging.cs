@@ -1,4 +1,6 @@
+using System.Net;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -151,7 +153,42 @@ internal static class LogfireLogging
     internal static TracerProviderBuilder AddAspNetCoreRequestTracing(TracerProviderBuilder tracing)
     {
         ArgumentNullException.ThrowIfNull(tracing);
-        return tracing.AddAspNetCoreInstrumentation();
+        return tracing.AddAspNetCoreInstrumentation(options =>
+        {
+            options.EnrichWithHttpRequest = (activity, request) =>
+            {
+                var clientAddress = ResolveClientAddress(request);
+                if (clientAddress is not null) activity.SetTag("client.address", clientAddress);
+            };
+        });
+    }
+
+    private static string? ResolveClientAddress(HttpRequest request)
+    {
+        var forwardedFor = request.Headers["X-Forwarded-For"];
+        for (var valueIndex = forwardedFor.Count - 1; valueIndex >= 0; valueIndex--)
+        {
+            var value = forwardedFor[valueIndex];
+            if (string.IsNullOrWhiteSpace(value)) continue;
+
+            var remaining = value.AsSpan();
+            while (!remaining.IsEmpty)
+            {
+                var separator = remaining.LastIndexOf(',');
+                var candidate = remaining[(separator + 1)..].Trim();
+                if (IPAddress.TryParse(candidate, out var address)) return FormatAddress(address);
+                if (separator < 0) break;
+                remaining = remaining[..separator];
+            }
+        }
+
+        return FormatAddress(request.HttpContext.Connection.RemoteIpAddress);
+    }
+
+    private static string? FormatAddress(IPAddress? address)
+    {
+        if (address is null) return null;
+        return (address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address).ToString();
     }
 
     private static ResourceBuilder AddServiceResource(
