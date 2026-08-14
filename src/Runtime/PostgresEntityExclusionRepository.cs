@@ -23,7 +23,7 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
             SELECT id, source_entity_id, source_name, reason, created_by, created_at
             FROM entitysync.entity_exclusions
             WHERE revoked_at IS NULL AND
-            """ + RoutePredicate + " ORDER BY source_entity_id";
+            """ + "\n" + RoutePredicate + " ORDER BY source_entity_id";
         await using var command = dataSource.CreateCommand(sql);
         AddRoute(command, route);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -95,7 +95,7 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
             UPDATE entitysync.entity_exclusions
             SET revoked_by = @actor, revoked_at = now()
             WHERE revoked_at IS NULL AND source_entity_key = lower(@source_entity_id) AND
-            """ + RoutePredicate;
+            """ + "\n" + RoutePredicate;
         await using var command = dataSource.CreateCommand(sql);
         AddRoute(command, route);
         command.Parameters.AddWithValue("source_entity_id", sourceEntityId);
