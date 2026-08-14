@@ -79,6 +79,12 @@ static async Task RunHttpAsync(string[] args)
         throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
     var builder = WebApplication.CreateBuilder(args);
+    var serviceVersion = typeof(McpRequestContext).Assembly.GetName().Version?.ToString(3)
+        ?? throw new InvalidOperationException("EntitySync MCP assembly version is unavailable.");
+    var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
+        builder.Environment.EnvironmentName,
+        serviceVersion);
+    LogfireLogging.Configure(builder.Logging, logfireSettings);
 
     builder.Services
         .AddAuthentication(options =>
@@ -126,6 +132,7 @@ static async Task RunHttpAsync(string[] args)
     AddEntitySyncPlatform(builder.Services);
 
     var app = builder.Build();
+    app.Logger.LogInformation("Logfire logging configured: {LogfireConfiguration}", logfireSettings);
     await EntitySyncDatabaseMigrator.ApplyAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
     if (oauthChallengeHints is not null)
     {

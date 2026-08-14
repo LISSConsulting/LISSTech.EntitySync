@@ -36,6 +36,83 @@ public sealed class HardeningTests
         Assert.Equal(firstTenant, firstActor);
     }
 
+    [Fact]
+    public void LogfireConfigurationAcceptsOnlySecretSafeOfficialOtlpLoggingSettings()
+    {
+        const string writeToken = "pylf_v1_us_test-write-token";
+        var settings = LogfireLoggingSettings.FromEnvironment(
+            new Dictionary<string, string?>
+            {
+                ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "https://logfire-us.pydantic.dev/v1/logs",
+                ["OTEL_EXPORTER_OTLP_HEADERS"] = $"Authorization={writeToken}",
+                ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
+                ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-mcp"
+            },
+            "Production",
+            "26.8.0");
+
+        Assert.Equal("https://logfire-us.pydantic.dev/v1/logs", settings.LogsEndpoint.AbsoluteUri);
+        Assert.Equal("lisstech-entitysync-mcp", settings.ServiceName);
+        Assert.Equal("Production", settings.DeploymentEnvironment);
+        Assert.Equal("26.8.0", settings.ServiceVersion);
+        Assert.DoesNotContain(writeToken, settings.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Authorization", settings.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("http://logfire-us.pydantic.dev/v1/logs")]
+    [InlineData("https://attacker.example/v1/logs")]
+    [InlineData("https://logfire-us.pydantic.dev/v1/traces")]
+    [InlineData("https://logfire-eu.pydantic.dev/v1/logs?tenant=other")]
+    public void LogfireConfigurationRejectsEndpointsThatCouldMisrouteLogsOrTokens(string endpoint)
+    {
+        var environment = ValidLogfireEnvironment();
+        environment["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = endpoint;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LogfireLoggingSettings.FromEnvironment(environment, "Production", "26.8.0"));
+
+        Assert.Contains("official Logfire", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("grpc")]
+    [InlineData("http/json")]
+    public void LogfireConfigurationRejectsProtocolsThatLogfireCannotReceive(string protocol)
+    {
+        var environment = ValidLogfireEnvironment();
+        environment["OTEL_EXPORTER_OTLP_PROTOCOL"] = protocol;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LogfireLoggingSettings.FromEnvironment(environment, "Production", "26.8.0"));
+
+        Assert.Contains("http/protobuf", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Bearer token")]
+    [InlineData("Authorization=")]
+    [InlineData("Authorization=token,Other=value")]
+    [InlineData("Authorization=token\nOther=value")]
+    public void LogfireConfigurationRejectsMalformedAuthorizationHeaders(string headers)
+    {
+        var environment = ValidLogfireEnvironment();
+        environment["OTEL_EXPORTER_OTLP_HEADERS"] = headers;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LogfireLoggingSettings.FromEnvironment(environment, "Production", "26.8.0"));
+
+        Assert.Contains("exactly one Logfire Authorization", exception.Message, StringComparison.Ordinal);
+    }
+
+    private static Dictionary<string, string?> ValidLogfireEnvironment() => new()
+    {
+        ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "https://logfire-us.pydantic.dev/v1/logs",
+        ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=pylf_v1_us_test-write-token",
+        ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
+        ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-mcp"
+    };
+
     [Theory]
     [InlineData("https://issuer.example/", "subject", "mcp:tools", HttpStatusCode.OK)]
     [InlineData("https://issuer.example/", "subject", "wrong", HttpStatusCode.Forbidden)]
