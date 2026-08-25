@@ -102,6 +102,33 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task ThrowingProgressCallbackDoesNotDuplicateProcessedItem()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new InMemoryEntitySyncPlanRepository();
+        var target = new FakeAdapter("HaloPSA");
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "halo", target);
+        var service = CreateService(connections, plans);
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+        var progress = new List<EntitySyncApplyProgress>();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None, item =>
+            {
+                progress.Add(item);
+                throw new InvalidOperationException("Progress callback failed.");
+            }));
+
+        Assert.Equal("Progress callback failed.", error.Message);
+        Assert.Equal(1, target.CreateCalls);
+        Assert.Single(progress);
+        Assert.Equal(1, progress[0].Processed);
+        Assert.Equal(EntitySyncPlanStatuses.Failed, plans.Get("tenant", plan.Id).Status);
+    }
+
+    [Fact]
     public async Task ApplyRejectsConnectionReplacedAfterPlanning()
     {
         using var connections = new InMemoryEntityConnectionRepository();

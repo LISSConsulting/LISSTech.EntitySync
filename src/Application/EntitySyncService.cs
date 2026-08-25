@@ -155,7 +155,6 @@ public sealed class EntitySyncService(
                         succeeded++;
                     else
                         failed++;
-                    ReportProgress();
                 }
                 catch (OperationCanceledException)
                 {
@@ -165,8 +164,8 @@ public sealed class EntitySyncService(
                 {
                     results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, false, false, null, "Target write failed."));
                     failed++;
-                    ReportProgress();
                 }
+                ReportProgress();
             }
             completed = true;
         }
