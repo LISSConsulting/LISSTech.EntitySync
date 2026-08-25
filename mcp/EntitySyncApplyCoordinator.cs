@@ -51,22 +51,25 @@ public sealed class EntitySyncApplyCoordinator
     public EntitySyncApplySnapshot Start(string tenantId, string planId)
     {
         var key = Key(tenantId, planId);
-        if (operations.TryGetValue(key, out var existing)) return existing.Snapshot;
+        if (TryGetExisting(key, tenantId, planId, out var existing)) return existing;
 
         var plan = plans.Get(tenantId, planId);
         if (!plan.Status.Equals(EntitySyncPlanStatuses.Approved, StringComparison.OrdinalIgnoreCase))
+        {
+            if (TryGetExisting(key, tenantId, planId, out existing)) return existing;
             throw new InvalidOperationException("Plan must be approved before apply.");
+        }
 
         var candidate = new ApplyOperation(plan.Id, plan.Items.Count, timeProvider.GetUtcNow());
         var operation = operations.GetOrAdd(key, candidate);
         if (ReferenceEquals(operation, candidate))
-            operation.Start(RunAsync(tenantId, plan.Id, operation));
+            operation.Start(Task.Run(() => RunAsync(tenantId, plan.Id, operation), CancellationToken.None));
         return operation.Snapshot;
     }
 
     public EntitySyncApplySnapshot Get(string tenantId, string planId)
     {
-        if (operations.TryGetValue(Key(tenantId, planId), out var operation)) return operation.Snapshot;
+        if (TryGetExisting(Key(tenantId, planId), tenantId, planId, out var existing)) return existing;
         throw new InvalidOperationException("Apply operation has not been started.");
     }
 
@@ -102,6 +105,36 @@ public sealed class EntitySyncApplyCoordinator
     }
 
     private static string Key(string tenantId, string planId) => tenantId.Trim() + "\n" + planId.Trim();
+
+    private bool TryGetExisting(
+        string key,
+        string tenantId,
+        string planId,
+        out EntitySyncApplySnapshot snapshot)
+    {
+        snapshot = null!;
+        if (!operations.TryGetValue(key, out var operation)) return false;
+
+        var current = operation.Snapshot;
+        if (current.Status.Equals(EntitySyncPlanStatuses.Applying, StringComparison.OrdinalIgnoreCase))
+        {
+            snapshot = current;
+            return true;
+        }
+
+        try
+        {
+            plans.Get(tenantId, planId);
+            snapshot = current;
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            ((ICollection<KeyValuePair<string, ApplyOperation>>)operations)
+                .Remove(new KeyValuePair<string, ApplyOperation>(key, operation));
+            return false;
+        }
+    }
 
     private sealed class ApplyOperation
     {

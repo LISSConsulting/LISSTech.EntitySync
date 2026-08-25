@@ -79,6 +79,92 @@ public sealed class EntitySyncApplyCoordinatorTests
     }
 
     [Fact]
+    public async Task StartReturnsRegisteredOperationWhenPlanReadRacesWithAnotherStart()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new ControllablePlanRepository(new InMemoryEntitySyncPlanRepository());
+        var blockedGetEntered = NewSignal();
+        var releaseBlockedGet = NewSignal();
+        var writeStarted = NewSignal();
+        var releaseWrite = NewSignal();
+        var target = new TestAdapter("HaloPSA", create: async (_, cancellationToken) =>
+        {
+            writeStarted.TrySetResult(true);
+            await releaseWrite.Task.WaitAsync(cancellationToken);
+            return SuccessfulWrite();
+        });
+        var (service, plan) = await CreateApprovedPlanAsync(connections, plans, target, 1);
+        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
+        plans.BlockNextGet(blockedGetEntered, releaseBlockedGet);
+
+        var racingStart = Task.Run(() => coordinator.Start("tenant", plan.Id));
+        await blockedGetEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var registered = coordinator.Start("tenant", plan.Id);
+        await writeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        releaseBlockedGet.TrySetResult(true);
+        var raced = await racingStart.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(registered, raced);
+        Assert.Equal(1, target.CreateCalls);
+
+        releaseWrite.TrySetResult(true);
+        Assert.Equal("Applied", (await WaitForTerminalAsync(coordinator, "tenant", plan.Id)).Status);
+    }
+
+    [Fact]
+    public async Task StartReturnsBeforeAdapterReturnsItsSynchronouslyBlockedTask()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new InMemoryEntitySyncPlanRepository();
+        var synchronousWriteEntered = NewSignal();
+        var releaseSynchronousWrite = NewSignal();
+        var target = new TestAdapter("HaloPSA", create: (_, _) =>
+        {
+            synchronousWriteEntered.TrySetResult(true);
+            releaseSynchronousWrite.Task.GetAwaiter().GetResult();
+            return Task.FromResult(SuccessfulWrite());
+        });
+        var (service, plan) = await CreateApprovedPlanAsync(connections, plans, target, 1);
+        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
+
+        var start = Task.Run(() => coordinator.Start("tenant", plan.Id));
+        await synchronousWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        EntitySyncApplySnapshot initial;
+        try
+        {
+            initial = await start.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseSynchronousWrite.TrySetResult(true);
+        }
+
+        Assert.Equal("Applying", initial.Status);
+        Assert.Equal("Applied", (await WaitForTerminalAsync(coordinator, "tenant", plan.Id)).Status);
+    }
+
+    [Fact]
+    public async Task StartRemovesTerminalOperationWhenItsPlanHasDisappeared()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new ControllablePlanRepository(new InMemoryEntitySyncPlanRepository());
+        var target = new TestAdapter("HaloPSA");
+        var (service, plan) = await CreateApprovedPlanAsync(connections, plans, target, 1);
+        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
+
+        coordinator.Start("tenant", plan.Id);
+        var terminal = await WaitForTerminalAsync(coordinator, "tenant", plan.Id);
+        Assert.Equal(terminal, coordinator.Start("tenant", plan.Id));
+        plans.HidePlans();
+
+        Assert.Throws<InvalidOperationException>(() => coordinator.Start("tenant", plan.Id));
+        var missing = Assert.Throws<InvalidOperationException>(() => coordinator.Get("tenant", plan.Id));
+
+        Assert.Equal("Apply operation has not been started.", missing.Message);
+        Assert.Equal(2, plans.HiddenGetCalls);
+    }
+
+    [Fact]
     public async Task ApplicationShutdownPreservesProcessedPrefixAndDoesNotRetry()
     {
         using var connections = new InMemoryEntityConnectionRepository();
@@ -259,7 +345,7 @@ public sealed class EntitySyncApplyCoordinatorTests
 
     private static async Task<(EntitySyncService Service, EntitySyncPlan Plan)> CreateApprovedPlanAsync(
         InMemoryEntityConnectionRepository connections,
-        InMemoryEntitySyncPlanRepository plans,
+        IEntitySyncPlanRepository plans,
         TestAdapter target,
         int sourceCount)
     {
@@ -374,6 +460,54 @@ public sealed class EntitySyncApplyCoordinatorTests
         }
 
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+    }
+
+    private sealed class ControllablePlanRepository(IEntitySyncPlanRepository inner) : IEntitySyncPlanRepository
+    {
+        private TaskCompletionSource<bool>? blockedGetEntered;
+        private TaskCompletionSource<bool>? releaseBlockedGet;
+        private int blockNextGet;
+        private int hidePlans;
+        private int hiddenGetCalls;
+
+        public int HiddenGetCalls => Volatile.Read(ref hiddenGetCalls);
+
+        public void BlockNextGet(
+            TaskCompletionSource<bool> entered,
+            TaskCompletionSource<bool> release)
+        {
+            blockedGetEntered = entered;
+            releaseBlockedGet = release;
+            Volatile.Write(ref blockNextGet, 1);
+        }
+
+        public void HidePlans() => Volatile.Write(ref hidePlans, 1);
+
+        public void Add(EntitySyncPlan plan) => inner.Add(plan);
+
+        public EntitySyncPlan Get(string tenantId, string planId)
+        {
+            if (Interlocked.Exchange(ref blockNextGet, 0) == 1)
+            {
+                blockedGetEntered?.TrySetResult(true);
+                releaseBlockedGet?.Task.GetAwaiter().GetResult();
+            }
+            if (Volatile.Read(ref hidePlans) == 1)
+            {
+                Interlocked.Increment(ref hiddenGetCalls);
+                throw new InvalidOperationException($"Plan '{planId}' was not found.");
+            }
+            return inner.Get(tenantId, planId);
+        }
+
+        public void RecordInspection(string tenantId, string planId, string digest, int startIndex, int count) =>
+            inner.RecordInspection(tenantId, planId, digest, startIndex, count);
+
+        public bool TryApprove(string tenantId, string planId, string digest) =>
+            inner.TryApprove(tenantId, planId, digest);
+
+        public bool TryTransition(string tenantId, string planId, string expectedStatus, string newStatus) =>
+            inner.TryTransition(tenantId, planId, expectedStatus, newStatus);
     }
 
     private sealed class ThrowingPlanRepository : IEntitySyncPlanRepository
