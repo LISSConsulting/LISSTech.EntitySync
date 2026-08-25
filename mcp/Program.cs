@@ -180,6 +180,7 @@ static void AddEntitySyncPlatform(IServiceCollection services)
     services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
     services.AddSingleton<EntitySyncPlanner>();
     services.AddSingleton<EntitySyncService>();
+    services.AddSingleton<EntitySyncApplyCoordinator>();
     services.AddSingleton<EntityExclusionService>();
 }
 

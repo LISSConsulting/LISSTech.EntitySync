@@ -134,17 +134,24 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Dry-run or apply a plan. apply=true requires digest approval and consumes the plan so it cannot be replayed.")]
+    [Description("Dry-run a plan synchronously or start its approved apply in the background. apply=true returns the current snapshot immediately; poll get_sync_plan_apply until Applied or Failed. A plan starts at most once, so repeated starts return the existing operation and never retry writes.")]
     public static async Task<string> ApplySyncPlan(
         EntitySyncService service,
+        EntitySyncApplyCoordinator coordinator,
         McpRequestContext context,
         [Description("Plan ID returned from create_sync_plan")] string planId,
-        [Description("Set true to write. False performs a dry run.")] bool apply = false,
+        [Description("False performs a synchronous read-only dry run. True starts background writes and returns immediately.")] bool apply = false,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var result = await service.ApplyAsync(context.TenantId, planId, apply, cancellationToken).ConfigureAwait(false);
+            if (apply)
+            {
+                var snapshot = coordinator.Start(context.TenantId, planId);
+                return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
+            }
+
+            var result = await service.ApplyAsync(context.TenantId, planId, false, cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Serialize(new { success = result.Success, result }, JsonOptions);
         }
         catch (OperationCanceledException)
@@ -169,6 +176,32 @@ public static class SyncTools
         }
     }
 
+    [McpServerTool]
+    [Description("Read-only: get aggregate progress and terminal status for a sync-plan apply started by apply_sync_plan with apply=true.")]
+    public static string GetSyncPlanApply(
+        EntitySyncApplyCoordinator coordinator,
+        McpRequestContext context,
+        [Description("Plan ID returned from create_sync_plan and started with apply_sync_plan")] string planId)
+    {
+        try
+        {
+            var snapshot = coordinator.Get(context.TenantId, planId);
+            return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
+        }
+        catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
+        {
+            return Error(ex.Message);
+        }
+        catch (ArgumentException ex)
+        {
+            return Error(ex.Message);
+        }
+        catch
+        {
+            return Error("Plan apply status lookup failed.");
+        }
+    }
+
     private static bool IsSafeApplyStateError(string message)
     {
         return message is
@@ -176,7 +209,8 @@ public static class SyncTools
             or "Permanent exclusions changed after planning; create and inspect a new plan."
             or "Plan must be approved before apply."
             or "Approved plan digest no longer matches the plan."
-            or "Plan is already being applied or has been consumed.";
+            or "Plan is already being applied or has been consumed."
+            or "Apply operation has not been started.";
     }
 
     private static string Error(string message) => JsonSerializer.Serialize(new { success = false, error = message });

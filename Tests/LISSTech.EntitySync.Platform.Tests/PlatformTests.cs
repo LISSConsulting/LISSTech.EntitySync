@@ -10,6 +10,7 @@ using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -469,6 +470,73 @@ public sealed class PlatformTests
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.GetSyncPlan)));
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.ApproveSyncPlan)));
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.ApplySyncPlan)));
+        Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.GetSyncPlanApply)));
+    }
+
+    [Fact]
+    public async Task McpApplyStartsAndPollsAfterRequestCancellation()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new InMemoryEntitySyncPlanRepository();
+        var writeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWrite = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var target = new FakeAdapter("HaloPSA", beforeCreate: async () =>
+        {
+            writeStarted.TrySetResult(true);
+            await releaseWrite.Task;
+        });
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "halo", target);
+        var service = CreateService(connections, plans);
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
+        var context = new McpRequestContext("tenant", true);
+        using var requestCancellation = new CancellationTokenSource();
+
+        try
+        {
+            var startResponse = await SyncTools.ApplySyncPlan(
+                    service,
+                    coordinator,
+                    context,
+                    plan.Id,
+                    apply: true,
+                    cancellationToken: requestCancellation.Token)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await writeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            using var startJson = JsonDocument.Parse(startResponse);
+
+            Assert.True(startJson.RootElement.GetProperty("success").GetBoolean());
+            Assert.Equal("Applying", startJson.RootElement.GetProperty("snapshot").GetProperty("status").GetString());
+            Assert.Equal(0, target.CreateCalls);
+
+            requestCancellation.Cancel();
+        }
+        finally
+        {
+            releaseWrite.TrySetResult(true);
+        }
+
+        JsonElement snapshot;
+        using var pollTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        do
+        {
+            using var pollJson = JsonDocument.Parse(SyncTools.GetSyncPlanApply(coordinator, context, plan.Id));
+            Assert.True(pollJson.RootElement.GetProperty("success").GetBoolean());
+            snapshot = pollJson.RootElement.GetProperty("snapshot").Clone();
+            if (snapshot.GetProperty("status").GetString() is "Applied" or "Failed") break;
+            await Task.Delay(10, pollTimeout.Token);
+        }
+        while (true);
+
+        Assert.Equal("Applied", snapshot.GetProperty("status").GetString());
+        Assert.Equal(1, snapshot.GetProperty("total").GetInt32());
+        Assert.Equal(1, snapshot.GetProperty("processed").GetInt32());
+        Assert.Equal(1, snapshot.GetProperty("succeeded").GetInt32());
+        Assert.Equal(0, snapshot.GetProperty("failed").GetInt32());
+        Assert.Equal(0, snapshot.GetProperty("skipped").GetInt32());
+        Assert.Equal(1, target.CreateCalls);
     }
 
     [Fact]
@@ -1006,6 +1074,17 @@ public sealed class PlatformTests
 
         public Task<bool> RevokeAsync(EntityExclusionRoute route, string sourceEntityId, string actor, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class TestApplicationLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        public void StopApplication()
+        {
+        }
     }
 
     private sealed class FakeAdapter(string vendor, IReadOnlyList<ExternalEntity>? entities = null, Func<Task>? beforeCreate = null) : IEntityAdapter, IDisposable

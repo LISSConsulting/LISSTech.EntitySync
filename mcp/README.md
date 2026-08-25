@@ -64,7 +64,8 @@ For AgentController, the MCP host uses the configured Entra service principal wi
 3. Call `get_sync_plan` until every page has been inspected.
 4. Call `approve_sync_plan` with the final inspected digest.
 5. Call `apply_sync_plan` with `apply=false` for a dry run.
-6. Call `apply_sync_plan` with `apply=true` only after review. Approval is consumed, so the plan cannot be replayed.
+6. Call `apply_sync_plan` with `apply=true` once, only after review. This starts background execution and immediately returns its current snapshot; it does not wait for writes to finish. Approval is consumed, so the plan cannot be replayed.
+7. Poll `get_sync_plan_apply` with the plan ID until the snapshot status is `Applied` or `Failed`. Repeating `apply_sync_plan` for that plan returns the existing operation; it never retries the operation or duplicates writes.
 
 Plans expire after four hours and are bound to the exact source and target connection generations used during planning. Reconnecting either account invalidates existing plans. Each tenant is limited to 20 retained plans, 32 connections, and 5,000 source or target entities per plan side.
 
@@ -92,8 +93,8 @@ HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integ
 ## Operational Model
 
 - Run exactly one replica. Connections and plans are partitioned by the validated issuer plus OAuth `sub` claim, so equal subjects from different issuers cannot share in-memory state. Permanent exclusion audit actors use the same immutable identity.
-- A restart clears connections and plans. Reconnect vendors and create a fresh plan after each deployment or restart.
-- Creating a plan is read-only. Applying writes requires digest approval and `apply=true`; the default is a dry run.
+- A restart clears connections, plans, and in-memory apply-operation snapshots. In-flight applies are not recovered or resumed, and cannot be polled after restart. Reconnect vendors and create a fresh plan after each deployment or restart.
+- Creating a plan and polling apply status are read-only. Applying writes requires digest approval and `apply=true`; the default is a synchronous dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
 - Credential-bearing vendor clients reject redirects, cap each response at 8 MiB, and share per-origin request spacing and concurrency limits. N-central SOAP endpoints must be relative paths on the configured HTTPS origin. Vendor pagination and Halo site scans fail closed at bounded scan limits.
 - The container image is framework-dependent by design and runs on its digest-pinned ASP.NET runtime image; local release builds remain self-contained single files.
