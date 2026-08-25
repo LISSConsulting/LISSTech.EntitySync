@@ -145,6 +145,84 @@ public sealed class EntitySyncApplyCoordinatorTests
     }
 
     [Fact]
+    public async Task FailureSummaryFieldsAreIndividuallyBounded()
+    {
+        const int maximumFailureFieldLength = EntitySyncApplyFailure.MaximumFieldLength;
+        const string rawVendorResponse = "Authorization: Bearer secret-token; vendor body";
+        var longAction = "Update-" + new string('A', maximumFailureFieldLength * 2);
+        var longSource = new string('S', maximumFailureFieldLength * 2) + "secret-source-tail";
+        var longTarget = new string('T', maximumFailureFieldLength * 2) + "secret-target-tail";
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new InMemoryEntitySyncPlanRepository();
+        var sourceRegistration = connections.Register("tenant", "netsuite", new TestAdapter("NetSuite"));
+        var targetRegistration = connections.Register(
+            "tenant",
+            "halo",
+            new TestAdapter("HaloPSA", update: (_, _) => Task.FromResult(new EntityWriteResult
+            {
+                Success = false,
+                Message = rawVendorResponse
+            })));
+        var plan = new EntitySyncPlan
+        {
+            TenantId = "tenant",
+            SourceVendor = "NetSuite",
+            SourceEntityType = "Customer",
+            TargetVendor = "HaloPSA",
+            TargetEntityType = "Client",
+            Execution = new EntitySyncPlanExecution
+            {
+                SourceConnectionId = sourceRegistration.Id,
+                SourceConnectionGeneration = sourceRegistration.Generation,
+                TargetConnectionId = targetRegistration.Id,
+                TargetConnectionGeneration = targetRegistration.Generation
+            },
+            Items =
+            [
+                new EntitySyncPlanItem
+                {
+                    Action = longAction,
+                    Source = new ExternalEntity
+                    {
+                        Vendor = "NetSuite",
+                        EntityType = "Customer",
+                        Id = "source",
+                        Name = longSource
+                    },
+                    Target = new ExternalEntity
+                    {
+                        Vendor = "HaloPSA",
+                        EntityType = "Client",
+                        Id = "target",
+                        Name = longTarget
+                    }
+                }
+            ]
+        };
+        plans.Add(plan);
+        var service = CreateService(connections, plans);
+        var inspected = service.GetPlan("tenant", plan.Id);
+        service.ApprovePlan("tenant", plan.Id, inspected.Digest);
+        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
+
+        coordinator.Start("tenant", plan.Id);
+        var terminal = await WaitForTerminalAsync(coordinator, "tenant", plan.Id);
+
+        var failure = Assert.Single(terminal.Failures);
+        Assert.All(
+            new[] { failure.Action, failure.Source, failure.Target, failure.Message },
+            value => Assert.InRange(Assert.IsType<string>(value).Length, 0, maximumFailureFieldLength));
+        Assert.Equal(longAction[..maximumFailureFieldLength], failure.Action);
+        Assert.Equal(longSource[..maximumFailureFieldLength], failure.Source);
+        Assert.Equal(longTarget[..maximumFailureFieldLength], failure.Target);
+        Assert.Equal("Target write failed.", failure.Message);
+        Assert.DoesNotContain(rawVendorResponse, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-source-tail", failure.Source, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-target-tail", failure.Target, StringComparison.Ordinal);
+        Assert.Equal(1, terminal.Failed);
+    }
+
+    [Fact]
     public async Task PostRegistrationValidationFailureBecomesSafeObservedTerminalSnapshot()
     {
         using var connections = new InMemoryEntityConnectionRepository();
@@ -262,9 +340,11 @@ public sealed class EntitySyncApplyCoordinatorTests
     private sealed class TestAdapter(
         string vendor,
         IReadOnlyList<ExternalEntity>? entities = null,
-        Func<int, CancellationToken, Task<EntityWriteResult>>? create = null) : IEntityAdapter
+        Func<int, CancellationToken, Task<EntityWriteResult>>? create = null,
+        Func<int, CancellationToken, Task<EntityWriteResult>>? update = null) : IEntityAdapter
     {
         private int createCalls;
+        private int updateCalls;
 
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
@@ -286,8 +366,12 @@ public sealed class EntitySyncApplyCoordinatorTests
             return create?.Invoke(call, cancellationToken) ?? Task.FromResult(SuccessfulWrite());
         }
 
-        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(SuccessfulWrite());
+        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var call = Interlocked.Increment(ref updateCalls);
+            return update?.Invoke(call, cancellationToken) ?? Task.FromResult(SuccessfulWrite());
+        }
 
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
     }

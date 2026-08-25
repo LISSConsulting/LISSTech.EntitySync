@@ -10,7 +10,10 @@ public sealed record EntitySyncApplyFailure(
     string Action,
     string Source,
     string? Target,
-    string Message);
+    string Message)
+{
+    public const int MaximumFieldLength = 256;
+}
 
 public sealed record EntitySyncApplySnapshot(
     string PlanId,
@@ -153,10 +156,10 @@ public sealed class EntitySyncApplyCoordinator
                     var updated = new EntitySyncApplyFailure[failures.Count + 1];
                     for (var index = 0; index < failures.Count; index++) updated[index] = failures[index];
                     updated[^1] = new EntitySyncApplyFailure(
-                        progress.Item.Action,
-                        progress.Item.Source,
-                        progress.Item.Target,
-                        progress.Item.Message);
+                        Bound(progress.Item.Action),
+                        Bound(progress.Item.Source),
+                        BoundOptional(progress.Item.Target),
+                        Bound(progress.Item.Message));
                     failures = Array.AsReadOnly(updated);
                 }
 
@@ -171,6 +174,13 @@ public sealed class EntitySyncApplyCoordinator
                 };
             }
         }
+
+        private static string Bound(string value) =>
+            value.Length <= EntitySyncApplyFailure.MaximumFieldLength
+                ? value
+                : value[..EntitySyncApplyFailure.MaximumFieldLength];
+
+        private static string? BoundOptional(string? value) => value is null ? null : Bound(value);
 
         public void Complete(string status, DateTimeOffset completedAt, string? error)
         {
