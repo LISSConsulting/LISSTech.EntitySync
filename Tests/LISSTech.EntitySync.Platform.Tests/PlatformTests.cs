@@ -81,6 +81,27 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task ApplyReportsAggregateProgressAfterEveryProcessedItem()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme"), Source("2", "Beta")]));
+        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+        var progress = new List<EntitySyncApplyProgress>();
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None, progress.Add);
+
+        Assert.True(result.Success);
+        Assert.Equal([1, 2], progress.Select(item => item.Processed));
+        Assert.All(progress, item => Assert.Equal(2, item.Total));
+        Assert.Equal(2, progress[^1].Succeeded);
+        Assert.Equal(0, progress[^1].Failed);
+        Assert.Equal(0, progress[^1].Skipped);
+    }
+
+    [Fact]
     public async Task ApplyRejectsConnectionReplacedAfterPlanning()
     {
         using var connections = new InMemoryEntityConnectionRepository();
@@ -876,6 +897,20 @@ public sealed class PlatformTests
             Requests.Add(recorded);
             return responder(recorded, Requests.Count - 1);
         }
+    }
+
+    private static void InspectAllAndApprove(EntitySyncService service, EntitySyncPlan plan)
+    {
+        var page = 1;
+        EntitySyncPlanPage inspected;
+        do
+        {
+            inspected = service.GetPlan("tenant", plan.Id, page, 100);
+            page++;
+        }
+        while ((page - 1) * 100 < inspected.TotalItems);
+
+        service.ApprovePlan("tenant", plan.Id, inspected.Digest);
     }
 
     private static EntitySyncService CreateService(

@@ -45,7 +45,12 @@ public sealed class EntitySyncService(
         return digest;
     }
 
-    public async Task<EntitySyncApplyResult> ApplyAsync(string tenantId, string planId, bool apply, CancellationToken cancellationToken)
+    public async Task<EntitySyncApplyResult> ApplyAsync(
+        string tenantId,
+        string planId,
+        bool apply,
+        CancellationToken cancellationToken,
+        Action<EntitySyncApplyProgress>? reportProgress = null)
     {
         var plan = plans.Get(tenantId, planId);
         using var sourceLease = connections.Acquire(tenantId, plan.SourceVendor, plan.Execution.SourceConnectionId, plan.Execution.SourceConnectionGeneration);
@@ -97,6 +102,20 @@ public sealed class EntitySyncService(
         var target = targetLease.Connection;
         var results = new List<EntitySyncApplyItemResult>();
         var completed = false;
+        var succeeded = 0;
+        var failed = 0;
+        var skipped = 0;
+
+        void ReportProgress()
+        {
+            reportProgress?.Invoke(new EntitySyncApplyProgress(
+                plan.Items.Count,
+                results.Count,
+                succeeded,
+                failed,
+                skipped,
+                results[^1]));
+        }
         try
         {
             foreach (var item in plan.Items)
@@ -105,11 +124,15 @@ public sealed class EntitySyncService(
                 if (item.Action.Equals("None", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
                 {
                     results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, true, true, null, "Skipped: requires review or no action."));
+                    skipped++;
+                    ReportProgress();
                     continue;
                 }
                 if (!apply)
                 {
                     results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, true, false, null, "Dry-run: no write performed."));
+                    succeeded++;
+                    ReportProgress();
                     continue;
                 }
 
@@ -128,6 +151,11 @@ public sealed class EntitySyncService(
                         write = await target.Adapter.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
                     results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, write.Success, false, write.Id, write.Success ? write.Message ?? "Target write succeeded." : "Target write failed."));
+                    if (write.Success)
+                        succeeded++;
+                    else
+                        failed++;
+                    ReportProgress();
                 }
                 catch (OperationCanceledException)
                 {
@@ -136,6 +164,8 @@ public sealed class EntitySyncService(
                 catch
                 {
                     results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, false, false, null, "Target write failed."));
+                    failed++;
+                    ReportProgress();
                 }
             }
             completed = true;
@@ -144,12 +174,11 @@ public sealed class EntitySyncService(
         {
             if (apply)
             {
-                var failed = !completed || results.Any(result => !result.Success && !result.Skipped);
-                plans.TryTransition(tenantId, planId, EntitySyncPlanStatuses.Applying, failed ? EntitySyncPlanStatuses.Failed : EntitySyncPlanStatuses.Applied);
+                var applyFailed = !completed || failed > 0;
+                plans.TryTransition(tenantId, planId, EntitySyncPlanStatuses.Applying, applyFailed ? EntitySyncPlanStatuses.Failed : EntitySyncPlanStatuses.Applied);
             }
         }
 
-        var failures = results.Count(result => !result.Success && !result.Skipped);
-        return new EntitySyncApplyResult(plan.Id, apply, failures == 0, results.Count(result => result.Success && !result.Skipped), failures, results.Count(result => result.Skipped), results);
+        return new EntitySyncApplyResult(plan.Id, apply, failed == 0, succeeded, failed, skipped, results);
     }
 }
