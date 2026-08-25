@@ -157,7 +157,7 @@ public sealed class EntitySyncApplyCoordinatorTests
         Assert.Equal(terminal, coordinator.Start("tenant", plan.Id));
         plans.HidePlans();
 
-        Assert.Throws<InvalidOperationException>(() => coordinator.Start("tenant", plan.Id));
+        Assert.Throws<KeyNotFoundException>(() => coordinator.Start("tenant", plan.Id));
         var missing = Assert.Throws<InvalidOperationException>(() => coordinator.Get("tenant", plan.Id));
 
         Assert.Equal("Apply operation has not been started.", missing.Message);
@@ -495,7 +495,7 @@ public sealed class EntitySyncApplyCoordinatorTests
             if (Volatile.Read(ref hidePlans) == 1)
             {
                 Interlocked.Increment(ref hiddenGetCalls);
-                throw new InvalidOperationException($"Plan '{planId}' was not found.");
+                throw new KeyNotFoundException($"Plan '{planId}' was not found.");
             }
             return inner.Get(tenantId, planId);
         }

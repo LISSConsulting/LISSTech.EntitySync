@@ -128,7 +128,7 @@ public sealed class EntitySyncApplyCoordinator
             snapshot = current;
             return true;
         }
-        catch (InvalidOperationException)
+        catch (KeyNotFoundException)
         {
             ((ICollection<KeyValuePair<string, ApplyOperation>>)operations)
                 .Remove(new KeyValuePair<string, ApplyOperation>(key, operation));
