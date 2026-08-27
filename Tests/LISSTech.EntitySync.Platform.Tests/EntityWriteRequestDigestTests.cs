@@ -107,6 +107,15 @@ public sealed class EntityWriteRequestDigestTests
     }
 
     [Fact]
+    public void DigestDistinguishesNumbersFromNumericStrings()
+    {
+        var number = Request(fields: new Dictionary<string, object?> { ["amount"] = 12.5m });
+        var numericString = Request(fields: new Dictionary<string, object?> { ["amount"] = "12.5" });
+
+        Assert.NotEqual(EntityWriteRequestDigest.Compute(number), EntityWriteRequestDigest.Compute(numericString));
+    }
+
+    [Fact]
     public void DigestFormatsNumbersIndependentlyOfCurrentCulture()
     {
         var request = Request(fields: new Dictionary<string, object?> { ["amount"] = 12.5m });

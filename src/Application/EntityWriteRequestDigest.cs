@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -32,7 +31,6 @@ public static class EntityWriteRequestDigest
     private static object? Canonicalize(object? value)
     {
         if (value is null or bool or string) return value;
-        if (IsNumber(value)) return Convert.ToString(value, CultureInfo.InvariantCulture);
         if (value is IDictionary dictionary) return CanonicalizeDictionary(dictionary);
         if (value is IEnumerable enumerable) return enumerable.Cast<object?>().Select(Canonicalize).ToList();
         return value;
@@ -50,7 +48,4 @@ public static class EntityWriteRequestDigest
         return canonical;
     }
 
-    private static bool IsNumber(object value) =>
-        value is byte or sbyte or short or ushort or int or uint or long or ulong
-            or Half or float or double or decimal or Int128 or UInt128;
 }
