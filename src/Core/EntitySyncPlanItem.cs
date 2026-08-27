@@ -9,4 +9,6 @@ public sealed class EntitySyncPlanItem
     public string MatchType { get; set; } = "NoMatch";
     public List<string> Reasons { get; set; } = new();
     public string Status { get; set; } = "Planned";
+    public string? DesiredStateHash { get; set; }
+    public int? DesiredStateHashVersion { get; set; }
 }

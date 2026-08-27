@@ -1,3 +1,5 @@
+using LISSTech.EntitySync.Core;
+
 namespace LISSTech.EntitySync.Application;
 
 public sealed class CreateEntitySyncPlanRequest
@@ -18,6 +20,8 @@ public sealed class CreateEntitySyncPlanRequest
     public int ReviewScore { get; init; } = 70;
     public string? SourceExternalIdName { get; init; }
     public string? TargetCustomFieldName { get; init; }
+    public EntitySyncUpdatePolicy UpdatePolicy { get; init; } = EntitySyncUpdatePolicy.Standard;
+    public string? ChangeStateScope { get; init; }
 }
 
 public sealed record EntitySyncPlanPage(
