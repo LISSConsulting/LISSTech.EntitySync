@@ -10,6 +10,7 @@ namespace LISSTech.EntitySync.Adapters.NetSuite;
 
 public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 {
+    private const int SuiteQlPageSize = 1000;
     private readonly NetSuiteOptions options;
     private readonly HttpClient httpClient;
     private readonly RateLimitedHttpRequester rateLimiter = new("NetSuite");
@@ -32,12 +33,12 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         if (!query.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("NetSuite adapter currently supports EntityType Customer.");
         var suiteQl = BuildCustomerQuery(query);
         Trace?.Invoke($"NetSuite SuiteQL: {suiteQl}");
-        using var document = await ExecuteSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
-        var root = document.RootElement;
-        var array = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items) ? items : root;
-        if (array.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"NetSuite REST Web Services returned JSON, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
         var entities = new List<ExternalEntity>();
-        foreach (var item in array.EnumerateArray()) entities.Add(MapCustomer(item));
+        await ReadSuiteQlPagesAsync(
+            suiteQl,
+            query.Count,
+            item => entities.Add(MapCustomer(item)),
+            cancellationToken).ConfigureAwait(false);
         await AddCustomerAddressesAsync(entities, cancellationToken).ConfigureAwait(false);
         return entities;
     }
@@ -59,7 +60,11 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
     {
-        using var response = await SendSuiteQlAsync(BuildCustomerQuery(new EntityQuery { EntityType = "Customer", Count = 1 }), cancellationToken).ConfigureAwait(false);
+        var uri = BuildSuiteQlUri(null, 0);
+        using var response = await SendSuiteQlAsync(
+            BuildCustomerQuery(new EntityQuery { EntityType = "Customer", Count = 1 }),
+            uri,
+            cancellationToken).ConfigureAwait(false);
         return response.IsSuccessStatusCode;
     }
 
@@ -67,20 +72,18 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
     {
         if (string.IsNullOrWhiteSpace(suiteQl)) throw new ArgumentException("SuiteQL query is required.", nameof(suiteQl));
         Trace?.Invoke($"NetSuite SuiteQL: {suiteQl}");
-        using var document = await ExecuteSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
-        var root = document.RootElement;
-        var array = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items) ? items : root;
-        if (array.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"NetSuite REST Web Services returned JSON, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
-
         var rows = new List<IReadOnlyDictionary<string, object?>>();
-        foreach (var item in array.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object) continue;
-            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var property in item.EnumerateObject()) row[property.Name] = ToNetSuiteValue(property.Value);
-            rows.Add(row);
-        }
-
+        await ReadSuiteQlPagesAsync(
+            suiteQl,
+            null,
+            item =>
+            {
+                if (item.ValueKind != JsonValueKind.Object) return;
+                var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var property in item.EnumerateObject()) row[property.Name] = ToNetSuiteValue(property.Value);
+                rows.Add(row);
+            },
+            cancellationToken).ConfigureAwait(false);
         return rows;
     }
 
@@ -183,12 +186,13 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         return null;
     }
 
-    private Uri BuildSuiteQlUri(EntityQuery query)
+    private Uri BuildSuiteQlUri(int? limit, int offset)
     {
         var path = "/services/rest/query/v1/suiteql";
         var builder = !string.IsNullOrWhiteSpace(options.BaseUrl)
             ? new UriBuilder(new Uri(options.BaseUrl.TrimEnd('/'))) { Path = path }
             : new UriBuilder(Uri.UriSchemeHttps, $"{AccountHost(options.AccountId)}.suitetalk.api.netsuite.com") { Path = path };
+        if (limit.HasValue) builder.Query = $"limit={limit.Value}&offset={offset}";
         return builder.Uri;
     }
 
@@ -218,7 +222,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         }
 
         if (filters.Count > 0) sql.Append(" WHERE ").Append(string.Join(" AND ", filters));
-        sql.Append(" ORDER BY entityid");
+        sql.Append(" ORDER BY entityid, id");
         if (query.Count.HasValue) sql.Append(" FETCH FIRST ").Append(Math.Max(1, query.Count.Value)).Append(" ROWS ONLY");
         return sql.ToString();
     }
@@ -247,34 +251,33 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         {
             var suiteQl = BuildCustomerAddressQuery(batch);
             Trace?.Invoke($"NetSuite SuiteQL: {suiteQl}");
-            using var document = await ExecuteSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
-            var root = document.RootElement;
-            var array = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("items", out var items) ? items : root;
-            if (array.ValueKind != JsonValueKind.Array) throw new InvalidOperationException($"NetSuite REST Web Services returned JSON for customer addresses, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
-            foreach (var item in array.EnumerateArray())
-            {
-                var customerId = item.GetString("customerid", "customerId", "entity");
-                if (string.IsNullOrWhiteSpace(customerId)) continue;
-                if (!addressRows.TryGetValue(customerId, out var rows))
+            await ReadSuiteQlPagesAsync(
+                suiteQl,
+                null,
+                item =>
                 {
-                    rows = new List<CustomerAddressRow>();
-                    addressRows[customerId] = rows;
-                }
-
-                var address = new EntityAddress
-                {
-                    Attention = item.GetString("attention"),
-                    Line1 = item.GetString("addr1"),
-                    Line2 = item.GetString("addr2"),
-                    Line3 = item.GetString("addr3"),
-                    City = item.GetString("city"),
-                    State = item.GetString("state"),
-                    PostalCode = item.GetString("zip", "postalcode"),
-                    Country = item.GetString("country")
-                };
-                if (IsAddressEmpty(address)) continue;
-                rows.Add(new CustomerAddressRow(address, ReadNetSuiteBool(item, "defaultbilling"), ReadNetSuiteBool(item, "defaultshipping")));
-            }
+                    var customerId = item.GetString("customerid", "customerId", "entity");
+                    if (string.IsNullOrWhiteSpace(customerId)) return;
+                    var address = new EntityAddress
+                    {
+                        Attention = item.GetString("attention"),
+                        Line1 = item.GetString("addr1"),
+                        Line2 = item.GetString("addr2"),
+                        Line3 = item.GetString("addr3"),
+                        City = item.GetString("city"),
+                        State = item.GetString("state"),
+                        PostalCode = item.GetString("zip", "postalcode"),
+                        Country = item.GetString("country")
+                    };
+                    if (IsAddressEmpty(address)) return;
+                    if (!addressRows.TryGetValue(customerId, out var rows))
+                    {
+                        rows = new List<CustomerAddressRow>();
+                        addressRows[customerId] = rows;
+                    }
+                    rows.Add(new CustomerAddressRow(address, ReadNetSuiteBool(item, "defaultbilling"), ReadNetSuiteBool(item, "defaultshipping")));
+                },
+                cancellationToken).ConfigureAwait(false);
         }
 
         foreach (var entity in entities)
@@ -286,17 +289,100 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         }
     }
 
-    private async Task<JsonDocument> ExecuteSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
+    private async Task ReadSuiteQlPagesAsync(
+        string suiteQl,
+        int? maximumItems,
+        Action<JsonElement> consume,
+        CancellationToken cancellationToken)
     {
-        var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer" });
-        using var response = await SendSuiteQlAsync(suiteQl, cancellationToken).ConfigureAwait(false);
-        return await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
+        var itemLimit = maximumItems.HasValue ? Math.Max(1, maximumItems.Value) : int.MaxValue;
+        var consumed = 0;
+        var offset = 0;
+        int? expectedTotalResults = null;
+        while (consumed < itemLimit)
+        {
+            var remaining = itemLimit - consumed;
+            var uri = BuildSuiteQlUri(SuiteQlPageSize, offset);
+            using var response = await SendSuiteQlAsync(suiteQl, uri, cancellationToken).ConfigureAwait(false);
+            using var document = await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                ConsumeSuiteQlItems(root, remaining, consume);
+                return;
+            }
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException($"NetSuite REST Web Services returned JSON, but not an array or an object with an 'items' array. Root type: {root.ValueKind}.");
+            }
+
+            var pageCount = items.GetArrayLength();
+            var countPresent = root.TryGetProperty("count", out var countProperty);
+            var offsetPresent = root.TryGetProperty("offset", out var offsetProperty);
+            var totalResultsPresent = root.TryGetProperty("totalResults", out var totalResultsProperty);
+            var hasMorePresent = root.TryGetProperty("hasMore", out var hasMoreProperty);
+            var metadataFields = (countPresent ? 1 : 0) + (offsetPresent ? 1 : 0) + (totalResultsPresent ? 1 : 0) + (hasMorePresent ? 1 : 0);
+            if (metadataFields == 0)
+            {
+                if (pageCount >= SuiteQlPageSize)
+                {
+                    throw InvalidSuiteQlPage("a full page omitted count, offset, totalResults, and hasMore.");
+                }
+                ConsumeSuiteQlItems(items, remaining, consume);
+                return;
+            }
+            if (metadataFields != 4
+                || !TryReadNonNegativeInt(countProperty, out var reportedCount)
+                || !TryReadNonNegativeInt(offsetProperty, out var reportedOffset)
+                || !TryReadNonNegativeInt(totalResultsProperty, out var totalResults)
+                || !TryReadBoolean(hasMoreProperty, out var hasMore))
+            {
+                throw InvalidSuiteQlPage("count, offset, totalResults, and hasMore must all be present with valid values.");
+            }
+            if (reportedCount != pageCount)
+            {
+                throw InvalidSuiteQlPage($"count {reportedCount} does not equal items length {pageCount}.");
+            }
+            if (reportedOffset != offset)
+            {
+                throw InvalidSuiteQlPage($"offset {reportedOffset} does not equal requested offset {offset}.");
+            }
+            if (pageCount > SuiteQlPageSize)
+            {
+                throw InvalidSuiteQlPage($"items length {pageCount} exceeds requested limit {SuiteQlPageSize}.");
+            }
+            if (expectedTotalResults.HasValue && expectedTotalResults.Value != totalResults)
+            {
+                throw InvalidSuiteQlPage($"totalResults changed from {expectedTotalResults.Value} to {totalResults}.");
+            }
+            expectedTotalResults ??= totalResults;
+            var nextOffsetValue = (long)reportedOffset + reportedCount;
+            if (nextOffsetValue > totalResults)
+            {
+                throw InvalidSuiteQlPage($"offset plus count {nextOffsetValue} exceeds totalResults {totalResults}.");
+            }
+            var nextOffset = (int)nextOffsetValue;
+            var expectedHasMore = nextOffset < totalResults;
+            if (hasMore != expectedHasMore)
+            {
+                throw InvalidSuiteQlPage($"hasMore is {hasMore}, but offset plus count is {nextOffset} and totalResults is {totalResults}.");
+            }
+            if (hasMore && pageCount == 0)
+            {
+                throw InvalidSuiteQlPage("hasMore is true on an empty page, so pagination cannot advance.");
+            }
+            ConsumeSuiteQlItems(items, remaining, consume);
+            consumed += pageCount;
+            if (consumed >= itemLimit || !hasMore) return;
+            offset = nextOffset;
+        }
     }
 
-    private async Task<HttpResponseMessage> SendSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
+    private Task<HttpResponseMessage> SendSuiteQlAsync(string suiteQl, Uri uri, CancellationToken cancellationToken)
     {
-        var uri = BuildSuiteQlUri(new EntityQuery { EntityType = "Customer" });
-        return await rateLimiter.SendAsync(
+        return rateLimiter.SendAsync(
             httpClient,
             () =>
             {
@@ -307,7 +393,39 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
                 return request;
             },
             Trace,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken);
+    }
+
+    private static void ConsumeSuiteQlItems(JsonElement items, int maximumItems, Action<JsonElement> consume)
+    {
+        var consumed = 0;
+        foreach (var item in items.EnumerateArray())
+        {
+            if (consumed >= maximumItems) return;
+            consume(item);
+            consumed++;
+        }
+    }
+
+    private static bool TryReadNonNegativeInt(JsonElement property, out int value)
+    {
+        value = 0;
+        return property.ValueKind == JsonValueKind.Number
+            && property.TryGetInt32(out value)
+            && value >= 0;
+    }
+
+    private static bool TryReadBoolean(JsonElement property, out bool value)
+    {
+        value = false;
+        if (property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False) return false;
+        value = property.GetBoolean();
+        return true;
+    }
+
+    private static InvalidOperationException InvalidSuiteQlPage(string detail)
+    {
+        return new InvalidOperationException($"NetSuite SuiteQL pagination metadata is inconsistent: {detail}");
     }
 
     private static string BuildCustomerAddressQuery(IEnumerable<string> customerIds)

@@ -12,14 +12,14 @@ A shared page reader will serve customer retrieval, customer-address enrichment,
 
 ## Data Flow
 
-1. Choose a page size no larger than NetSuite's 1,000-row REST default.
-2. POST the unchanged SuiteQL body to `/services/rest/query/v1/suiteql?limit={pageSize}&offset={offset}`.
+1. Use NetSuite's 1,000-row REST page size on every request so each advancing offset remains evenly divisible by the limit.
+2. POST the unchanged SuiteQL body to `/services/rest/query/v1/suiteql?limit=1000&offset={offset}`.
 3. Parse the response `items` plus `count`, `offset`, `totalResults`, and `hasMore` metadata.
 4. Append only the caller's remaining requested rows.
 5. Advance by the returned item count and repeat while more rows are reported.
 6. Return the complete bounded result to the existing mapper and planner.
 
-Raw-array responses remain a terminal one-page compatibility form. Object responses without pagination metadata are accepted only when they contain fewer rows than the requested page; a full ambiguous page fails closed rather than silently truncating.
+Raw-array responses remain a terminal one-page compatibility form and are consumed in full up to the caller's actual bound. Object responses without pagination metadata are accepted only when they contain fewer than 1,000 rows; a full ambiguous page fails closed rather than silently truncating.
 
 ## Invariants and Errors
 
@@ -40,8 +40,9 @@ The change is confined to the NetSuite adapter and its behavioral tests. Planner
 
 Behavioral tests will prove:
 
-- A 1,001-row customer result is assembled from two REST pages without duplicates or omissions.
-- The second request uses the correct offset and remaining limit.
+- A 1,300-row customer result is assembled from two REST pages without duplicates or omissions.
+- Both requests use the fixed 1,000-row REST limit and advancing offsets that remain divisible by that limit.
 - Requested counts below one page stop without an extra request.
-- Inconsistent pagination metadata and non-advancing pages fail closed.
+- Missing, present-but-invalid, inconsistent, and non-advancing pagination metadata fail closed.
+- Terminal raw-array compatibility responses preserve every row up to the caller's actual bound.
 - Existing OAuth, rate-limit retry, query escaping, build, and platform tests remain green.

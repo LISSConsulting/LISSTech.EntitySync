@@ -350,6 +350,7 @@ public sealed class HardeningTests
             IncludeInactive = true
         });
         Assert.Equal(3, query.Split("ESCAPE '\\'", StringSplitOptions.None).Length - 1);
+        Assert.Contains("ORDER BY entityid, id", query, StringComparison.Ordinal);
         Assert.DoesNotContain("ESCAPE '\\\\'", query, StringComparison.Ordinal);
     }
 

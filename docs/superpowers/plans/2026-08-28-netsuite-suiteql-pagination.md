@@ -30,23 +30,26 @@
 
 - [ ] **Step 1: Add a failing multi-page customer regression**
 
-Create an xUnit test with a scripted `HttpMessageHandler`. Return 1,000 customer rows with `hasMore: true`, followed by one row with `hasMore: false`, then empty address responses. Call:
+Create an xUnit test with a scripted loopback `WebApplication`. Return 1,000 nonnumeric customer IDs with `hasMore: true`, followed by 300 rows with `hasMore: false`. Nonnumeric IDs intentionally bypass unrelated address enrichment. Call:
 
 ```csharp
 var entities = await adapter.GetEntitiesAsync(new EntityQuery
 {
     EntityType = "Customer",
     IncludeInactive = true,
-    Count = 1001
+    Count = 1300
 }, default);
 
-Assert.Equal(1001, entities.Count);
-Assert.Equal(Enumerable.Range(1, 1001).Select(value => value.ToString()), entities.Select(entity => entity.Id));
-Assert.Equal("?limit=1000&offset=0", handler.Requests[0].RequestUri!.Query);
-Assert.Equal("?limit=1&offset=1000", handler.Requests[1].RequestUri!.Query);
+Assert.Equal(1300, entities.Count);
+Assert.Equal("customer-1", entities[0].Id);
+Assert.Equal("customer-1000", entities[999].Id);
+Assert.Equal("customer-1300", entities[1299].Id);
+Assert.Equal(1300, entities.Select(entity => entity.Id).Distinct().Count());
+Assert.Equal("?limit=1000&offset=0", server.Requests[0].Uri.Query);
+Assert.Equal("?limit=1000&offset=1000", server.Requests[1].Uri.Query);
 ```
 
-The handler must capture each URI/body and return fresh `HttpResponseMessage` instances. Add an internal adapter constructor accepting `HttpMessageHandler`; route it through `VendorHttpClientFactory.Create(..., minimumRequestInterval: TimeSpan.Zero)` so tests retain production response bounds without a 500 ms delay.
+The server must capture each URI/body and dequeue complete NetSuite-shaped JSON responses. This exercises the public adapter through the production `HttpClient` and hardened transport; no production-only test seam is added.
 
 - [ ] **Step 2: Add failing metadata-validation regressions**
 
@@ -57,7 +60,7 @@ await Assert.ThrowsAsync<InvalidOperationException>(() =>
     adapter.InvokeSuiteQlAsync("SELECT id FROM customer", default));
 ```
 
-for a response whose `count` differs from `items.Length`, and proving a full 1,000-row object response without pagination metadata fails as ambiguous. Assert the messages name pagination metadata, not response payloads or credentials.
+for a response whose `count` differs from `items.Length`, a short response with a present but invalid metadata value, and a full 1,000-row object response without pagination metadata. Add a raw-array compatibility regression proving 1,001 terminal rows remain intact. Assert malformed-response messages name pagination metadata, not response payloads or credentials.
 
 Also extend the query-order assertion:
 
@@ -89,9 +92,9 @@ private async Task ReadSuiteQlPagesAsync(
     CancellationToken cancellationToken)
 ```
 
-For each page, choose `limit = Math.Min(SuiteQlPageSize, maximumItems - consumed)` when bounded, build `/services/rest/query/v1/suiteql?limit={limit}&offset={offset}`, and send the unchanged JSON body through `RateLimitedHttpRequester`. Parse and consume rows before disposing the page document.
+For each page, use the fixed `SuiteQlPageSize` limit so NetSuite's requirement that `offset` be evenly divisible by `limit` remains satisfied, build `/services/rest/query/v1/suiteql?limit=1000&offset={offset}`, and send the unchanged JSON body through `RateLimitedHttpRequester`. Enforce `maximumItems` while consuming the SQL-bounded result rather than by shrinking the REST limit. Parse and consume rows before disposing the page document.
 
-Require all four metadata fields together when present. Validate returned `count`, requested `offset`, stable `totalResults`, consistent `hasMore`, nonempty advancing pages, and the caller bound. Treat a raw array as one terminal compatibility page. Treat a short object without metadata as terminal; reject a metadata-free object containing exactly the requested page size.
+Track pagination-field presence separately from successful parsing. Require all four metadata fields together when any is present, and reject every present invalid value. Validate returned `count`, requested `offset`, stable `totalResults`, consistent `hasMore`, nonempty advancing pages, and the caller bound. Treat a raw array as one terminal compatibility page and consume it up to the actual caller bound. Treat a short object without metadata as terminal; reject a metadata-free object containing exactly the fixed REST page size.
 
 Replace the one-page readers in `GetEntitiesAsync`, `InvokeSuiteQlAsync`, and `AddCustomerAddressesAsync` with this method. Keep address grouping incremental inside the consume callback. Remove the obsolete one-page `ExecuteSuiteQlAsync` method.
 
