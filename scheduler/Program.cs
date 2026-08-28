@@ -46,6 +46,9 @@ namespace LISSTech.EntitySync.Scheduler
                 services => services.GetRequiredService<EntitySyncSchedulerWorker>());
 
             var app = builder.Build();
+            app.Services
+                .GetRequiredService<IServerManagedEntityAdapterFactory>()
+                .ValidateNetSuiteHaloFixedRouteConfiguration();
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);

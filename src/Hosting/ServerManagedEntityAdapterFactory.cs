@@ -134,6 +134,15 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         throw new InvalidOperationException("Unsupported vendor.");
     }
 
+    public void ValidateNetSuiteHaloFixedRouteConfiguration()
+    {
+        _ = CreateNetSuiteOptions(null);
+        _ = Resolve(null, "HaloClientId", "HALO_CLIENT_ID");
+        _ = Resolve(null, "HaloClientSecret", "HALO_CLIENT_SECRET");
+        _ = CreateHaloOptions(null, "startup-configuration-validation");
+        _ = GetNetSuiteHaloChangeStateScope();
+    }
+
     public string GetNetSuiteHaloChangeStateScope()
     {
         var accountId = Resolve(null, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID")

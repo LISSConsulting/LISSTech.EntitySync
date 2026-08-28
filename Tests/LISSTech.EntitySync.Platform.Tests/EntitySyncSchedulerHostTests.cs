@@ -57,6 +57,24 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.True(workerIndex > migrationIndex);
     }
 
+    [Theory]
+    [InlineData("NETSUITE_TOKEN_SECRET", null, "NETSUITE_TOKEN_SECRET")]
+    [InlineData("HALO_CLIENT_SECRET", " ", "HALO_CLIENT_SECRET")]
+    [InlineData("HALO_BASE_URL", "not-a-url", "HTTPS")]
+    [InlineData("HALO_BASE_URL", "http://halo.example.test", "HTTPS")]
+    public async Task SchedulerHostBuildRejectsInvalidFixedRouteConfiguration(
+        string variableName,
+        string? value,
+        string expectedMessage)
+    {
+        await using var environment = SchedulerHostEnvironment.Create(variableName, value);
+
+        var error = Assert.Throws<TargetInvocationException>(BuildSchedulerApplication);
+        var configurationError = Assert.IsType<InvalidOperationException>(error.InnerException);
+
+        Assert.Contains(expectedMessage, configurationError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task StatusEndpointReturnsOnlyBoundedAggregateAllowlist()
     {
@@ -151,14 +169,22 @@ public sealed class SchedulerHostEnvironmentCollection;
 
 internal sealed class SchedulerHostEnvironment : IAsyncDisposable
 {
-    private static readonly IReadOnlyDictionary<string, string> Values =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, string?> Values =
+        new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["DATABASE_URL"] = "Host=127.0.0.1;Database=entitysync_test;Username=test;Password=test",
             ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "https://logfire-us.pydantic.dev/v1/logs",
             ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=test-token",
             ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
-            ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-scheduler-test"
+            ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-scheduler-test",
+            ["NETSUITE_ACCOUNT_ID"] = "test-account",
+            ["NETSUITE_CONSUMER_KEY"] = "test-consumer-key",
+            ["NETSUITE_CONSUMER_SECRET"] = "test-consumer-secret",
+            ["NETSUITE_TOKEN_ID"] = "test-token-id",
+            ["NETSUITE_TOKEN_SECRET"] = "test-token-secret",
+            ["HALO_BASE_URL"] = "https://halo.example.test",
+            ["HALO_CLIENT_ID"] = "test-client-id",
+            ["HALO_CLIENT_SECRET"] = "test-client-secret"
         };
 
     private readonly Dictionary<string, string?> originalValues;
@@ -168,13 +194,24 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
         this.originalValues = originalValues;
     }
 
-    public static SchedulerHostEnvironment Create()
+    public static SchedulerHostEnvironment Create(
+        string? overriddenVariableName = null,
+        string? overriddenValue = null)
     {
-        var originals = Values.Keys.ToDictionary(
-            name => name,
-            Environment.GetEnvironmentVariable,
-            StringComparer.Ordinal);
+        var variableNames = overriddenVariableName is null
+            ? Values.Keys
+            : Values.Keys.Append(overriddenVariableName);
+        var originals = variableNames
+            .Distinct(StringComparer.Ordinal)
+            .ToDictionary(
+                name => name,
+                Environment.GetEnvironmentVariable,
+                StringComparer.Ordinal);
         foreach (var pair in Values) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+        if (overriddenVariableName is not null)
+        {
+            Environment.SetEnvironmentVariable(overriddenVariableName, overriddenValue);
+        }
         return new SchedulerHostEnvironment(originals);
     }
 

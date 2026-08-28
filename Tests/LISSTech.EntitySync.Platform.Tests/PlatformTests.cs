@@ -91,6 +91,56 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public void FixedRouteValidationAcceptsSyntacticallyValidFakeCredentialsWithoutNetwork()
+    {
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("test-account", "https://halo.example.test", "net-suite-secret", "halo-secret"));
+
+        factory.ValidateNetSuiteHaloFixedRouteConfiguration();
+
+        Assert.Equal(64, factory.GetNetSuiteHaloChangeStateScope().Length);
+    }
+
+    [Theory]
+    [InlineData("NETSUITE_ACCOUNT_ID")]
+    [InlineData("NETSUITE_CONSUMER_KEY")]
+    [InlineData("NETSUITE_CONSUMER_SECRET")]
+    [InlineData("NETSUITE_TOKEN_ID")]
+    [InlineData("NETSUITE_TOKEN_SECRET")]
+    [InlineData("HALO_BASE_URL")]
+    [InlineData("HALO_CLIENT_ID")]
+    [InlineData("HALO_CLIENT_SECRET")]
+    public void FixedRouteValidationRejectsBlankRequiredSettings(string variableName)
+    {
+        var settings = FactorySettings(
+            "test-account",
+            "https://halo.example.test",
+            "net-suite-secret",
+            "halo-secret");
+        settings[variableName] = " ";
+        var factory = new ServerManagedEntityAdapterFactory(settings);
+
+        var error = Assert.Throws<InvalidOperationException>(
+            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+
+        Assert.Contains(variableName, error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("http://halo.example.test")]
+    public void FixedRouteValidationRejectsMalformedOrNonHttpsHaloUrl(string haloUrl)
+    {
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("test-account", haloUrl, "net-suite-secret", "halo-secret"));
+
+        var error = Assert.Throws<InvalidOperationException>(
+            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+
+        Assert.Contains("HTTPS", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void HostingFactoryPrefersLocalProfileSettingsOverInjectedEnvironment()
     {
         var factory = new ServerManagedEntityAdapterFactory(
@@ -1321,6 +1371,10 @@ public sealed class PlatformTests
             var adapter = new FakeAdapter(vendor);
             Adapters.Add(adapter);
             return Task.FromResult<IEntityAdapter>(adapter);
+        }
+
+        public void ValidateNetSuiteHaloFixedRouteConfiguration()
+        {
         }
 
         public string GetNetSuiteHaloChangeStateScope() => "unused";

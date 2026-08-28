@@ -9,5 +9,7 @@ public interface IServerManagedEntityAdapterFactory
         IReadOnlyDictionary<string, string>? profileSettings,
         CancellationToken cancellationToken);
 
+    void ValidateNetSuiteHaloFixedRouteConfiguration();
+
     string GetNetSuiteHaloChangeStateScope();
 }

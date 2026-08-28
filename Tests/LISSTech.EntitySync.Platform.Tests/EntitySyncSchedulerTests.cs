@@ -606,6 +606,10 @@ public sealed class EntitySyncSchedulerTests
             return Task.FromResult<IEntityAdapter>(adapter);
         }
 
+        public void ValidateNetSuiteHaloFixedRouteConfiguration()
+        {
+        }
+
         public string GetNetSuiteHaloChangeStateScope() => SchedulerFixture.Scope;
     }
 
