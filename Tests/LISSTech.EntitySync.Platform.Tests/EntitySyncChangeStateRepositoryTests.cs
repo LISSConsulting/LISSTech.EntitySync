@@ -14,6 +14,8 @@ public sealed class EntitySyncChangeStateRepositoryTests
     private const string CompleteRouteKey =
         "tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type, " +
         "target_vendor, target_connection_id, target_entity_type, source_entity_key";
+    private const int MaximumIndexedIdentityUtf8Bytes = 2000;
+
 
 
     [Fact]
@@ -135,13 +137,31 @@ public sealed class EntitySyncChangeStateRepositoryTests
     [Fact]
     public void ChangeStateMigrationUsesBoundedStateColumnsAndCompleteRoutePrimaryKey()
     {
-        var migration = CollapseWhitespace(ReadChangeStateMigration());
+        var migration = CollapseWhitespace(ReadMigration(".002_entity_change_state.sql"));
 
         Assert.Contains("source_entity_key varchar(512) NOT NULL", migration);
         Assert.Contains("source_entity_id varchar(512) NOT NULL", migration);
         Assert.Contains("source_name varchar(512) NOT NULL", migration);
         Assert.Contains("target_entity_id varchar(512) NOT NULL", migration);
         Assert.Contains($"PRIMARY KEY ({CompleteRouteKey})", migration);
+        Assert.Contains(IndexedIdentityCheck(), migration);
+    }
+
+    [Fact]
+    public void ChangeStateRepairMigrationUpgradesPreviouslyAppliedNarrowPrimaryKey()
+    {
+        var migration = CollapseWhitespace(ReadMigration(".003_harden_entity_change_state_key.sql"));
+
+        Assert.Contains("ALTER COLUMN source_entity_key TYPE varchar(512)", migration);
+        Assert.Contains("ALTER COLUMN source_entity_id TYPE varchar(512)", migration);
+        Assert.Contains("ALTER COLUMN source_name TYPE varchar(512)", migration);
+        Assert.Contains("ALTER COLUMN target_entity_id TYPE varchar(512)", migration);
+        Assert.Contains("DROP CONSTRAINT IF EXISTS entity_change_state_pkey", migration);
+        Assert.Contains(
+            $"ADD CONSTRAINT entity_change_state_pkey PRIMARY KEY ({CompleteRouteKey})",
+            migration);
+        Assert.Contains(IndexedIdentityCheck(), migration);
+
     }
 
     [Fact]
@@ -225,6 +245,64 @@ public sealed class EntitySyncChangeStateRepositoryTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             postgres.GetBySourceIdsAsync(route, [sourceEntityId], default));
     }
+    [Fact]
+    public async Task ChangeStateRepositoriesAcceptConservativeIndexedIdentityUtf8Boundary()
+    {
+        var route = MaximumMultibyteRoute();
+        var sourceEntityId = new string('\u00e9', 328);
+        var state = State(route, sourceEntityId, "target", ScopeA);
+        var inMemory = new InMemoryEntitySyncChangeStateRepository();
+
+        await inMemory.UpsertAsync(state, default);
+        var result = await inMemory.GetBySourceIdsAsync(route, [sourceEntityId], default);
+
+        Assert.Single(result);
+        await using var dataSource = CreateUnconnectedDataSource();
+        var postgres = new PostgresEntitySyncChangeStateRepository(dataSource);
+        await using var command = CreatePostgresUpsertCommand(postgres, state);
+        Assert.Equal(sourceEntityId, command.Parameters["source_entity_key"].Value);
+    }
+
+    [Fact]
+    public async Task ChangeStateRepositoriesRejectIndexedIdentityOverUtf8LimitBeforeAccess()
+    {
+        var route = MaximumMultibyteRoute();
+        var sourceEntityId = new string('\u00e9', 329);
+        var state = State(route, sourceEntityId, "target", ScopeA);
+        var inMemory = new InMemoryEntitySyncChangeStateRepository();
+        await using var dataSource = CreateUnconnectedDataSource();
+        var postgres = new PostgresEntitySyncChangeStateRepository(dataSource);
+
+        var inMemoryWrite = await Assert.ThrowsAsync<ArgumentException>(() =>
+            inMemory.UpsertAsync(state, default));
+        var postgresWrite = await Assert.ThrowsAsync<ArgumentException>(() =>
+            postgres.UpsertAsync(state, default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            inMemory.GetBySourceIdsAsync(route, [sourceEntityId], default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            postgres.GetBySourceIdsAsync(route, [sourceEntityId], default));
+        Assert.Contains($"{MaximumIndexedIdentityUtf8Bytes} UTF-8 bytes", inMemoryWrite.Message);
+        Assert.Equal(inMemoryWrite.Message, postgresWrite.Message);
+    }
+
+    private static EntitySyncChangeStateRoute MaximumMultibyteRoute() =>
+        EntitySyncChangeStateRoute.Create(
+            new string('\u00e9', 256),
+            ScopeA,
+            new string('\u00e9', 64),
+            new string('\u00e9', 64),
+            new string('\u00e9', 64),
+            new string('\u00e9', 64),
+            new string('\u00e9', 64),
+            new string('\u00e9', 64));
+
+    private static string IndexedIdentityCheck() =>
+        "CHECK (octet_length(tenant_id) + octet_length(route_scope) + " +
+        "octet_length(source_vendor) + octet_length(source_connection_id) + " +
+        "octet_length(source_entity_type) + octet_length(target_vendor) + " +
+        "octet_length(target_connection_id) + octet_length(target_entity_type) + " +
+        $"octet_length(source_entity_key) <= {MaximumIndexedIdentityUtf8Bytes})";
+
 
     private static NpgsqlDataSource CreateUnconnectedDataSource() =>
         NpgsqlDataSource.Create("Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
@@ -240,12 +318,12 @@ public sealed class EntitySyncChangeStateRepositoryTests
         return Assert.IsAssignableFrom<NpgsqlCommand>(method.Invoke(repository, [state]));
     }
 
-    private static string ReadChangeStateMigration()
+    private static string ReadMigration(string suffix)
     {
         var assembly = typeof(PostgresEntitySyncChangeStateRepository).Assembly;
         var resourceName = Assert.Single(
             assembly.GetManifestResourceNames(),
-            name => name.EndsWith(".002_entity_change_state.sql", StringComparison.Ordinal));
+            name => name.EndsWith(suffix, StringComparison.Ordinal));
         using var stream = assembly.GetManifestResourceStream(resourceName);
         Assert.NotNull(stream);
         using var reader = new StreamReader(stream);

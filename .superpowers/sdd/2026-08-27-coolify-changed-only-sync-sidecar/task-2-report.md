@@ -182,3 +182,76 @@ No broad validation was run.
 ### Fix-Round Concern
 
 No live PostgreSQL server was available in existing test infrastructure. The permitted deterministic embedded-migration and actual-command coverage was used instead; no Testcontainers dependency was introduced.
+
+## Fix Round 2
+
+### Decisions and Reasoning
+
+- Added forward migration `003_harden_entity_change_state_key.sql` because changing a migration version already recorded by `schema_migrations` cannot repair an existing database. Migration `003` drops the prior primary key inside the migrator transaction, applies all four `varchar(512)` state-column types, installs the indexed-identity byte check, and recreates the complete route/source primary key. It therefore handles both the pre-fix `002` schema and clean installs where hardened `002` ran immediately beforehand.
+- Kept every raw route field in the primary key as ruled, but bounded the aggregate UTF-8 payload of its nine text components to 2000 bytes. PostgreSQL's default 8 KiB B-tree pages reject index tuples near 2704 bytes; 2000 bytes conservatively reserves headroom for the index tuple header, heap TID, per-attribute varlena headers, null bitmap/alignment, and other tuple overhead.
+- The shared .NET persistence helper computes the aggregate with `Encoding.UTF8.GetByteCount` over tenant, scope, both vendor/connection/type triples, and the normalized source key. Both repositories invoke it for reads and writes before state or database access.
+- Both hardened `002` and forward `003` enforce the identical `octet_length(...) <= 2000` aggregate. Migration `003` validates existing rows through that check before building the expanded primary key.
+- Added exact 2000-byte and first-multibyte-over-boundary coverage: maximum-length multibyte route components plus 328 `é` source characters total exactly 2000 UTF-8 bytes; 329 `é` source characters total 2002 bytes and are rejected by both repositories. Deterministic migration coverage verifies `003` column conversions, defensive constraint drops, complete replacement key, and schema byte check.
+
+### TDD Evidence
+
+Before implementation, the focused suite failed on the absent forward migration, absent schema byte check, and absent repository byte validation:
+
+```text
+Failed!  - Failed:     3, Passed:    11, Skipped:     0, Total:    14, Duration: 59 ms - LISSTech.EntitySync.Platform.Tests.dll (net8.0)
+```
+
+### Exact Verification
+
+Command:
+
+```bash
+DOTNET_ROLL_FORWARD=Major dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --filter FullyQualifiedName~EntitySyncChangeStateRepositoryTests
+```
+
+Exit code: `0`
+
+Output:
+
+```text
+Passed!  - Failed:     0, Passed:    14, Skipped:     0, Total:    14, Duration: 63 ms - LISSTech.EntitySync.Platform.Tests.dll (net8.0)
+```
+
+Command:
+
+```bash
+dotnet build src/Runtime/LISSTech.EntitySync.Runtime.csproj --configuration Release
+```
+
+Exit code: `0`
+
+Output:
+
+```text
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  LISSTech.EntitySync.Core -> /Users/mwisniowski/Projects/LISSConsulting/LISSTech.EntitySync/.worktrees/coolify-changed-only-sync-sidecar/src/Core/bin/Release/net8.0/LISSTech.EntitySync.Core.dll
+  LISSTech.EntitySync.Ports -> /Users/mwisniowski/Projects/LISSConsulting/LISSTech.EntitySync/.worktrees/coolify-changed-only-sync-sidecar/src/Ports/bin/Release/net8.0/LISSTech.EntitySync.Ports.dll
+  LISSTech.EntitySync.Runtime -> /Users/mwisniowski/Projects/LISSConsulting/LISSTech.EntitySync/.worktrees/coolify-changed-only-sync-sidecar/src/Runtime/bin/Release/net8.0/LISSTech.EntitySync.Runtime.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:00.86
+```
+
+No broad validation was run.
+
+### Fix-Round Self-Review
+
+- Confirmed a database that already recorded the old `002` receives the schema repair through new version `003`; a clean database applies hardened `002` and then safely reapplies the same invariants through `003`.
+- Confirmed `003` drops the old primary key before state-column conversions, checks existing aggregate key sizes before rebuilding the expanded key, and runs atomically under the existing migrator transaction.
+- Confirmed the .NET and SQL limits use the same nine components, UTF-8/octet byte semantics, comparison (`<=`), and 2000-byte value.
+- Confirmed the exact-boundary case is accepted by in-memory mutation/read and PostgreSQL command construction, while the multibyte over-boundary case is rejected by both repositories on reads and writes without opening a database connection.
+- Confirmed the complete route-field primary key and exact matching `ON CONFLICT` ruling remains unchanged.
+- Confirmed only Task 2 persistence implementation, migration, test, and requested report files changed.
+
+### Fix-Round Concern
+
+No live PostgreSQL service exists in the scoped test infrastructure. Forward-migration coverage is deterministic rather than live; no Testcontainers or other broad infrastructure was added.

@@ -57,7 +57,7 @@ public sealed class PostgresEntitySyncChangeStateRepository : IEntitySyncChangeS
         foreach (var sourceEntityId in sourceEntityIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            sourceKeys.Add(EntitySyncChangeStatePersistence.NormalizeSourceKey(sourceEntityId));
+            sourceKeys.Add(EntitySyncChangeStatePersistence.NormalizeSourceKey(route, sourceEntityId));
         }
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);

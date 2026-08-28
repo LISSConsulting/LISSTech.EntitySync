@@ -25,6 +25,17 @@ CREATE TABLE IF NOT EXISTS entitysync.entity_change_state (
         target_entity_type,
         source_entity_key
     ),
+    CONSTRAINT entity_change_state_indexed_identity_size CHECK (
+        octet_length(tenant_id) +
+        octet_length(route_scope) +
+        octet_length(source_vendor) +
+        octet_length(source_connection_id) +
+        octet_length(source_entity_type) +
+        octet_length(target_vendor) +
+        octet_length(target_connection_id) +
+        octet_length(target_entity_type) +
+        octet_length(source_entity_key) <= 2000
+    ),
     CONSTRAINT entity_change_state_source_not_blank CHECK (btrim(source_entity_id) <> ''),
     CONSTRAINT entity_change_state_target_not_blank CHECK (btrim(target_entity_id) <> ''),
     CONSTRAINT entity_change_state_hash_version_positive CHECK (hash_version > 0),
