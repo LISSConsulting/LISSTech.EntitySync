@@ -301,14 +301,14 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         int? expectedTotalResults = null;
         while (consumed < itemLimit)
         {
-            var limit = Math.Min(SuiteQlPageSize, itemLimit - consumed);
-            var uri = BuildSuiteQlUri(limit, offset);
+            var remaining = itemLimit - consumed;
+            var uri = BuildSuiteQlUri(SuiteQlPageSize, offset);
             using var response = await SendSuiteQlAsync(suiteQl, uri, cancellationToken).ConfigureAwait(false);
             using var document = await ReadJsonResponseAsync(response, uri, cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
             if (root.ValueKind == JsonValueKind.Array)
             {
-                ConsumeSuiteQlItems(root, limit, consume);
+                ConsumeSuiteQlItems(root, remaining, consume);
                 return;
             }
             if (root.ValueKind != JsonValueKind.Object
@@ -319,21 +319,25 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
             }
 
             var pageCount = items.GetArrayLength();
-            var hasCount = TryReadNonNegativeInt(root, "count", out var reportedCount);
-            var hasOffset = TryReadNonNegativeInt(root, "offset", out var reportedOffset);
-            var hasTotalResults = TryReadNonNegativeInt(root, "totalResults", out var totalResults);
-            var hasHasMore = TryReadBoolean(root, "hasMore", out var hasMore);
-            var metadataFields = (hasCount ? 1 : 0) + (hasOffset ? 1 : 0) + (hasTotalResults ? 1 : 0) + (hasHasMore ? 1 : 0);
+            var countPresent = root.TryGetProperty("count", out var countProperty);
+            var offsetPresent = root.TryGetProperty("offset", out var offsetProperty);
+            var totalResultsPresent = root.TryGetProperty("totalResults", out var totalResultsProperty);
+            var hasMorePresent = root.TryGetProperty("hasMore", out var hasMoreProperty);
+            var metadataFields = (countPresent ? 1 : 0) + (offsetPresent ? 1 : 0) + (totalResultsPresent ? 1 : 0) + (hasMorePresent ? 1 : 0);
             if (metadataFields == 0)
             {
-                if (pageCount >= limit)
+                if (pageCount >= SuiteQlPageSize)
                 {
                     throw InvalidSuiteQlPage("a full page omitted count, offset, totalResults, and hasMore.");
                 }
-                ConsumeSuiteQlItems(items, limit, consume);
+                ConsumeSuiteQlItems(items, remaining, consume);
                 return;
             }
-            if (metadataFields != 4)
+            if (metadataFields != 4
+                || !TryReadNonNegativeInt(countProperty, out var reportedCount)
+                || !TryReadNonNegativeInt(offsetProperty, out var reportedOffset)
+                || !TryReadNonNegativeInt(totalResultsProperty, out var totalResults)
+                || !TryReadBoolean(hasMoreProperty, out var hasMore))
             {
                 throw InvalidSuiteQlPage("count, offset, totalResults, and hasMore must all be present with valid values.");
             }
@@ -345,9 +349,9 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
             {
                 throw InvalidSuiteQlPage($"offset {reportedOffset} does not equal requested offset {offset}.");
             }
-            if (pageCount > limit)
+            if (pageCount > SuiteQlPageSize)
             {
-                throw InvalidSuiteQlPage($"items length {pageCount} exceeds requested limit {limit}.");
+                throw InvalidSuiteQlPage($"items length {pageCount} exceeds requested limit {SuiteQlPageSize}.");
             }
             if (expectedTotalResults.HasValue && expectedTotalResults.Value != totalResults)
             {
@@ -369,8 +373,7 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
             {
                 throw InvalidSuiteQlPage("hasMore is true on an empty page, so pagination cannot advance.");
             }
-
-            ConsumeSuiteQlItems(items, limit, consume);
+            ConsumeSuiteQlItems(items, remaining, consume);
             consumed += pageCount;
             if (consumed >= itemLimit || !hasMore) return;
             offset = nextOffset;
@@ -404,20 +407,18 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         }
     }
 
-    private static bool TryReadNonNegativeInt(JsonElement root, string propertyName, out int value)
+    private static bool TryReadNonNegativeInt(JsonElement property, out int value)
     {
         value = 0;
-        return root.TryGetProperty(propertyName, out var property)
-            && property.ValueKind == JsonValueKind.Number
+        return property.ValueKind == JsonValueKind.Number
             && property.TryGetInt32(out value)
             && value >= 0;
     }
 
-    private static bool TryReadBoolean(JsonElement root, string propertyName, out bool value)
+    private static bool TryReadBoolean(JsonElement property, out bool value)
     {
         value = false;
-        if (!root.TryGetProperty(propertyName, out var property)
-            || (property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False)) return false;
+        if (property.ValueKind != JsonValueKind.True && property.ValueKind != JsonValueKind.False) return false;
         value = property.GetBoolean();
         return true;
     }

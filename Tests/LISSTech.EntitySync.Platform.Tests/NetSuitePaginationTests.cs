@@ -21,30 +21,32 @@ public sealed class NetSuitePaginationTests
         var firstPageItems = Enumerable.Range(1, 1000)
             .Select(index => new { id = $"customer-{index}", entityid = $"Customer {index:D4}" })
             .ToArray();
-        var secondPageItems = new[] { new { id = "customer-1001", entityid = "Customer 1001" } };
+        var secondPageItems = Enumerable.Range(1001, 300)
+            .Select(index => new { id = $"customer-{index}", entityid = $"Customer {index:D4}" })
+            .ToArray();
         await using var server = await ScriptedSuiteQlServer.StartAsync(
-            Page(1000, 0, 1001, true, firstPageItems),
-            Page(1, 1000, 1001, false, secondPageItems));
+            Page(1000, 0, 1300, true, firstPageItems),
+            Page(300, 1000, 1300, false, secondPageItems));
         using var adapter = new NetSuiteEntityAdapter(Options(server.BaseUrl));
 
         var entities = await adapter.GetEntitiesAsync(new EntityQuery
         {
             EntityType = "Customer",
             IncludeInactive = true,
-            Count = 1001
+            Count = 1300
         }, default);
 
-        Assert.Equal(1001, entities.Count);
+        Assert.Equal(1300, entities.Count);
         Assert.Equal("customer-1", entities[0].Id);
         Assert.Equal("customer-1000", entities[999].Id);
-        Assert.Equal("customer-1001", entities[1000].Id);
-        Assert.Equal(1001, entities.Select(entity => entity.Id).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal("customer-1300", entities[1299].Id);
+        Assert.Equal(1300, entities.Select(entity => entity.Id).Distinct(StringComparer.Ordinal).Count());
         var requests = server.Requests;
         Assert.Equal(2, requests.Count);
         Assert.Equal("?limit=1000&offset=0", requests[0].Uri.Query);
-        Assert.Equal("?limit=1&offset=1000", requests[1].Uri.Query);
+        Assert.Equal("?limit=1000&offset=1000", requests[1].Uri.Query);
         Assert.Equal(requests[0].Body, requests[1].Body);
-        Assert.Contains("FETCH FIRST 1001 ROWS ONLY", requests[0].Body, StringComparison.Ordinal);
+        Assert.Contains("FETCH FIRST 1300 ROWS ONLY", requests[0].Body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -62,6 +64,19 @@ public sealed class NetSuitePaginationTests
     }
 
     [Fact]
+    public async Task SuiteQlReadRejectsPresentInvalidPaginationMetadata()
+    {
+        var response = JsonSerializer.Serialize(new { count = -1, items = new[] { new { id = "1" } } });
+        await using var server = await ScriptedSuiteQlServer.StartAsync(response);
+        using var adapter = new NetSuiteEntityAdapter(Options(server.BaseUrl));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            adapter.InvokeSuiteQlAsync("SELECT id FROM customer ORDER BY id", default));
+
+        Assert.Contains("pagination metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SuiteQlReadRejectsFullPageWithoutPaginationMetadata()
     {
         var items = Enumerable.Range(1, 1000).Select(index => new { id = index.ToString() }).ToArray();
@@ -73,6 +88,20 @@ public sealed class NetSuitePaginationTests
             adapter.InvokeSuiteQlAsync("SELECT id FROM customer ORDER BY id", default));
 
         Assert.Contains("pagination metadata", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SuiteQlReadPreservesTerminalRawArrayRows()
+    {
+        var items = Enumerable.Range(1, 1001).Select(index => new { id = index.ToString() }).ToArray();
+        await using var server = await ScriptedSuiteQlServer.StartAsync(JsonSerializer.Serialize(items));
+        using var adapter = new NetSuiteEntityAdapter(Options(server.BaseUrl));
+
+        var rows = await adapter.InvokeSuiteQlAsync("SELECT id FROM customer ORDER BY id", default);
+
+        Assert.Equal(1001, rows.Count);
+        Assert.Equal("1001", rows[1000]["id"]);
+        Assert.Single(server.Requests);
     }
 
     private static string Page<T>(int count, int offset, int totalResults, bool hasMore, IReadOnlyList<T> items) =>
