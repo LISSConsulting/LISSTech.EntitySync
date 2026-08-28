@@ -7,14 +7,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
-using Npgsql;
 
-using LISSTech.EntitySync.Application;
-using LISSTech.EntitySync.Mapping;
-using LISSTech.EntitySync.Matching;
+using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp;
-using LISSTech.EntitySync.Ports;
-using LISSTech.EntitySync.Runtime;
 
 var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio").Trim().ToLowerInvariant();
 
@@ -41,13 +36,16 @@ static async Task RunStdioAsync(string[] args)
         consoleLogOptions.LogToStandardErrorThreshold = LogLevel.Trace;
     });
 
+    builder.Services.AddEntitySyncPlatform(
+        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
+    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
+
     builder.Services
         .AddMcpServer()
         .WithStdioServerTransport()
         .WithToolsFromAssembly();
 
     builder.Services.AddSingleton(new McpRequestContext("local", true));
-    AddEntitySyncPlatform(builder.Services);
 
     await builder.Build().RunAsync();
 }
@@ -124,16 +122,17 @@ static async Task RunHttpAsync(string[] args)
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<McpRequestContext>();
 
+    builder.Services.AddEntitySyncPlatform(
+        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
+    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
+
     builder.Services
         .AddMcpServer()
         .WithHttpTransport(options => options.Stateless = true)
         .WithToolsFromAssembly();
 
-    AddEntitySyncPlatform(builder.Services);
-
     var app = builder.Build();
     app.Logger.LogInformation("Logfire logging configured: {LogfireConfiguration}", logfireSettings);
-    await EntitySyncDatabaseMigrator.ApplyAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
     if (oauthChallengeHints is not null)
     {
         app.Use(async (context, next) =>
@@ -165,14 +164,6 @@ static async Task RunHttpAsync(string[] args)
     await app.RunAsync();
 }
 
-static void AddEntitySyncPlatform(IServiceCollection services)
-{
-    var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL")?.Trim();
-    if (string.IsNullOrWhiteSpace(connectionString))
-        throw new InvalidOperationException("DATABASE_URL is required. EntitySync refuses to run without durable exclusion storage.");
-
-    EntitySyncPlatformComposition.Add(services, NpgsqlDataSource.Create(connectionString));
-}
 
 static string RequireHttpsUri(string variableName)
 {
@@ -300,26 +291,5 @@ internal sealed class OAuthChallengeHints
                 $"{variableName} contains characters that cannot be emitted safely in an OAuth challenge.");
 
         return trimmed;
-    }
-}
-
-namespace LISSTech.EntitySync.Mcp
-{
-    internal static class EntitySyncPlatformComposition
-    {
-        public static void Add(IServiceCollection services, NpgsqlDataSource dataSource)
-        {
-            services.AddSingleton(dataSource);
-            services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
-            services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
-            services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
-            services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
-            services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
-            services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
-            services.AddSingleton<EntitySyncPlanner>();
-            services.AddSingleton<EntitySyncService>();
-            services.AddSingleton<EntitySyncApplyCoordinator>();
-            services.AddSingleton<EntityExclusionService>();
-        }
     }
 }

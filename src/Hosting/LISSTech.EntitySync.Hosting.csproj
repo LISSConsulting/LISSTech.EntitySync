@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\LISSTech.EntitySync.Core.csproj" />
+    <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
+    <ProjectReference Include="..\Application\LISSTech.EntitySync.Application.csproj" />
+    <ProjectReference Include="..\Adapters\LISSTech.EntitySync.Adapters.csproj" />
+    <ProjectReference Include="..\Mapping\LISSTech.EntitySync.Mapping.csproj" />
+    <ProjectReference Include="..\Matching\LISSTech.EntitySync.Matching.csproj" />
+    <ProjectReference Include="..\Runtime\LISSTech.EntitySync.Runtime.csproj" />
+  </ItemGroup>
+</Project>

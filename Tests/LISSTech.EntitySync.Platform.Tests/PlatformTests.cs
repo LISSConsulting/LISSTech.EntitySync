@@ -2,7 +2,10 @@ using System.Security.Claims;
 using System.Net;
 using System.Text.Json;
 using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Adapters.Halo;
+using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Mapping;
@@ -61,19 +64,173 @@ public sealed class PlatformTests
         Assert.True(oldAdapter.Disposed);
     }
 
+
     [Fact]
-    public void McpCompositionActivatesPlannerWithPostgresChangeStateRepository()
+    public void HostingFactoryBuildsNetSuiteAndHaloOptionsFromInjectedSettings()
+    {
+        const string netSuiteSecret = "netsuite-secret-do-not-log";
+        const string haloSecret = "halo-secret-do-not-log";
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("123_sb1", "https://HALO.example.test", netSuiteSecret, haloSecret));
+
+        var netSuite = factory.CreateNetSuiteOptions(null);
+        var halo = factory.CreateHaloOptions(null, "short-lived-halo-token");
+
+        Assert.Equal("123_sb1", netSuite.AccountId);
+        Assert.Equal("consumer-key", netSuite.ConsumerKey);
+        Assert.Equal(netSuiteSecret, netSuite.ConsumerSecret);
+        Assert.Equal("token-id", netSuite.TokenId);
+        Assert.Equal(netSuiteSecret, netSuite.TokenSecret);
+        Assert.Equal("https://halo.example.test/", halo.BaseUrl);
+        Assert.Equal("short-lived-halo-token", halo.AccessToken);
+        Assert.Equal(1, halo.TopLevelId);
+        Assert.Equal("CFNetSuiteCustomerID", halo.NetSuiteCustomerIdField);
+        Assert.Equal("CFassignedtam", halo.AccountManagerField);
+        Assert.DoesNotContain(netSuiteSecret, factory.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(haloSecret, factory.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HostingFactoryPrefersLocalProfileSettingsOverInjectedEnvironment()
+    {
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("environment-account", "https://environment-halo.example.test", "environment-secret", "environment-halo-secret"));
+        var profile = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["NetSuiteAccountId"] = "profile-account",
+            ["NetSuiteConsumerKey"] = "profile-consumer-key",
+            ["NetSuiteConsumerSecret"] = "profile-consumer-secret",
+            ["NetSuiteTokenId"] = "profile-token-id",
+            ["NetSuiteTokenSecret"] = "profile-token-secret",
+            ["HaloBaseUrl"] = "https://profile-halo.example.test",
+            ["HaloClientId"] = "profile-halo-client-id",
+            ["HaloClientSecret"] = "profile-halo-client-secret",
+            ["HaloScope"] = "profile-scope",
+            ["HaloTopLevelId"] = "42"
+        };
+
+        var netSuite = factory.CreateNetSuiteOptions(profile);
+        var halo = factory.CreateHaloOptions(profile, "profile-access-token");
+
+        Assert.Equal("profile-account", netSuite.AccountId);
+        Assert.Equal("profile-consumer-key", netSuite.ConsumerKey);
+        Assert.Equal("profile-consumer-secret", netSuite.ConsumerSecret);
+        Assert.Equal("profile-token-id", netSuite.TokenId);
+        Assert.Equal("profile-token-secret", netSuite.TokenSecret);
+        Assert.Equal("https://profile-halo.example.test/", halo.BaseUrl);
+        Assert.Equal("profile-access-token", halo.AccessToken);
+        Assert.Equal(42, halo.TopLevelId);
+    }
+
+    [Theory]
+    [InlineData("NetSuite")]
+    [InlineData("NCentral")]
+    [InlineData("Bill.com")]
+    public async Task HostingFactoryCreatesNonInteractiveVendorAdapters(string vendor)
+    {
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("account", "https://halo.example.test", "netsuite-secret", "halo-secret"));
+
+        var adapter = await factory.CreateAsync(vendor, null, CancellationToken.None);
+
+        try
+        {
+            Assert.Equal(EntitySyncVendors.Normalize(vendor), adapter.Vendor);
+        }
+        finally
+        {
+            (adapter as IDisposable)?.Dispose();
+        }
+    }
+
+    [Fact]
+    public void RouteScopeIgnoresSecretRotationButChangesForAccountIdentity()
+    {
+        var first = new ServerManagedEntityAdapterFactory(
+            FactorySettings(" 123 ", "https://halo.example.test", "one", "halo-one"));
+        var rotated = new ServerManagedEntityAdapterFactory(
+            FactorySettings("123", "https://HALO.EXAMPLE.TEST/", "two", "halo-two"));
+        var movedNetSuite = new ServerManagedEntityAdapterFactory(
+            FactorySettings("456", "https://halo.example.test", "two", "halo-two"));
+        var movedHalo = new ServerManagedEntityAdapterFactory(
+            FactorySettings("123", "https://other-halo.example.test", "two", "halo-two"));
+        var lowercaseAccount = new ServerManagedEntityAdapterFactory(
+            FactorySettings("account_sb1", "https://halo.example.test", "two", "halo-two"));
+        var uppercaseAccount = new ServerManagedEntityAdapterFactory(
+            FactorySettings(" ACCOUNT_SB1 ", "https://halo.example.test", "two", "halo-two"));
+
+        var scope = first.GetNetSuiteHaloChangeStateScope();
+
+        Assert.Equal(64, scope.Length);
+        Assert.Matches("^[0-9a-f]{64}$", scope);
+        Assert.Equal(
+            "648271df174a8ff29e5a10e3afdc35f58691542a83ef8bf20ae06c11f605f368",
+            scope);
+        Assert.Equal(scope, rotated.GetNetSuiteHaloChangeStateScope());
+        Assert.Equal(
+            lowercaseAccount.GetNetSuiteHaloChangeStateScope(),
+            uppercaseAccount.GetNetSuiteHaloChangeStateScope());
+        Assert.NotEqual(scope, movedNetSuite.GetNetSuiteHaloChangeStateScope());
+        Assert.NotEqual(scope, movedHalo.GetNetSuiteHaloChangeStateScope());
+        Assert.DoesNotContain("123", scope, StringComparison.Ordinal);
+        Assert.DoesNotContain("halo.example.test", scope, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("https://user:route-secret@halo.example.test/")]
+    [InlineData("https://halo.example.test/?token=route-secret")]
+    [InlineData("https://halo.example.test/#route-secret")]
+    public void RouteScopeRejectsUrlComponentsThatCouldContainSecrets(string haloUrl)
+    {
+        var factory = new ServerManagedEntityAdapterFactory(
+            FactorySettings("123", haloUrl, "netsuite-secret", "halo-secret"));
+
+        var error = Assert.Throws<InvalidOperationException>(
+            factory.GetNetSuiteHaloChangeStateScope);
+
+        Assert.Contains("identity", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("route-secret", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HostingCompositionRegistersSharedPlatformAndStartupMigration()
     {
         var services = new ServiceCollection();
-        using var dataSource = NpgsqlDataSource.Create(
-            "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
-        EntitySyncPlatformComposition.Add(services, dataSource);
-        using var provider = services.BuildServiceProvider();
 
+        services.AddEntitySyncPlatform(
+            "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+
+        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<NpgsqlDataSource>());
+        Assert.NotNull(provider.GetRequiredService<IServerManagedEntityAdapterFactory>());
+        Assert.IsType<InMemoryEntityConnectionRepository>(
+            provider.GetRequiredService<IEntityConnectionRepository>());
+        Assert.IsType<InMemoryEntitySyncPlanRepository>(
+            provider.GetRequiredService<IEntitySyncPlanRepository>());
+        Assert.IsType<PostgresEntityExclusionRepository>(
+            provider.GetRequiredService<IEntityExclusionRepository>());
         Assert.IsType<PostgresEntitySyncChangeStateRepository>(
             provider.GetRequiredService<IEntitySyncChangeStateRepository>());
+        Assert.IsType<WeightedEntityMatcher>(provider.GetRequiredService<IEntityMatcher>());
+        Assert.IsType<DefaultEntityMapper>(provider.GetRequiredService<IEntityMapper>());
         Assert.NotNull(provider.GetRequiredService<EntitySyncPlanner>());
         Assert.NotNull(provider.GetRequiredService<EntitySyncService>());
+        Assert.NotNull(provider.GetRequiredService<EntityExclusionService>());
+        Assert.Same(TimeProvider.System, provider.GetRequiredService<TimeProvider>());
+        Assert.Contains(
+            provider.GetServices<IHostedService>(),
+            service => service is EntitySyncDatabaseMigrationHostedService);
+    }
+
+    [Fact]
+    public async Task StartupMigrationFailurePropagatesFromHostedService()
+    {
+        await using var dataSource = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Port=1;Database=unreachable;Username=unused;Password=unused;Timeout=1");
+        var service = new EntitySyncDatabaseMigrationHostedService(dataSource);
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => service.StartAsync(CancellationToken.None));
     }
 
     [Fact]
@@ -461,6 +618,41 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task ConnectVendorDelegatesToSharedFactoryAndPreservesConnectionGenerations()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var factory = new RecordingServerManagedEntityAdapterFactory();
+        var context = new McpRequestContext("tenant", true);
+
+        var firstResponse = await ConnectionTools.ConnectVendor(
+            connections,
+            factory,
+            context,
+            "HaloPSA",
+            "primary",
+            cancellationToken: CancellationToken.None);
+        var secondResponse = await ConnectionTools.ConnectVendor(
+            connections,
+            factory,
+            context,
+            "HaloPSA",
+            "primary",
+            cancellationToken: CancellationToken.None);
+
+        using var firstJson = JsonDocument.Parse(firstResponse);
+        using var secondJson = JsonDocument.Parse(secondResponse);
+        Assert.True(firstJson.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(secondJson.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(1, firstJson.RootElement.GetProperty("Generation").GetInt64());
+        Assert.Equal(2, secondJson.RootElement.GetProperty("Generation").GetInt64());
+        Assert.Equal(2, factory.Calls.Count);
+        Assert.All(factory.Calls, call => Assert.Equal("HaloPSA", call.Vendor));
+        Assert.All(factory.Calls, call => Assert.Null(call.ProfileSettings));
+        Assert.True(factory.Adapters[0].Disposed);
+        Assert.False(factory.Adapters[1].Disposed);
+    }
+
+    [Fact]
     public void McpConnectionToolDoesNotExposeEndpointsOrSecrets()
     {
         var parameters = typeof(ConnectionTools).GetMethod(nameof(ConnectionTools.ConnectVendor))!
@@ -793,7 +985,7 @@ public sealed class PlatformTests
             ["AGENTCONTROLLER_ENTRA_SCOPE"] = "api://agent-controller/.default"
         };
         using var adapterHttpClient = new HttpClient(handler, disposeHandler: false);
-        var adapter = await ConnectionTools.ConnectAgentControllerAsync(
+        var adapter = await ServerManagedEntityAdapterFactory.ConnectAgentControllerAsync(
             environment,
             configuration => new AgentControllerTokenProvider(configuration, handler),
             options => new LTACEntityAdapter(options, adapterHttpClient),
@@ -1114,6 +1306,26 @@ public sealed class PlatformTests
         }
     }
 
+    private sealed class RecordingServerManagedEntityAdapterFactory : IServerManagedEntityAdapterFactory
+    {
+        public List<(string Vendor, IReadOnlyDictionary<string, string>? ProfileSettings)> Calls { get; } = [];
+        public List<FakeAdapter> Adapters { get; } = [];
+
+        public Task<IEntityAdapter> CreateAsync(
+            string vendor,
+            IReadOnlyDictionary<string, string>? profileSettings,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls.Add((vendor, profileSettings));
+            var adapter = new FakeAdapter(vendor);
+            Adapters.Add(adapter);
+            return Task.FromResult<IEntityAdapter>(adapter);
+        }
+
+        public string GetNetSuiteHaloChangeStateScope() => "unused";
+    }
+
     private sealed class FakeAdapter(string vendor, IReadOnlyList<ExternalEntity>? entities = null, Func<Task>? beforeCreate = null) : IEntityAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
@@ -1148,4 +1360,24 @@ public sealed class PlatformTests
 
         public void Dispose() => Disposed = true;
     }
+
+    private static Dictionary<string, string?> FactorySettings(
+        string account,
+        string haloUrl,
+        string netSuiteSecret,
+        string haloSecret) => new(StringComparer.Ordinal)
+    {
+        ["NETSUITE_ACCOUNT_ID"] = account,
+        ["NETSUITE_CONSUMER_KEY"] = "consumer-key",
+        ["NETSUITE_CONSUMER_SECRET"] = netSuiteSecret,
+        ["NETSUITE_TOKEN_ID"] = "token-id",
+        ["NETSUITE_TOKEN_SECRET"] = netSuiteSecret,
+        ["HALO_BASE_URL"] = haloUrl,
+        ["HALO_CLIENT_ID"] = "halo-client-id",
+        ["HALO_CLIENT_SECRET"] = haloSecret,
+        ["NCENTRAL_BASE_URL"] = "https://ncentral.example.test",
+        ["NCENTRAL_USER_API_TOKEN"] = "ncentral-token",
+        ["NCENTRAL_SERVICE_ORG_ID"] = "service-org",
+        ["BILLCOM_API_TOKEN"] = "bill-token"
+    };
 }

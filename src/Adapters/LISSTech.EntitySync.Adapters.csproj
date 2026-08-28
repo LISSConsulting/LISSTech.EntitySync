@@ -10,7 +10,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="LISSTech.EntitySync" />
-    <InternalsVisibleTo Include="lisstech-entitysync-mcp" />
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Hosting" />
     <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
   </ItemGroup>
 </Project>
