@@ -26,18 +26,39 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
-7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions a dedicated PostgreSQL 18 service and persistent volume for permanent exclusions.
-8. Add the environment variables for the vendors the server will use.
-9. Assign the domain to the `entitysync-mcp` service on container port `8080`.
-   The reverse proxy must overwrite, not append, forwarded headers. The application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
-10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server.
+7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for permanent exclusions, scheduler change-state checkpoints, and migration coordination.
+8. Set the HaloPSA and NetSuite variables listed below. They are required by `entitysync-scheduler`; configure any additional vendors the MCP service will use.
+9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; its unauthenticated health and status routes are intentionally Compose-network-only.
+   The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
+10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server. Coolify should also report `entitysync-scheduler` healthy from its internal `/health` probe.
 11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
+### Scheduled NetSuite-to-Halo Reconciliation
+
+`entitysync-scheduler` is a fixed, changed-only NetSuite Customer to HaloPSA Client reconciliation sidecar:
+
+- It runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry; the next attempt waits the normal 12-hour interval.
+- It queries both active and inactive NetSuite customers. It updates only Halo clients already linked by the configured NetSuite customer-ID custom field; `createMissing` is always false, so the sidecar never creates Halo clients.
+- The first successful deployment is an intentional baseline reconciliation: every linked target is updated once, and its desired mapped write is checkpointed. Later runs skip writes whose mapped desired payload is unchanged.
+- PostgreSQL stores the route-scoped target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful target update. A mapper change that changes the desired payload, or a digest schema-version change, forces reconciliation even when an older hash exists.
+- The route scope is derived from the configured NetSuite account and Halo base URL. A PostgreSQL advisory lock keyed with `hashtextextended` over the tenant plus route scope prevents overlapping replicas from applying the same route.
+- Changed-only detection compares the newly mapped desired payload with the successful PostgreSQL checkpoint. It does **not** read back every Halo field, so manual Halo drift is not detected unless NetSuite input or mapping/digest behavior also changes.
+- Every plan is fully paged, digest-checked, approved, and applied by the sidecar. A connection, planning, validation, approval, or apply failure is bounded to the run and recorded without vendor payloads or credentials.
+
+The scheduler exposes only these internal routes:
+
+| Route | Meaning |
+|---|---|
+| `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
+| `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
+
+No authentication is installed on these routes because Compose does not publish the scheduler port. Inspect them only from the private Compose network or Coolify's container console.
+
 ### Vendor Variables
 
-Configure only the vendors the deployment needs. The MCP `connect_vendor` tool reads these values when it creates an adapter.
+HaloPSA and NetSuite are mandatory for this Compose stack because the scheduler always uses them. Configure other vendor rows only when the MCP service needs them; `connect_vendor` reads those values when it creates an adapter.
 
 | Vendor | Required variables |
 |---|---|
@@ -97,16 +118,18 @@ HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integ
 - Creating a plan and polling apply status are read-only. Applying writes requires digest approval and `apply=true`; the default is a synchronous dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
 - Credential-bearing vendor clients reject redirects, cap each response at 8 MiB, and share per-origin request spacing and concurrency limits. N-central SOAP endpoints must be relative paths on the configured HTTPS origin. Vendor pagination and Halo site scans fail closed at bounded scan limits.
-- The container image is framework-dependent by design and runs on its digest-pinned ASP.NET runtime image; local release builds remain self-contained single files.
+- Both application images are framework-dependent and use the same digest-pinned SDK and ASP.NET runtime images; local release builds remain self-contained single files.
 - Access-token lifetime, revocation, user consent, client registration, and signing-key rotation belong to the authorization server. The MCP server refreshes signing keys from its discovery metadata.
 
 ## Local Development
 
-Build or run the stdio server:
+Build or run either local application:
 
 ```powershell
 just mcp-build
 just mcp-run
+just scheduler-build
+just scheduler-run
 ```
 
 Run the same Compose deployment locally after populating an ignored `.env` file:
@@ -115,4 +138,4 @@ Run the same Compose deployment locally after populating an ignored `.env` file:
 docker compose up --build
 ```
 
-The container is non-root, read-only, has all Linux capabilities dropped, and uses a writable in-memory `/tmp` only.
+Both application containers run as the image's non-root `$APP_UID`, have read-only root filesystems, drop all Linux capabilities, set `no-new-privileges`, use an init process and `unless-stopped` restart policy, and receive only a 64 MiB writable in-memory `/tmp`. The scheduler adds no state or credential volume; PostgreSQL is its only durable state.

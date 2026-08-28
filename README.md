@@ -384,18 +384,22 @@ The intended workflow is **inspect → plan → review → dry run → apply**. 
 
 ---
 
-## 🌐 MCP Server
+## 🌐 MCP Server & Changed-Only Scheduler
 
 `mcp/` is a first-class MCP host for the same adapters, canonical model, matcher, plans, and guarded apply path used by the PowerShell module. Local clients use stdio by default. Container deployments use authenticated Streamable HTTP at `/mcp` and expose `/health` for orchestration.
 
+`scheduler/` is an internal-only sidecar for the fixed NetSuite Customer → HaloPSA Client route. It reconciles immediately at startup and then 12 hours after each completion, includes active and inactive customers, updates already-linked Halo clients only, and never creates targets. PostgreSQL holds successful desired-state hashes and the advisory route lock. The first run establishes the baseline by updating linked clients; later runs skip identical mapped writes. Digest schema changes force reconciliation, but manual Halo drift alone is not detected because the scheduler compares mapped desired state with its last successful checkpoint rather than reading back every Halo field. Failures do not trigger immediate retries and do not make `/health` unhealthy.
+
 ```powershell
-just mcp-build # self-contained local binary
-just mcp-run   # stdio transport
+just mcp-build       # self-contained local MCP binary
+just mcp-run         # stdio transport
+just scheduler-build # self-contained local scheduler binary
+just scheduler-run   # internal HTTP scheduler
 ```
 
-The root `docker-compose.yaml` builds a hardened, non-root image for Coolify. Configure an OAuth authorization server, set the `MCP_OAUTH_*` variables, add the required vendor secrets, map a domain to service port `8080`, then connect the MCP client to `https://<domain>/mcp`. The server advertises OAuth protected-resource metadata and accepts only signed access tokens with the configured issuer, audience, and required scope.
+The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure an OAuth authorization server for MCP, set the required shared PostgreSQL/Logfire/NetSuite/Halo variables, and map a domain only to `entitysync-mcp` port `8080`. Do not publish or route `entitysync-scheduler`; its unauthenticated `/health` and bounded aggregate `/status` endpoints remain private to the Compose network.
 
-See [`mcp/README.md`](mcp/README.md) for the Coolify procedure, variables, transport behavior, and operational constraints.
+See [`mcp/README.md`](mcp/README.md) for the exact Coolify procedure, scheduler status allowlist, security controls, variables, transports, and operational constraints.
 
 ---
 
@@ -408,9 +412,10 @@ just              # list recipes
 just build        # compile the module and supporting assemblies into Build/Module/
 just test-load    # import the module and list exported commands
 just test         # run Pester tests
-just mcp-build    # publish the MCP executable
-just mcp-docker-build # build the Coolify container locally
-just generate-agentcontroller-client # regenerate the pinned NSwag client
+just mcp-build          # publish the MCP executable
+just scheduler-build    # publish the scheduler executable
+just mcp-docker-build   # build both Coolify application images locally
+just scheduler-docker-build # build only the scheduler image
 just check-agentcontroller-client    # fail if checked-in generated code is stale
 just clean        # remove compiled output
 ```
@@ -427,6 +432,7 @@ just clean        # remove compiled output
 ├── 🌎 en-US/                           # about topic source
 ├── 🧪 Tests/                           # Pester + platform architecture tests
 ├── 🌐 mcp/                             # stdio + Streamable HTTP MCP host and Dockerfile
+├── ⏱️ scheduler/                       # changed-only HTTP scheduler host and Dockerfile
 ├── 🧬 src/
 │   ├── Adapters/                       # HaloPSA + NetSuite + N-central + AgentController vendor IO
 │   ├── Application/                    # planning, inspection, approval, and execution use cases
@@ -437,7 +443,7 @@ just clean        # remove compiled output
 │   ├── Matching/                       # weighted explainable matching
 │   ├── Ports/                          # adapter abstractions
 │   └── Runtime/                        # in-memory implementations of connection and plan ports
-├── docker-compose.yaml                 # Coolify-ready MCP application
+├── docker-compose.yaml                 # Coolify-ready MCP + scheduler + PostgreSQL stack
 ├── justfile                            # build/test automation
 └── README.md
 ```

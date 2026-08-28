@@ -15,6 +15,8 @@ configuration     := "Release"
 module_name       := "LISSTech.EntitySync"
 mcp_project       := project_root / "mcp" / "LISSTech.EntitySync.Mcp.csproj"
 mcp_publish_dir   := project_root / "Build" / "Mcp"
+scheduler_project       := project_root / "scheduler" / "LISSTech.EntitySync.Scheduler.csproj"
+scheduler_publish_dir   := project_root / "Build" / "Scheduler"
 nswag_config      := project_root / "nswag.json"
 generated_client  := project_root / "src" / "Adapters" / "LTAC" / "Generated" / "AgentControllerClient.g.cs"
 platform_tests     := project_root / "Tests" / "LISSTech.EntitySync.Platform.Tests" / "LISSTech.EntitySync.Platform.Tests.csproj"
@@ -344,10 +346,39 @@ mcp-run: mcp-build
     $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
     & $binary.FullName
 
-# Build the production MCP container used by compose.yaml and Coolify
+# Build the EntitySync scheduler as a self-contained single-file binary
+[group('scheduler')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
+scheduler-build:
+    . '{{ style_script }}'
+    $ErrorActionPreference = 'Stop'
+    $rid = if ($IsWindows) { 'win-x64' } elseif ($IsMacOS) { 'osx-arm64' } else { 'linux-x64' }
+    Invoke-JustTimed -Icon '🔧' -Fallback '[scheduler-build]' -Text "Building scheduler ($rid)" -Script {
+        dotnet publish '{{ scheduler_project }}' -c Release -r $rid -o '{{ scheduler_publish_dir }}' -p:PublishSingleFile=true -p:SelfContained=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true --verbosity minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $binary = Get-ChildItem '{{ scheduler_publish_dir }}' -Filter 'lisstech-entitysync-scheduler*' -File | Select-Object -First 1
+        Write-JustStep -Icon '📦' -Fallback '[scheduler]' -Text ('{0} ({1:N0} KB)' -f $binary.Name, ($binary.Length / 1KB)) -ForegroundColor Green
+    }
+
+# Run the scheduler locally
+[group('scheduler')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
+scheduler-run: scheduler-build
+    . '{{ style_script }}'
+    $binary = Get-ChildItem '{{ scheduler_publish_dir }}' -Filter 'lisstech-entitysync-scheduler*' -File | Select-Object -First 1
+    & $binary.FullName
+
+# Build the production scheduler container
+[group('scheduler')]
+scheduler-docker-build:
+    docker compose --file '{{ project_root }}/docker-compose.yaml' build entitysync-scheduler
+
+# Build both production application containers used by docker-compose.yaml and Coolify
 [group('mcp')]
 mcp-docker-build:
-    docker compose --file '{{ project_root }}\docker-compose.yaml' build
+    docker compose --file '{{ project_root }}/docker-compose.yaml' build entitysync-mcp entitysync-scheduler
 
 # Validate the Coolify Compose model without starting it
 [group('mcp')]
@@ -357,4 +388,16 @@ mcp-compose-config:
     $env:MCP_OAUTH_AUTHORITY = 'https://auth.example.com'
     $env:MCP_OAUTH_RESOURCE = 'https://mcp.example.com/mcp'
     $env:MCP_OAUTH_AUDIENCE = 'https://mcp.example.com/mcp'
-    docker compose --file '{{ project_root }}\docker-compose.yaml' config --quiet
+    $env:POSTGRES_PASSWORD = 'compose-validation-only'
+    $env:DATABASE_URL = 'Host=entitysync-db;Database=entitysync;Username=entitysync;Password=compose-validation-only'
+    $env:OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = 'https://logfire-us.pydantic.dev/v1/logs'
+    $env:OTEL_EXPORTER_OTLP_HEADERS = 'Authorization=compose-validation-only'
+    $env:HALO_BASE_URL = 'https://halo.example.com'
+    $env:HALO_CLIENT_ID = 'compose-validation-only'
+    $env:HALO_CLIENT_SECRET = 'compose-validation-only'
+    $env:NETSUITE_ACCOUNT_ID = 'compose-validation-only'
+    $env:NETSUITE_CONSUMER_KEY = 'compose-validation-only'
+    $env:NETSUITE_CONSUMER_SECRET = 'compose-validation-only'
+    $env:NETSUITE_TOKEN_ID = 'compose-validation-only'
+    $env:NETSUITE_TOKEN_SECRET = 'compose-validation-only'
+    docker compose --file '{{ project_root }}/docker-compose.yaml' config --quiet
