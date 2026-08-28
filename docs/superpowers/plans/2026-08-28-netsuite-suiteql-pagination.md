@@ -30,7 +30,7 @@
 
 - [ ] **Step 1: Add a failing multi-page customer regression**
 
-Create an xUnit test with a scripted `HttpMessageHandler`. Return 1,000 customer rows with `hasMore: true`, followed by one row with `hasMore: false`, then empty address responses. Call:
+Create an xUnit test with a scripted loopback `WebApplication`. Return 1,000 nonnumeric customer IDs with `hasMore: true`, followed by one row with `hasMore: false`. Nonnumeric IDs intentionally bypass unrelated address enrichment. Call:
 
 ```csharp
 var entities = await adapter.GetEntitiesAsync(new EntityQuery
@@ -41,12 +41,15 @@ var entities = await adapter.GetEntitiesAsync(new EntityQuery
 }, default);
 
 Assert.Equal(1001, entities.Count);
-Assert.Equal(Enumerable.Range(1, 1001).Select(value => value.ToString()), entities.Select(entity => entity.Id));
-Assert.Equal("?limit=1000&offset=0", handler.Requests[0].RequestUri!.Query);
-Assert.Equal("?limit=1&offset=1000", handler.Requests[1].RequestUri!.Query);
+Assert.Equal("customer-1", entities[0].Id);
+Assert.Equal("customer-1000", entities[999].Id);
+Assert.Equal("customer-1001", entities[1000].Id);
+Assert.Equal(1001, entities.Select(entity => entity.Id).Distinct().Count());
+Assert.Equal("?limit=1000&offset=0", server.Requests[0].Uri.Query);
+Assert.Equal("?limit=1&offset=1000", server.Requests[1].Uri.Query);
 ```
 
-The handler must capture each URI/body and return fresh `HttpResponseMessage` instances. Add an internal adapter constructor accepting `HttpMessageHandler`; route it through `VendorHttpClientFactory.Create(..., minimumRequestInterval: TimeSpan.Zero)` so tests retain production response bounds without a 500 ms delay.
+The server must capture each URI/body and dequeue complete NetSuite-shaped JSON responses. This exercises the public adapter through the production `HttpClient` and hardened transport; no production-only test seam is added.
 
 - [ ] **Step 2: Add failing metadata-validation regressions**
 
