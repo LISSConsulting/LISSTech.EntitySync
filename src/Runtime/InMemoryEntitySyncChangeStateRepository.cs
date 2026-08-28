@@ -18,7 +18,8 @@ public sealed class InMemoryEntitySyncChangeStateRepository : IEntitySyncChangeS
         foreach (var sourceEntityId in sourceEntityIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (states.TryGetValue(ChangeStateKey.Create(route, sourceEntityId), out var state))
+            var sourceEntityKey = EntitySyncChangeStatePersistence.NormalizeSourceKey(sourceEntityId);
+            if (states.TryGetValue(ChangeStateKey.Create(route, sourceEntityKey), out var state))
                 result[state.SourceEntityId] = Snapshot(state);
         }
 
@@ -28,9 +29,10 @@ public sealed class InMemoryEntitySyncChangeStateRepository : IEntitySyncChangeS
     public Task UpsertAsync(EntitySyncChangeState state, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var snapshot = Snapshot(state);
+        var validated = EntitySyncChangeStatePersistence.ValidateState(state);
+        var snapshot = Snapshot(validated.State);
         states.AddOrUpdate(
-            ChangeStateKey.Create(state.Route, state.SourceEntityId),
+            ChangeStateKey.Create(validated.State.Route, validated.SourceEntityKey),
             static (_, replacement) => replacement,
             static (_, _, replacement) => replacement,
             snapshot);
@@ -51,7 +53,7 @@ public sealed class InMemoryEntitySyncChangeStateRepository : IEntitySyncChangeS
         string TargetEntityType,
         string SourceEntityKey)
     {
-        public static ChangeStateKey Create(EntitySyncChangeStateRoute route, string sourceEntityId) =>
+        public static ChangeStateKey Create(EntitySyncChangeStateRoute route, string sourceEntityKey) =>
             new(
                 route.TenantId,
                 route.Scope,
@@ -61,6 +63,46 @@ public sealed class InMemoryEntitySyncChangeStateRepository : IEntitySyncChangeS
                 route.TargetVendor,
                 route.TargetConnectionId,
                 route.TargetEntityType,
-                sourceEntityId.ToLowerInvariant());
+                sourceEntityKey);
     }
 }
+
+internal static class EntitySyncChangeStatePersistence
+{
+    private const int MaximumStateTextLength = 512;
+
+    public static ValidatedEntitySyncChangeState ValidateState(EntitySyncChangeState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(state.Route);
+        var sourceEntityId = Require(state.SourceEntityId, nameof(state.SourceEntityId));
+        var normalizedState = state with
+        {
+            SourceEntityId = sourceEntityId,
+            SourceName = Require(state.SourceName, nameof(state.SourceName)),
+            TargetEntityId = Require(state.TargetEntityId, nameof(state.TargetEntityId))
+        };
+        return new ValidatedEntitySyncChangeState(
+            normalizedState,
+            NormalizeValidatedSourceId(sourceEntityId));
+    }
+
+    public static string NormalizeSourceKey(string sourceEntityId) =>
+        NormalizeValidatedSourceId(Require(sourceEntityId, nameof(sourceEntityId)));
+
+    private static string NormalizeValidatedSourceId(string sourceEntityId) =>
+        sourceEntityId.ToLowerInvariant();
+
+    private static string Require(string value, string name)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"{name} is required.", name);
+        var trimmed = value.Trim();
+        if (trimmed.Length > MaximumStateTextLength)
+            throw new ArgumentException($"{name} cannot exceed {MaximumStateTextLength} characters.", name);
+        return trimmed;
+    }
+}
+
+internal readonly record struct ValidatedEntitySyncChangeState(
+    EntitySyncChangeState State,
+    string SourceEntityKey);

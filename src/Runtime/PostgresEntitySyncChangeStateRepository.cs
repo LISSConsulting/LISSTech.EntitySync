@@ -18,6 +18,26 @@ public sealed class PostgresEntitySyncChangeStateRepository : IEntitySyncChangeS
         AND target_entity_type = @target_entity_type
         """;
 
+    private const string UpsertSql = """
+        INSERT INTO entitysync.entity_change_state (
+            tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type,
+            target_vendor, target_connection_id, target_entity_type, source_entity_key,
+            source_entity_id, source_name, target_entity_id, hash_version, payload_hash, applied_at)
+        VALUES (
+            @tenant_id, @route_scope, @source_vendor, @source_connection_id, @source_entity_type,
+            @target_vendor, @target_connection_id, @target_entity_type, @source_entity_key,
+            @source_entity_id, @source_name, @target_entity_id, @hash_version, @payload_hash, @applied_at)
+        ON CONFLICT (
+            tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type,
+            target_vendor, target_connection_id, target_entity_type, source_entity_key)
+        DO UPDATE SET
+            source_name = EXCLUDED.source_name,
+            target_entity_id = EXCLUDED.target_entity_id,
+            hash_version = EXCLUDED.hash_version,
+            payload_hash = EXCLUDED.payload_hash,
+            applied_at = EXCLUDED.applied_at
+        """;
+
     private readonly NpgsqlDataSource dataSource;
     private readonly SemaphoreSlim initializationGate = new(1, 1);
     private volatile bool initialized;
@@ -33,16 +53,16 @@ public sealed class PostgresEntitySyncChangeStateRepository : IEntitySyncChangeS
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        if (sourceEntityIds.Count == 0)
-            return new Dictionary<string, EntitySyncChangeState>(StringComparer.OrdinalIgnoreCase);
-
         var sourceKeys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var sourceEntityId in sourceEntityIds)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            sourceKeys.Add(sourceEntityId.ToLowerInvariant());
+            sourceKeys.Add(EntitySyncChangeStatePersistence.NormalizeSourceKey(sourceEntityId));
         }
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        if (sourceKeys.Count == 0)
+            return new Dictionary<string, EntitySyncChangeState>(StringComparer.OrdinalIgnoreCase);
 
         const string sql = """
             SELECT source_entity_id, source_name, target_entity_id, hash_version, payload_hash, applied_at
@@ -73,33 +93,24 @@ public sealed class PostgresEntitySyncChangeStateRepository : IEntitySyncChangeS
     public async Task UpsertAsync(EntitySyncChangeState state, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        await using var command = CreateUpsertCommand(state);
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        const string sql = """
-            INSERT INTO entitysync.entity_change_state (
-                tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type,
-                target_vendor, target_connection_id, target_entity_type, source_entity_key,
-                source_entity_id, source_name, target_entity_id, hash_version, payload_hash, applied_at)
-            VALUES (
-                @tenant_id, @route_scope, @source_vendor, @source_connection_id, @source_entity_type,
-                @target_vendor, @target_connection_id, @target_entity_type, lower(@source_entity_id),
-                @source_entity_id, @source_name, @target_entity_id, @hash_version, @payload_hash, @applied_at)
-            ON CONFLICT (tenant_id, route_scope, source_entity_key)
-            DO UPDATE SET
-                source_name = EXCLUDED.source_name,
-                target_entity_id = EXCLUDED.target_entity_id,
-                hash_version = EXCLUDED.hash_version,
-                payload_hash = EXCLUDED.payload_hash,
-                applied_at = EXCLUDED.applied_at
-            """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddRoute(command, state.Route);
-        command.Parameters.AddWithValue("source_entity_id", state.SourceEntityId);
-        command.Parameters.AddWithValue("source_name", state.SourceName);
-        command.Parameters.AddWithValue("target_entity_id", state.TargetEntityId);
-        command.Parameters.AddWithValue("hash_version", state.HashVersion);
-        command.Parameters.AddWithValue("payload_hash", state.PayloadHash);
-        command.Parameters.AddWithValue("applied_at", state.AppliedAt);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private NpgsqlCommand CreateUpsertCommand(EntitySyncChangeState state)
+    {
+        var validated = EntitySyncChangeStatePersistence.ValidateState(state);
+        var command = dataSource.CreateCommand(UpsertSql);
+        AddRoute(command, validated.State.Route);
+        command.Parameters.AddWithValue("source_entity_key", validated.SourceEntityKey);
+        command.Parameters.AddWithValue("source_entity_id", validated.State.SourceEntityId);
+        command.Parameters.AddWithValue("source_name", validated.State.SourceName);
+        command.Parameters.AddWithValue("target_entity_id", validated.State.TargetEntityId);
+        command.Parameters.AddWithValue("hash_version", validated.State.HashVersion);
+        command.Parameters.AddWithValue("payload_hash", validated.State.PayloadHash);
+        command.Parameters.AddWithValue("applied_at", validated.State.AppliedAt);
+        return command;
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)

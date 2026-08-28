@@ -1,5 +1,8 @@
+using System.Reflection;
+using System.Text.RegularExpressions;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Runtime;
+using Npgsql;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -8,6 +11,10 @@ public sealed class EntitySyncChangeStateRepositoryTests
 {
     private const string ScopeA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string ScopeB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    private const string CompleteRouteKey =
+        "tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type, " +
+        "target_vendor, target_connection_id, target_entity_type, source_entity_key";
+
 
     [Fact]
     public async Task ChangeStateUpsertReplacesOnlyTheSameRouteAndSource()
@@ -96,6 +103,157 @@ public sealed class EntitySyncChangeStateRepositoryTests
         var result = await repository.GetBySourceIdsAsync(route, ["42"], default);
         Assert.Empty(result);
     }
+
+    [Fact]
+    public async Task ChangeStateRouteIdentityIncludesTenantAndBothVendorConnectionTypeTriples()
+    {
+        var repository = new InMemoryEntitySyncChangeStateRepository();
+        var route = Route(ScopeA);
+        var variants = new[]
+        {
+            route with { TenantId = "tenant-b" },
+            route with { SourceVendor = "N-central" },
+            route with { SourceConnectionId = "source-connection-b" },
+            route with { SourceEntityType = "Contact" },
+            route with { TargetVendor = "N-central" },
+            route with { TargetConnectionId = "target-connection-b" },
+            route with { TargetEntityType = "Site" }
+        };
+        await repository.UpsertAsync(State(route, "42", "target-base", ScopeA), default);
+        for (var index = 0; index < variants.Length; index++)
+            await repository.UpsertAsync(State(variants[index], "42", $"target-route-{index}", ScopeA), default);
+
+        var baseResult = await repository.GetBySourceIdsAsync(route, ["42"], default);
+        Assert.Equal("target-base", Assert.Single(baseResult).Value.TargetEntityId);
+        for (var index = 0; index < variants.Length; index++)
+        {
+            var variantResult = await repository.GetBySourceIdsAsync(variants[index], ["42"], default);
+            Assert.Equal($"target-route-{index}", Assert.Single(variantResult).Value.TargetEntityId);
+        }
+    }
+
+    [Fact]
+    public void ChangeStateMigrationUsesBoundedStateColumnsAndCompleteRoutePrimaryKey()
+    {
+        var migration = CollapseWhitespace(ReadChangeStateMigration());
+
+        Assert.Contains("source_entity_key varchar(512) NOT NULL", migration);
+        Assert.Contains("source_entity_id varchar(512) NOT NULL", migration);
+        Assert.Contains("source_name varchar(512) NOT NULL", migration);
+        Assert.Contains("target_entity_id varchar(512) NOT NULL", migration);
+        Assert.Contains($"PRIMARY KEY ({CompleteRouteKey})", migration);
+    }
+
+    [Fact]
+    public async Task PostgresUpsertBindsInvariantSourceKeyAndUsesCompleteConflictTarget()
+    {
+        await using var dataSource = CreateUnconnectedDataSource();
+        var repository = new PostgresEntitySyncChangeStateRepository(dataSource);
+        await using var command = CreatePostgresUpsertCommand(
+            repository,
+            State(Route(ScopeA), "ENTITY-I", "target-1", ScopeA));
+
+        Assert.Equal("entity-i", command.Parameters["source_entity_key"].Value);
+        Assert.Contains($"ON CONFLICT ({CompleteRouteKey})", CollapseWhitespace(command.CommandText));
+        Assert.False(command.CommandText.Contains("lower(", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ChangeStateRepositoriesAcceptExactStateFieldLimits()
+    {
+        var sourceEntityId = new string('S', 512);
+        var sourceName = new string('N', 512);
+        var targetEntityId = new string('T', 512);
+        var state = State(Route(ScopeA), "source", "target", ScopeA) with
+        {
+            SourceEntityId = sourceEntityId,
+            SourceName = sourceName,
+            TargetEntityId = targetEntityId
+        };
+        var inMemory = new InMemoryEntitySyncChangeStateRepository();
+
+        await inMemory.UpsertAsync(state, default);
+        var result = await inMemory.GetBySourceIdsAsync(state.Route, [sourceEntityId], default);
+
+        var stored = Assert.Single(result).Value;
+        Assert.Equal(sourceName, stored.SourceName);
+        Assert.Equal(targetEntityId, stored.TargetEntityId);
+        await using var dataSource = CreateUnconnectedDataSource();
+        var postgres = new PostgresEntitySyncChangeStateRepository(dataSource);
+        await using var command = CreatePostgresUpsertCommand(postgres, state);
+        Assert.Equal(sourceEntityId.ToLowerInvariant(), command.Parameters["source_entity_key"].Value);
+        Assert.Equal(sourceEntityId, command.Parameters["source_entity_id"].Value);
+        Assert.Equal(sourceName, command.Parameters["source_name"].Value);
+        Assert.Equal(targetEntityId, command.Parameters["target_entity_id"].Value);
+    }
+
+    [Fact]
+    public async Task ChangeStateRepositoriesRejectStateFieldsOverTheirLimitsBeforeMutation()
+    {
+        var valid = State(Route(ScopeA), "source", "target", ScopeA);
+        var invalidStates = new[]
+        {
+            valid with { SourceEntityId = new string('S', 513) },
+            valid with { SourceName = new string('N', 513) },
+            valid with { TargetEntityId = new string('T', 513) }
+        };
+        var inMemory = new InMemoryEntitySyncChangeStateRepository();
+        await using var dataSource = CreateUnconnectedDataSource();
+        var postgres = new PostgresEntitySyncChangeStateRepository(dataSource);
+
+        foreach (var invalidState in invalidStates)
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => inMemory.UpsertAsync(invalidState, default));
+            await Assert.ThrowsAsync<ArgumentException>(() => postgres.UpsertAsync(invalidState, default));
+        }
+
+        var stored = await inMemory.GetBySourceIdsAsync(valid.Route, ["source"], default);
+        Assert.Empty(stored);
+    }
+
+    [Fact]
+    public async Task ChangeStateRepositoriesRejectSourceKeysOverTheSourceIdLimit()
+    {
+        var sourceEntityId = new string('S', 513);
+        var route = Route(ScopeA);
+        var inMemory = new InMemoryEntitySyncChangeStateRepository();
+        await using var dataSource = CreateUnconnectedDataSource();
+        var postgres = new PostgresEntitySyncChangeStateRepository(dataSource);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            inMemory.GetBySourceIdsAsync(route, [sourceEntityId], default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            postgres.GetBySourceIdsAsync(route, [sourceEntityId], default));
+    }
+
+    private static NpgsqlDataSource CreateUnconnectedDataSource() =>
+        NpgsqlDataSource.Create("Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+
+    private static NpgsqlCommand CreatePostgresUpsertCommand(
+        PostgresEntitySyncChangeStateRepository repository,
+        EntitySyncChangeState state)
+    {
+        var method = typeof(PostgresEntitySyncChangeStateRepository).GetMethod(
+            "CreateUpsertCommand",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsAssignableFrom<NpgsqlCommand>(method.Invoke(repository, [state]));
+    }
+
+    private static string ReadChangeStateMigration()
+    {
+        var assembly = typeof(PostgresEntitySyncChangeStateRepository).Assembly;
+        var resourceName = Assert.Single(
+            assembly.GetManifestResourceNames(),
+            name => name.EndsWith(".002_entity_change_state.sql", StringComparison.Ordinal));
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        Assert.NotNull(stream);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
+    private static string CollapseWhitespace(string value) =>
+        Regex.Replace(value, @"\s+", " ").Trim().Replace("( ", "(").Replace(" )", ")");
 
     private static EntitySyncChangeStateRoute Route(string scope) =>
         EntitySyncChangeStateRoute.Create(
