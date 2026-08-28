@@ -12,6 +12,7 @@ using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
 
+[Collection(nameof(NetSuitePaginationCollection))]
 public sealed class NetSuitePaginationTests
 {
     [Fact]
@@ -156,3 +157,6 @@ public sealed class NetSuitePaginationTests
 
     public sealed record CapturedRequest(Uri Uri, string Body);
 }
+
+[CollectionDefinition(nameof(NetSuitePaginationCollection), DisableParallelization = true)]
+public sealed class NetSuitePaginationCollection;
