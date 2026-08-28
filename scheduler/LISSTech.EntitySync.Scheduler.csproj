@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+    <PackageReference Include="Npgsql" Version="8.0.9" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\Core\LISSTech.EntitySync.Core.csproj" />
+    <ProjectReference Include="..\src\Ports\LISSTech.EntitySync.Ports.csproj" />
+    <ProjectReference Include="..\src\Application\LISSTech.EntitySync.Application.csproj" />
+    <ProjectReference Include="..\src\Hosting\LISSTech.EntitySync.Hosting.csproj" />
+  </ItemGroup>
+</Project>
