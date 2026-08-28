@@ -2,14 +2,15 @@
 
 ## Status
 
-Complete. Every Task 3 brief checkbox is implemented. Work is limited to the planner, its direct test constructor callsites, the focused planning tests, and this requested report. No persistence, migration, apply, scheduler, hosting, or deployment implementation was changed.
+Complete. Every Task 3 brief checkbox and fix-round MCP activation requirement is implemented. Work is limited to the planner, the MCP composition registration needed to activate it, direct test constructor callsites, focused tests, and this requested report. No persistence, migration, apply, scheduler, shared-hosting, or deployment implementation was changed.
 
 ## Changed Files
 
 - `src/Application/EntitySyncPlanner.cs`
 - `Tests/LISSTech.EntitySync.Platform.Tests/ChangedOnlyPlanningTests.cs`
-- `Tests/LISSTech.EntitySync.Platform.Tests/PlatformTests.cs` (constructor helper only)
+- `Tests/LISSTech.EntitySync.Platform.Tests/PlatformTests.cs` (constructor helper and MCP composition activation regression)
 - `Tests/LISSTech.EntitySync.Platform.Tests/EntitySyncApplyCoordinatorTests.cs` (constructor helper only)
+- `mcp/Program.cs` (temporary MCP composition registration)
 - `.superpowers/sdd/2026-08-27-coolify-changed-only-sync-sidecar/task-3-report.md` (this report)
 
 ## Design Decisions
@@ -98,3 +99,73 @@ No broad validation, formatter, linter, or project-wide test suite was run.
 ## Concerns
 
 No identified correctness concern. The workstation only has the .NET 10 runtime while the test target is `net8.0`, so focused test execution required the repository plan's prescribed `DOTNET_ROLL_FORWARD=Major`. The initial implementation commit was made unsigned because the configured 1Password SSH signer failed to fill its buffer in this non-interactive worker session; repository contents and test evidence are unaffected.
+
+## Fix Round 1: MCP Production Activation
+
+### Finding and Decision
+
+The planner's new `IEntitySyncChangeStateRepository` dependency was present in direct tests but absent from the production MCP service collection, so resolving `EntitySyncPlanner` or `EntitySyncService` from the MCP container failed. The existing MCP composition root now delegates its registrations to an internal composition helper and maps `IEntitySyncChangeStateRepository` to `PostgresEntitySyncChangeStateRepository`. The helper accepts the already-created `NpgsqlDataSource`, preserving production data-source ownership and allowing a focused activation test without a live database connection. Task 5 can move this temporary composition as one unit into shared Hosting.
+
+### TDD Red
+
+Command:
+
+```bash
+DOTNET_ROLL_FORWARD=Major dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --no-restore --filter FullyQualifiedName~McpCompositionActivatesPlannerWithPostgresChangeStateRepository
+```
+
+Exit code: `1`
+
+Expected missing-composition failure:
+
+```text
+/Users/mwisniowski/Projects/LISSConsulting/LISSTech.EntitySync/.worktrees/coolify-changed-only-sync-sidecar/Tests/LISSTech.EntitySync.Platform.Tests/PlatformTests.cs(70,9): error CS0103: The name 'EntitySyncPlatformComposition' does not exist in the current context [/Users/mwisniowski/Projects/LISSConsulting/LISSTech.EntitySync/.worktrees/coolify-changed-only-sync-sidecar/Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj]
+```
+
+### Exact Focused Verification
+
+Composition/activation command:
+
+```bash
+DOTNET_ROLL_FORWARD=Major dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --no-restore --filter FullyQualifiedName~McpCompositionActivatesPlannerWithPostgresChangeStateRepository
+```
+
+Exit code: `0`
+
+Exact output:
+
+```text
+Passed!  - Failed:     0, Passed:     1, Skipped:     0, Total:     1, Duration: 34 ms - LISSTech.EntitySync.Platform.Tests.dll (net8.0)
+```
+
+Changed-only planning regression command:
+
+```bash
+DOTNET_ROLL_FORWARD=Major dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --no-restore --filter FullyQualifiedName~ChangedOnlyPlanningTests
+```
+
+Exit code: `0`
+
+Exact output:
+
+```text
+Passed!  - Failed:     0, Passed:    17, Skipped:     0, Total:    17, Duration: 89 ms - LISSTech.EntitySync.Platform.Tests.dll (net8.0)
+```
+
+No broad tests were run.
+
+### Fix-Round Self-Review
+
+- Confirmed the same MCP composition path used by both stdio and HTTP registers the PostgreSQL change-state repository before planner/service activation.
+- Confirmed the activation regression resolves the repository contract, planner, and service from the production registration set; removing the registration makes service activation fail.
+- Confirmed the focused test constructs an unconnected data source and performs no database or migration I/O.
+- Confirmed existing connection, plan, exclusion, matcher, mapper, coordinator, and exclusion-service lifetimes and implementations remain unchanged.
+- Confirmed the changed-only planning suite remains green after the composition fix.
+
+### Fix-Round Commit
+
+- `948aaa26c3d8b2108eb7ac781aa1297e7f85e40c` — `fix: register change state repository`
+
+### Fix-Round Concern
+
+No identified correctness concern. The composition helper is intentionally temporary in `mcp/Program.cs`; Task 5 is expected to move the same registration set into shared Hosting.
