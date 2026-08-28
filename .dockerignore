@@ -2,8 +2,10 @@
 .github
 .codegraph
 .opencode
+.superpowers
 .ralph
 .specify
+.worktrees
 Build
 Module
 Release

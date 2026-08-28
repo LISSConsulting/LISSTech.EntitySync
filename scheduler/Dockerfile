@@ -12,15 +12,12 @@ COPY src/Adapters/LISSTech.EntitySync.Adapters.csproj src/Adapters/
 COPY src/Runtime/LISSTech.EntitySync.Runtime.csproj src/Runtime/
 COPY src/Hosting/LISSTech.EntitySync.Hosting.csproj src/Hosting/
 COPY db/migrations/ db/migrations/
-COPY mcp/LISSTech.EntitySync.Mcp.csproj mcp/
-RUN dotnet restore mcp/LISSTech.EntitySync.Mcp.csproj
+COPY scheduler/LISSTech.EntitySync.Scheduler.csproj scheduler/
+RUN dotnet restore scheduler/LISSTech.EntitySync.Scheduler.csproj
 
 COPY src/ src/
-COPY mcp/ mcp/
-# The container deliberately publishes framework-dependent, multi-file output:
-# the pinned aspnet runtime image supplies the shared framework. Local release
-# builds remain self-contained single files as configured by the project.
-RUN dotnet publish mcp/LISSTech.EntitySync.Mcp.csproj \
+COPY scheduler/ scheduler/
+RUN dotnet publish scheduler/LISSTech.EntitySync.Scheduler.csproj \
     --configuration Release \
     --no-restore \
     --output /app/publish \
@@ -33,11 +30,10 @@ WORKDIR /app
 COPY --from=build /app/publish .
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
-    DOTNET_EnableDiagnostics=0 \
-    MCP_TRANSPORT=http
+    DOTNET_EnableDiagnostics=0
 
 EXPOSE 8080
 
 USER $APP_UID
 
-ENTRYPOINT ["dotnet", "lisstech-entitysync-mcp.dll"]
+ENTRYPOINT ["dotnet", "lisstech-entitysync-scheduler.dll"]

@@ -7,6 +7,7 @@ using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;

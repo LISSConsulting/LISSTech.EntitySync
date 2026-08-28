@@ -8,7 +8,9 @@ public sealed class EntitySyncPlanner(
     IEntityConnectionRepository connections,
     IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
-    IEntityMatcher matcher)
+    IEntityMatcher matcher,
+    IEntityMapper mapper,
+    IEntitySyncChangeStateRepository changeStates)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
 
@@ -105,6 +107,24 @@ public sealed class EntitySyncPlanner(
             ReviewScore = request.ReviewScore
         };
 
+        var changedOnly = request.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly;
+        IReadOnlyDictionary<string, EntitySyncChangeState>? storedChangeStates = null;
+        if (changedOnly)
+        {
+            var route = EntitySyncChangeStateRoute.Create(
+                request.TenantId,
+                request.ChangeStateScope!,
+                sourceVendor,
+                sourceConnection.Id,
+                sourceType,
+                targetVendor,
+                targetConnection.Id,
+                targetType);
+            storedChangeStates = await changeStates
+                .GetBySourceIdsAsync(route, sources.Select(source => source.Id).ToArray(), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var plan = new EntitySyncPlan
         {
             TenantId = request.TenantId.Trim(),
@@ -119,7 +139,9 @@ public sealed class EntitySyncPlanner(
                 SourceConnectionGeneration = sourceConnection.Generation,
                 TargetConnectionId = targetConnection.Id,
                 TargetConnectionGeneration = targetConnection.Generation,
-                MatchOptions = options
+                MatchOptions = options,
+                UpdatePolicy = request.UpdatePolicy,
+                ChangeStateScope = request.ChangeStateScope
             }
         };
 
@@ -139,7 +161,9 @@ public sealed class EntitySyncPlanner(
                 continue;
             }
 
-            plan.Items.Add(CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks));
+            var item = CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks);
+            if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
+            plan.Items.Add(item);
         }
         plans.Add(plan);
         return plan;
@@ -208,6 +232,36 @@ public sealed class EntitySyncPlanner(
         return item;
     }
 
+    private void ApplyChangedOnlyPolicy(
+        EntitySyncPlanItem item,
+        MatchOptions options,
+        IReadOnlyDictionary<string, EntitySyncChangeState> storedChangeStates)
+    {
+
+        if (!item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase)
+            || !item.MatchType.Equals("Linked", StringComparison.OrdinalIgnoreCase)
+            || item.Target is null)
+        {
+            item.Action = "None";
+            item.Reasons.Add("Recurring changed-only sync permits persistently linked updates only.");
+            return;
+        }
+
+        var write = mapper.MapUpdate(item.Source, item.Target, options);
+        var hash = EntityWriteRequestDigest.Compute(write);
+        item.DesiredStateHash = hash;
+        item.DesiredStateHashVersion = EntityWriteRequestDigest.SchemaVersion;
+        if (storedChangeStates.TryGetValue(item.Source.Id, out var state)
+            && state.TargetEntityId.Equals(item.Target.Id, StringComparison.OrdinalIgnoreCase)
+            && state.HashVersion == EntityWriteRequestDigest.SchemaVersion
+            && state.PayloadHash.Equals(hash, StringComparison.Ordinal))
+        {
+            item.Action = "None";
+            item.MatchType = "Unchanged";
+            item.Reasons.Add("Mapped update payload matches the last successful synchronization.");
+        }
+    }
+
     private static void Validate(CreateEntitySyncPlanRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.TenantId)) throw new ArgumentException("Tenant ID is required.", nameof(request));
@@ -226,7 +280,16 @@ public sealed class EntitySyncPlanner(
             if (string.IsNullOrWhiteSpace(request.SourceEntityId)) throw new ArgumentException("Source entity ID cannot be blank when supplied.", nameof(request));
             if (request.SourceEntityId.Trim().Length > 512) throw new ArgumentException("Source entity ID cannot exceed 512 characters.", nameof(request));
         }
+        if (request.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly
+            && !IsValidChangeStateScope(request.ChangeStateScope))
+            throw new ArgumentException(
+                "Change-state scope must be a lowercase 64-character hexadecimal value.",
+                nameof(request));
     }
+
+    private static bool IsValidChangeStateScope(string? scope) =>
+        scope is { Length: 64 }
+        && scope.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static void ValidateWorkflow(string sourceVendor, string targetVendor)
     {

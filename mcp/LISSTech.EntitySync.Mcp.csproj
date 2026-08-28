@@ -21,10 +21,6 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.29" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
-    <PackageReference Include="Npgsql" Version="8.0.9" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,10 +35,8 @@
     <ProjectReference Include="..\src\Core\LISSTech.EntitySync.Core.csproj" />
     <ProjectReference Include="..\src\Ports\LISSTech.EntitySync.Ports.csproj" />
     <ProjectReference Include="..\src\Application\LISSTech.EntitySync.Application.csproj" />
-    <ProjectReference Include="..\src\Adapters\LISSTech.EntitySync.Adapters.csproj" />
-    <ProjectReference Include="..\src\Mapping\LISSTech.EntitySync.Mapping.csproj" />
-    <ProjectReference Include="..\src\Matching\LISSTech.EntitySync.Matching.csproj" />
     <ProjectReference Include="..\src\Runtime\LISSTech.EntitySync.Runtime.csproj" />
+    <ProjectReference Include="..\src\Hosting\LISSTech.EntitySync.Hosting.csproj" />
   </ItemGroup>
 
 </Project>

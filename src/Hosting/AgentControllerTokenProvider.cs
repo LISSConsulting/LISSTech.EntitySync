@@ -2,7 +2,7 @@ using LISSTech.EntitySync.Adapters;
 using System.Text;
 using System.Text.Json;
 
-namespace LISSTech.EntitySync.Mcp;
+namespace LISSTech.EntitySync.Hosting;
 
 /// <summary>
 /// Server-managed AgentController service-principal token provider used by the MCP

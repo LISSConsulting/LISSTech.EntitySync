@@ -378,13 +378,25 @@ public sealed class EntitySyncApplyCoordinatorTests
 
     private static EntitySyncService CreateService(
         IEntityConnectionRepository connections,
-        IEntitySyncPlanRepository plans) =>
-        new(
-            new EntitySyncPlanner(connections, plans, new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher()),
+        IEntitySyncPlanRepository plans)
+    {
+        var mapper = new DefaultEntityMapper();
+        var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        return new EntitySyncService(
+            new EntitySyncPlanner(
+                connections,
+                plans,
+                new InMemoryEntityExclusionRepository(),
+                new WeightedEntityMatcher(),
+                mapper,
+                changeStates),
             connections,
             plans,
             new InMemoryEntityExclusionRepository(),
-            new DefaultEntityMapper());
+            mapper,
+            changeStates,
+            TimeProvider.System);
+    }
 
     private static async Task<EntitySyncApplySnapshot> WaitForTerminalAsync(
         EntitySyncApplyCoordinator coordinator,

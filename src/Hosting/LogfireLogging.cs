@@ -7,9 +7,9 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-namespace LISSTech.EntitySync.Mcp;
+namespace LISSTech.EntitySync.Hosting;
 
-internal sealed class LogfireLoggingSettings
+public sealed class LogfireLoggingSettings
 {
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -32,14 +32,14 @@ internal sealed class LogfireLoggingSettings
         ServiceVersion = serviceVersion;
     }
 
-    internal Uri LogsEndpoint { get; }
-    internal Uri TracesEndpoint { get; }
-    internal string AuthorizationHeader { get; }
-    internal string ServiceName { get; }
-    internal string DeploymentEnvironment { get; }
-    internal string ServiceVersion { get; }
+    public Uri LogsEndpoint { get; }
+    public Uri TracesEndpoint { get; }
+    public string AuthorizationHeader { get; }
+    public string ServiceName { get; }
+    public string DeploymentEnvironment { get; }
+    public string ServiceVersion { get; }
 
-    internal static LogfireLoggingSettings FromCurrentEnvironment(
+    public static LogfireLoggingSettings FromCurrentEnvironment(
         string deploymentEnvironment,
         string serviceVersion) => FromEnvironment(
         new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -52,7 +52,7 @@ internal sealed class LogfireLoggingSettings
         deploymentEnvironment,
         serviceVersion);
 
-    internal static LogfireLoggingSettings FromEnvironment(
+    public static LogfireLoggingSettings FromEnvironment(
         IReadOnlyDictionary<string, string?> environment,
         string deploymentEnvironment,
         string serviceVersion)
@@ -112,9 +112,9 @@ internal sealed class LogfireLoggingSettings
     }
 }
 
-internal static class LogfireLogging
+public static class LogfireLogging
 {
-    internal static void Configure(
+    public static void Configure(
         IServiceCollection services,
         ILoggingBuilder logging,
         LogfireLoggingSettings settings)
@@ -150,7 +150,7 @@ internal static class LogfireLogging
             });
     }
 
-    internal static TracerProviderBuilder AddAspNetCoreRequestTracing(TracerProviderBuilder tracing)
+    public static TracerProviderBuilder AddAspNetCoreRequestTracing(TracerProviderBuilder tracing)
     {
         ArgumentNullException.ThrowIfNull(tracing);
         return tracing.AddAspNetCoreInstrumentation(options =>
