@@ -1032,6 +1032,7 @@ public sealed class PlatformTests
     {
         plans ??= new InMemoryEntitySyncPlanRepository();
         exclusions ??= new InMemoryEntityExclusionRepository();
+        var changeStates = new InMemoryEntitySyncChangeStateRepository();
         var mapper = new DefaultEntityMapper();
         return new EntitySyncService(
             new EntitySyncPlanner(
@@ -1040,11 +1041,13 @@ public sealed class PlatformTests
                 exclusions,
                 new WeightedEntityMatcher(),
                 mapper,
-                new InMemoryEntitySyncChangeStateRepository()),
+                changeStates),
             connections,
             plans,
             exclusions,
-            mapper);
+            mapper,
+            changeStates,
+            TimeProvider.System);
     }
 
     private static CreateEntitySyncPlanRequest Request(

@@ -381,6 +381,7 @@ public sealed class EntitySyncApplyCoordinatorTests
         IEntitySyncPlanRepository plans)
     {
         var mapper = new DefaultEntityMapper();
+        var changeStates = new InMemoryEntitySyncChangeStateRepository();
         return new EntitySyncService(
             new EntitySyncPlanner(
                 connections,
@@ -388,11 +389,13 @@ public sealed class EntitySyncApplyCoordinatorTests
                 new InMemoryEntityExclusionRepository(),
                 new WeightedEntityMatcher(),
                 mapper,
-                new InMemoryEntitySyncChangeStateRepository()),
+                changeStates),
             connections,
             plans,
             new InMemoryEntityExclusionRepository(),
-            mapper);
+            mapper,
+            changeStates,
+            TimeProvider.System);
     }
 
     private static async Task<EntitySyncApplySnapshot> WaitForTerminalAsync(

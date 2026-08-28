@@ -8,7 +8,9 @@ public sealed class EntitySyncService(
     IEntityConnectionRepository connections,
     IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
-    IEntityMapper mapper)
+    IEntityMapper mapper,
+    IEntitySyncChangeStateRepository changeStates,
+    TimeProvider? timeProvider = null)
 {
     public Task<EntitySyncPlan> CreatePlanAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken) => planner.CreateAsync(request, cancellationToken);
 
@@ -53,6 +55,7 @@ public sealed class EntitySyncService(
         Action<EntitySyncApplyProgress>? reportProgress = null)
     {
         var plan = plans.Get(tenantId, planId);
+        var changeStateRoute = PrepareChangeStateRoute(plan);
         using var sourceLease = connections.Acquire(tenantId, plan.SourceVendor, plan.Execution.SourceConnectionId, plan.Execution.SourceConnectionGeneration);
         using var targetLease = connections.Acquire(tenantId, plan.TargetVendor, plan.Execution.TargetConnectionId, plan.Execution.TargetConnectionGeneration);
         if (plan.Items.Any(item => item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)))
@@ -150,11 +153,66 @@ public sealed class EntitySyncService(
                         var request = mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions);
                         write = await target.Adapter.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
-                    results.Add(new EntitySyncApplyItemResult(item.Action, item.Source.Name, item.Target?.Name, write.Success, false, write.Id, write.Success ? write.Message ?? "Target write succeeded." : "Target write failed."));
                     if (write.Success)
-                        succeeded++;
+                    {
+                        var checkpointSucceeded = true;
+                        if (changeStateRoute is not null)
+                        {
+                            try
+                            {
+                                await changeStates.UpsertAsync(new EntitySyncChangeState(
+                                    changeStateRoute,
+                                    item.Source.Id,
+                                    item.Source.Name,
+                                    item.Target!.Id,
+                                    item.DesiredStateHashVersion!.Value,
+                                    item.DesiredStateHash!,
+                                    (timeProvider ?? TimeProvider.System).GetUtcNow()), cancellationToken).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw;
+                            }
+                            catch
+                            {
+                                results.Add(new EntitySyncApplyItemResult(
+                                    item.Action,
+                                    item.Source.Name,
+                                    item.Target?.Name,
+                                    false,
+                                    false,
+                                    write.Id,
+                                    "Target write succeeded, but change-state checkpoint failed."));
+                                failed++;
+                                checkpointSucceeded = false;
+                            }
+                        }
+
+                        if (checkpointSucceeded)
+                        {
+                            results.Add(new EntitySyncApplyItemResult(
+                                item.Action,
+                                item.Source.Name,
+                                item.Target?.Name,
+                                true,
+                                false,
+                                write.Id,
+                                write.Message ?? "Target write succeeded."));
+                            succeeded++;
+                        }
+                    }
                     else
+                    {
+                        results.Add(new EntitySyncApplyItemResult(
+                            item.Action,
+                            item.Source.Name,
+                            item.Target?.Name,
+                            false,
+                            false,
+                            write.Id,
+                            "Target write failed."));
                         failed++;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -180,4 +238,40 @@ public sealed class EntitySyncService(
 
         return new EntitySyncApplyResult(plan.Id, apply, failed == 0, succeeded, failed, skipped, results);
     }
+    private static EntitySyncChangeStateRoute? PrepareChangeStateRoute(EntitySyncPlan plan)
+    {
+        if (plan.Execution.UpdatePolicy != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)
+            return null;
+
+        var route = EntitySyncChangeStateRoute.Create(
+            plan.TenantId,
+            plan.Execution.ChangeStateScope ?? string.Empty,
+            plan.SourceVendor,
+            plan.Execution.SourceConnectionId,
+            plan.SourceEntityType,
+            plan.TargetVendor,
+            plan.Execution.TargetConnectionId,
+            plan.TargetEntityType);
+
+        foreach (var item in plan.Items)
+        {
+            if (item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)
+                || item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Changed-only plans may apply update actions only.");
+            if (item.Target is null
+                || string.IsNullOrWhiteSpace(item.Target.Id)
+                || item.DesiredStateHashVersion != EntityWriteRequestDigest.SchemaVersion
+                || !IsLowercaseSha256(item.DesiredStateHash))
+                throw new InvalidOperationException("Changed-only update checkpoint metadata is missing or invalid.");
+        }
+
+        return route;
+    }
+
+    private static bool IsLowercaseSha256(string? value) =>
+        value is { Length: 64 }
+        && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
 }

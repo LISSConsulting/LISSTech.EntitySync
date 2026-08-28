@@ -267,7 +267,9 @@ public sealed class ChangedOnlyPlanningTests
                 connections,
                 plans,
                 exclusions,
-                Mapper);
+                Mapper,
+                ChangeStates,
+                TimeProvider.System);
             Route = EntitySyncChangeStateRoute.Create(
                 "tenant",
                 Scope,
