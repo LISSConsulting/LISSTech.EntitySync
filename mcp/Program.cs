@@ -171,17 +171,7 @@ static void AddEntitySyncPlatform(IServiceCollection services)
     if (string.IsNullOrWhiteSpace(connectionString))
         throw new InvalidOperationException("DATABASE_URL is required. EntitySync refuses to run without durable exclusion storage.");
 
-    var dataSource = NpgsqlDataSource.Create(connectionString);
-    services.AddSingleton(dataSource);
-    services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
-    services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
-    services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
-    services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
-    services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
-    services.AddSingleton<EntitySyncPlanner>();
-    services.AddSingleton<EntitySyncService>();
-    services.AddSingleton<EntitySyncApplyCoordinator>();
-    services.AddSingleton<EntityExclusionService>();
+    EntitySyncPlatformComposition.Add(services, NpgsqlDataSource.Create(connectionString));
 }
 
 static string RequireHttpsUri(string variableName)
@@ -310,5 +300,26 @@ internal sealed class OAuthChallengeHints
                 $"{variableName} contains characters that cannot be emitted safely in an OAuth challenge.");
 
         return trimmed;
+    }
+}
+
+namespace LISSTech.EntitySync.Mcp
+{
+    internal static class EntitySyncPlatformComposition
+    {
+        public static void Add(IServiceCollection services, NpgsqlDataSource dataSource)
+        {
+            services.AddSingleton(dataSource);
+            services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
+            services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
+            services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
+            services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
+            services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
+            services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
+            services.AddSingleton<EntitySyncPlanner>();
+            services.AddSingleton<EntitySyncService>();
+            services.AddSingleton<EntitySyncApplyCoordinator>();
+            services.AddSingleton<EntityExclusionService>();
+        }
     }
 }

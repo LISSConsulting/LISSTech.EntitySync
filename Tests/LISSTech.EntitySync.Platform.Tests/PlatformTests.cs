@@ -11,6 +11,8 @@ using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -57,6 +59,21 @@ public sealed class PlatformTests
         Assert.False(oldAdapter.Disposed);
         lease.Dispose();
         Assert.True(oldAdapter.Disposed);
+    }
+
+    [Fact]
+    public void McpCompositionActivatesPlannerWithPostgresChangeStateRepository()
+    {
+        var services = new ServiceCollection();
+        using var dataSource = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+        EntitySyncPlatformComposition.Add(services, dataSource);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<PostgresEntitySyncChangeStateRepository>(
+            provider.GetRequiredService<IEntitySyncChangeStateRepository>());
+        Assert.NotNull(provider.GetRequiredService<EntitySyncPlanner>());
+        Assert.NotNull(provider.GetRequiredService<EntitySyncService>());
     }
 
     [Fact]
