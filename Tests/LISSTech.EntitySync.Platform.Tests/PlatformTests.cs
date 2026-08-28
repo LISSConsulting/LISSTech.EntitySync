@@ -1015,12 +1015,19 @@ public sealed class PlatformTests
     {
         plans ??= new InMemoryEntitySyncPlanRepository();
         exclusions ??= new InMemoryEntityExclusionRepository();
+        var mapper = new DefaultEntityMapper();
         return new EntitySyncService(
-            new EntitySyncPlanner(connections, plans, exclusions, new WeightedEntityMatcher()),
+            new EntitySyncPlanner(
+                connections,
+                plans,
+                exclusions,
+                new WeightedEntityMatcher(),
+                mapper,
+                new InMemoryEntitySyncChangeStateRepository()),
             connections,
             plans,
             exclusions,
-            new DefaultEntityMapper());
+            mapper);
     }
 
     private static CreateEntitySyncPlanRequest Request(
