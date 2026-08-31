@@ -73,7 +73,9 @@ public static class EntitySyncHostingServiceCollectionExtensions
         var configured = Environment.GetEnvironmentVariable(
             DataProtectionKeyPathEnvironmentVariable);
         if (!string.IsNullOrWhiteSpace(configured))
-            return Path.GetFullPath(configured.Trim());
+            return ValidateDataProtectionKeyPath(
+                Path.GetFullPath(configured.Trim()),
+                allowCreate: hostMode == EntitySyncHostMode.LocalStdio);
         if (hostMode != EntitySyncHostMode.LocalStdio)
         {
             throw new InvalidOperationException(
@@ -85,6 +87,73 @@ public static class EntitySyncHostingServiceCollectionExtensions
         if (string.IsNullOrWhiteSpace(localData))
             throw new InvalidOperationException(
                 "A user-local application data directory is required for local stdio data protection.");
-        return Path.Combine(localData, "LISSTech", "EntitySync", "DataProtection-Keys");
+        return ValidateDataProtectionKeyPath(
+            Path.Combine(localData, "LISSTech", "EntitySync", "DataProtection-Keys"),
+            allowCreate: true);
+    }
+
+    private static string ValidateDataProtectionKeyPath(
+        string path,
+        bool allowCreate)
+    {
+        if (!Directory.Exists(path))
+        {
+            if (!allowCreate)
+                throw new InvalidOperationException(
+                    $"Data-protection key directory '{path}' must already exist and be mounted.");
+            Directory.CreateDirectory(path);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(
+                    path,
+                    UnixFileMode.UserRead
+                    | UnixFileMode.UserWrite
+                    | UnixFileMode.UserExecute);
+            }
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var mode = File.GetUnixFileMode(path);
+            var required = UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.UserExecute;
+            var forbidden = UnixFileMode.GroupRead
+                | UnixFileMode.GroupWrite
+                | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead
+                | UnixFileMode.OtherWrite
+                | UnixFileMode.OtherExecute;
+            if ((mode & required) != required || (mode & forbidden) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Data-protection key directory '{path}' must be owner-only mode 0700.");
+            }
+        }
+
+        var probePath = Path.Combine(
+            path, $".entitysync-write-probe-{Guid.NewGuid():N}");
+        try
+        {
+            using var probe = new FileStream(
+                probePath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: 1,
+                FileOptions.DeleteOnClose);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"Data-protection key directory '{path}' is not usable by this process.",
+                exception);
+        }
+        finally
+        {
+            if (File.Exists(probePath)) File.Delete(probePath);
+        }
+        return path;
     }
 }

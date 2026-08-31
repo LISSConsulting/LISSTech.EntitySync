@@ -17,8 +17,8 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await InsertPlanAsync(connection, transaction, manifest.Plan, cancellationToken).ConfigureAwait(false);
-        foreach (var item in manifest.Items)
-            await InsertItemAsync(connection, transaction, item, cancellationToken).ConfigureAwait(false);
+        await CopyItemsAsync(connection, manifest.Items, cancellationToken)
+            .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -112,6 +112,16 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.status = 'Draft' AND plan.expires_at > @now
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions source_connection
+                    WHERE source_connection.tenant_id = @tenant_id
+                      AND source_connection.connection_id = plan.source_connection_id
+                      AND source_connection.generation = plan.source_connection_generation)
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions target_connection
+                    WHERE target_connection.tenant_id = @tenant_id
+                      AND target_connection.connection_id = plan.target_connection_id
+                      AND target_connection.generation = plan.target_connection_generation)
             RETURNING inspected_at, inspected_by
             """;
         await using var command = dataSource.CreateCommand(sql);
@@ -227,6 +237,16 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.status = 'Draft' AND plan.expires_at > @approved_at
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions source_connection
+                    WHERE source_connection.tenant_id = @tenant_id
+                      AND source_connection.connection_id = plan.source_connection_id
+                      AND source_connection.generation = plan.source_connection_generation)
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions target_connection
+                    WHERE target_connection.tenant_id = @tenant_id
+                      AND target_connection.connection_id = plan.target_connection_id
+                      AND target_connection.generation = plan.target_connection_generation)
               AND inspection.tenant_id = plan.tenant_id AND inspection.inspection_id = @inspection_id
               AND inspection.plan_id = plan.plan_id
               AND inspection.plan_digest_sha256 = plan.plan_digest_sha256
@@ -287,6 +307,16 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.status = 'Approved' AND plan.expires_at > @now
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions source_connection
+                    WHERE source_connection.tenant_id = @tenant_id
+                      AND source_connection.connection_id = plan.source_connection_id
+                      AND source_connection.generation = plan.source_connection_generation)
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions target_connection
+                    WHERE target_connection.tenant_id = @tenant_id
+                      AND target_connection.connection_id = plan.target_connection_id
+                      AND target_connection.generation = plan.target_connection_generation)
               AND approval.tenant_id = plan.tenant_id AND approval.approval_id = @approval_id
               AND approval.inspection_id = @inspection_id AND approval.plan_id = plan.plan_id
               AND approval.plan_digest_sha256 = plan.plan_digest_sha256
@@ -364,25 +394,84 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             throw new InvalidOperationException("The exact policy version and digest were not available for the plan.");
     }
 
-    private static async Task InsertItemAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        EntitySyncDurablePlanItem item, CancellationToken cancellationToken)
+    private static async Task CopyItemsAsync(
+        NpgsqlConnection connection,
+        IReadOnlyList<EntitySyncDurablePlanItem> items,
+        CancellationToken cancellationToken)
     {
-        const string sql = """
-            INSERT INTO entitysync.sync_plan_items (
+        const string copySql = """
+            COPY entitysync.sync_plan_items (
                 tenant_id, plan_id, item_id, item_ordinal, source_vendor,
-                source_connection_id, source_entity_type, source_entity_key, source_entity_id,
-                target_vendor, target_connection_id, target_entity_type, target_entity_id, action,
-                match_score, match_type, match_reasons, field_diffs, redacted_before,
+                source_connection_id, source_entity_type, source_entity_key,
+                source_entity_id, target_vendor, target_connection_id,
+                target_entity_type, target_entity_id, action, match_score,
+                match_type, match_reasons, field_diffs, redacted_before,
                 redacted_desired, before_payload_sha256, desired_payload_sha256)
-            VALUES (@tenant_id, @plan_id, @item_id, @item_ordinal, @source_vendor,
-                @source_connection_id, @source_entity_type, @source_entity_key, @source_entity_id,
-                @target_vendor, @target_connection_id, @target_entity_type, @target_entity_id, @action,
-                @match_score, @match_type, @match_reasons, @field_diffs, @redacted_before,
-                @redacted_desired, @before_payload_sha256, @desired_payload_sha256)
+            FROM STDIN (FORMAT BINARY)
             """;
-        await using var command = new NpgsqlCommand(sql, connection, transaction);
-        AddPlanItem(command, item);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await using var importer = await connection
+            .BeginBinaryImportAsync(copySql, cancellationToken).ConfigureAwait(false);
+        foreach (var item in items)
+        {
+            await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(item.TenantId, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.PlanId, NpgsqlDbType.Uuid, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.ItemId, NpgsqlDbType.Uuid, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.ItemOrdinal, NpgsqlDbType.Integer, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.SourceVendor, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.SourceConnectionId, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.SourceEntityType, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.SourceEntityKey, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.SourceEntityId, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.TargetVendor, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.TargetConnectionId, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.TargetEntityType, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            if (item.TargetEntityId is null)
+                await importer.WriteNullAsync(cancellationToken).ConfigureAwait(false);
+            else
+                await importer.WriteAsync(item.TargetEntityId, NpgsqlDbType.Text, cancellationToken)
+                    .ConfigureAwait(false);
+            await importer.WriteAsync(item.Action, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.MatchEvidence.Score, NpgsqlDbType.Integer, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.MatchEvidence.MatchType, NpgsqlDbType.Text, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(
+                    PostgresControlPersistence.SerializeStringList(item.MatchEvidence.Reasons),
+                    NpgsqlDbType.Jsonb, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(
+                    PostgresControlPersistence.SerializeFieldDiffs(item.FieldDiffs),
+                    NpgsqlDbType.Jsonb, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.RedactedBefore.Json, NpgsqlDbType.Jsonb, cancellationToken)
+                .ConfigureAwait(false);
+            await importer.WriteAsync(item.RedactedDesired.Json, NpgsqlDbType.Jsonb, cancellationToken)
+                .ConfigureAwait(false);
+            if (item.BeforePayloadSha256 is null)
+                await importer.WriteNullAsync(cancellationToken).ConfigureAwait(false);
+            else
+                await importer.WriteAsync(
+                        item.BeforePayloadSha256.Value, NpgsqlDbType.Char, cancellationToken)
+                    .ConfigureAwait(false);
+            await importer.WriteAsync(
+                    item.DesiredPayloadSha256.Value, NpgsqlDbType.Char, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static void AddPlanKey(NpgsqlCommand command, string tenantId, Guid planId)
@@ -412,33 +501,6 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         PostgresControlPersistence.Add(command, "expires_at", NpgsqlDbType.TimestampTz, plan.ExpiresAt);
     }
 
-    private static void AddPlanItem(NpgsqlCommand command, EntitySyncDurablePlanItem item)
-    {
-        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, item.TenantId);
-        PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, item.PlanId);
-        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, item.ItemId);
-        PostgresControlPersistence.Add(command, "item_ordinal", NpgsqlDbType.Integer, item.ItemOrdinal);
-        PostgresControlPersistence.Add(command, "source_vendor", NpgsqlDbType.Text, item.SourceVendor);
-        PostgresControlPersistence.Add(command, "source_connection_id", NpgsqlDbType.Text, item.SourceConnectionId);
-        PostgresControlPersistence.Add(command, "source_entity_type", NpgsqlDbType.Text, item.SourceEntityType);
-        PostgresControlPersistence.Add(command, "source_entity_key", NpgsqlDbType.Text, item.SourceEntityKey);
-        PostgresControlPersistence.Add(command, "source_entity_id", NpgsqlDbType.Text, item.SourceEntityId);
-        PostgresControlPersistence.Add(command, "target_vendor", NpgsqlDbType.Text, item.TargetVendor);
-        PostgresControlPersistence.Add(command, "target_connection_id", NpgsqlDbType.Text, item.TargetConnectionId);
-        PostgresControlPersistence.Add(command, "target_entity_type", NpgsqlDbType.Text, item.TargetEntityType);
-        PostgresControlPersistence.Add(command, "target_entity_id", NpgsqlDbType.Text, item.TargetEntityId);
-        PostgresControlPersistence.Add(command, "action", NpgsqlDbType.Text, item.Action);
-        PostgresControlPersistence.Add(command, "match_score", NpgsqlDbType.Integer, item.MatchEvidence.Score);
-        PostgresControlPersistence.Add(command, "match_type", NpgsqlDbType.Text, item.MatchEvidence.MatchType);
-        PostgresControlPersistence.Add(command, "match_reasons", NpgsqlDbType.Jsonb,
-            PostgresControlPersistence.SerializeStringList(item.MatchEvidence.Reasons));
-        PostgresControlPersistence.Add(command, "field_diffs", NpgsqlDbType.Jsonb,
-            PostgresControlPersistence.SerializeFieldDiffs(item.FieldDiffs));
-        PostgresControlPersistence.Add(command, "redacted_before", NpgsqlDbType.Jsonb, item.RedactedBefore.Json);
-        PostgresControlPersistence.Add(command, "redacted_desired", NpgsqlDbType.Jsonb, item.RedactedDesired.Json);
-        PostgresControlPersistence.Add(command, "before_payload_sha256", NpgsqlDbType.Char, item.BeforePayloadSha256?.Value);
-        PostgresControlPersistence.Add(command, "desired_payload_sha256", NpgsqlDbType.Char, item.DesiredPayloadSha256.Value);
-    }
 
     private static void AddInspectionIdentity(NpgsqlCommand command, string tenantId, Guid inspectionId,
         Guid planId, EntitySyncSha256 planDigestSha256, string sourceConnectionId,

@@ -142,45 +142,124 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         EntitySyncOperation replacement,
         CancellationToken cancellationToken)
     {
-        PostgresControlPersistence.RequireTenant(tenantId, replacement.TenantId, nameof(replacement));
+        PostgresControlPersistence.RequireTenant(
+            tenantId, replacement.TenantId, nameof(replacement));
         if (operationId != replacement.OperationId)
-            throw new ArgumentException("Replacement operation ID must match.", nameof(replacement));
-        const string sql = """
-            UPDATE entitysync.sync_operations
-            SET plan_id = @plan_id,
-                approval_id = @approval_id,
-                route_scope = @route_scope,
-                source_connection_generation = @source_connection_generation,
-                target_connection_generation = @target_connection_generation,
-                mode = @mode,
-                status = @status,
-                idempotency_key = @idempotency_key,
+            throw new ArgumentException(
+                "Replacement operation ID must match.", nameof(replacement));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        const string currentSql = """
+            SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.approval_id, operation.route_scope,
+                   plan.source_connection_id, operation.source_connection_generation,
+                   plan.target_connection_id, operation.target_connection_generation,
+                   operation.mode, operation.status, operation.idempotency_key,
+                   operation.lease_owner, operation.lease_expires_at, operation.attempt,
+                   operation.created_at, operation.queued_at, operation.started_at,
+                   operation.completed_at
+            FROM entitysync.sync_operations operation
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = operation.tenant_id
+             AND plan.plan_id = operation.plan_id
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.operation_id = @operation_id
+            FOR UPDATE OF operation
+            """;
+        EntitySyncOperation? current;
+        await using (var read = new NpgsqlCommand(currentSql, connection, transaction))
+        {
+            AddOperationKey(read, tenantId, operationId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            current = await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                ? ReadOperation(reader)
+                : null;
+        }
+        if (current is null || current.Status != expectedStatus)
+            return false;
+        ValidateImmutableIdentity(current, replacement);
+        ValidateTransition(current, replacement);
+
+        const string updateSql = """
+            UPDATE entitysync.sync_operations operation
+            SET status = @status,
                 lease_owner = @lease_owner,
                 lease_expires_at = @lease_expires_at,
-                attempt = @attempt,
-                created_at = @created_at,
-                queued_at = @queued_at,
+                attempt = @replacement_attempt,
                 started_at = @started_at,
                 completed_at = @completed_at
-            WHERE tenant_id = @tenant_id
-              AND operation_id = @operation_id
-              AND status = @expected_status
-              AND attempt = @attempt
-              AND (@lease_owner IS NULL OR lease_owner = @lease_owner)
-              AND (@expected_status NOT IN ('Leased','Running') OR lease_expires_at > now())
-              AND EXISTS (
-                    SELECT 1 FROM entitysync.sync_plans plan
-                    WHERE plan.tenant_id = @tenant_id
-                      AND plan.plan_id = @plan_id
-                      AND plan.source_connection_id = @source_connection_id
-                      AND plan.source_connection_generation = @source_connection_generation
-                      AND plan.target_connection_id = @target_connection_id
-                      AND plan.target_connection_generation = @target_connection_generation)
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.operation_id = @operation_id
+              AND operation.status = @expected_status
+              AND operation.attempt = @current_attempt
+              AND (@expected_status NOT IN ('Leased','Running')
+                   OR operation.lease_expires_at > now())
+              AND (
+                    @status = 'Cancelled'
+                    OR @status NOT IN ('Succeeded','Partial','Failed')
+                    OR (
+                        @status = 'Succeeded'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome NOT IN ('Succeeded','Skipped')))
+                    OR (
+                        @status = 'Partial'
+                        AND EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome = 'Failed')
+                        AND EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome IN ('Succeeded','Skipped'))
+                        AND NOT EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome IN ('Pending','Unknown')))
+                    OR (
+                        @status = 'Failed'
+                        AND EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome = 'Failed')
+                        AND NOT EXISTS (
+                            SELECT 1 FROM entitysync.sync_operation_items item
+                            WHERE item.tenant_id = @tenant_id
+                              AND item.operation_id = @operation_id
+                              AND item.outcome IN ('Pending','Unknown'))))
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddOperation(command, replacement);
-        PostgresControlPersistence.Add(command, "expected_status", NpgsqlDbType.Text, expectedStatus.ToString());
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        await using var update = new NpgsqlCommand(updateSql, connection, transaction);
+        AddOperationKey(update, tenantId, operationId);
+        PostgresControlPersistence.Add(
+            update, "expected_status", NpgsqlDbType.Text, expectedStatus.ToString());
+        PostgresControlPersistence.Add(
+            update, "status", NpgsqlDbType.Text, replacement.Status.ToString());
+        PostgresControlPersistence.Add(
+            update, "lease_owner", NpgsqlDbType.Text, replacement.LeaseOwner);
+        PostgresControlPersistence.Add(
+            update, "lease_expires_at", NpgsqlDbType.TimestampTz,
+            replacement.LeaseExpiresAt);
+        PostgresControlPersistence.Add(
+            update, "current_attempt", NpgsqlDbType.Integer, current.Attempt);
+        PostgresControlPersistence.Add(
+            update, "replacement_attempt", NpgsqlDbType.Integer, replacement.Attempt);
+        PostgresControlPersistence.Add(
+            update, "started_at", NpgsqlDbType.TimestampTz, replacement.StartedAt);
+        PostgresControlPersistence.Add(
+            update, "completed_at", NpgsqlDbType.TimestampTz, replacement.CompletedAt);
+        var replaced = await update.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false) == 1;
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return replaced;
     }
 
     public async Task<bool> TryReplaceItemAsync(
@@ -198,6 +277,10 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.RequireTenant(tenantId, replacement.TenantId, nameof(replacement));
         if (replacement.OperationId != operationId || replacement.PlanId != planId || replacement.ItemId != itemId)
             throw new ArgumentException("Replacement item identity must match.", nameof(replacement));
+        if (expectedOutcome != EntitySyncItemOutcome.Pending
+            || replacement.Outcome == EntitySyncItemOutcome.Pending)
+            throw new InvalidOperationException(
+                "Operation items allow only one Pending-to-terminal transition.");
         const string sql = """
             UPDATE entitysync.sync_operation_items item
             SET after_payload_sha256 = @after_payload_sha256,
@@ -374,13 +457,97 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(items);
         PostgresControlPersistence.RequireTenant(tenantId, operation.TenantId, nameof(operation));
+        if (operation.Status != EntitySyncOperationStatus.Queued
+            || operation.Attempt != 0
+            || operation.LeaseOwner is not null
+            || operation.LeaseExpiresAt is not null
+            || operation.StartedAt is not null
+            || operation.CompletedAt is not null)
+            throw new ArgumentException(
+                "New operation graphs must contain a fresh queued attempt-zero operation.",
+                nameof(operation));
         foreach (var item in items)
         {
             if (item is null || item.TenantId != tenantId || item.OperationId != operation.OperationId || item.PlanId != operation.PlanId)
                 throw new ArgumentException("Every operation item must belong to the operation tenant, operation, and plan.", nameof(items));
+            if (item.Outcome != EntitySyncItemOutcome.Pending
+                || item.AfterPayloadSha256 is not null
+                || item.VendorRequestId is not null
+                || item.ErrorCode is not null
+                || item.ErrorMessage is not null
+                || item.StartedAt is not null
+                || item.CompletedAt is not null)
+                throw new ArgumentException(
+                    "New operation graphs must contain only fresh pending items.",
+                    nameof(items));
         }
         if (items.Select(item => item.ItemId).Distinct().Count() != items.Count)
             throw new ArgumentException("Operation item IDs must be unique.", nameof(items));
+    }
+
+    private static void ValidateImmutableIdentity(
+        EntitySyncOperation current,
+        EntitySyncOperation replacement)
+    {
+        if (replacement.TenantId != current.TenantId
+            || replacement.OperationId != current.OperationId
+            || replacement.PlanId != current.PlanId
+            || replacement.ApprovalId != current.ApprovalId
+            || replacement.RouteScope != current.RouteScope
+            || replacement.SourceConnectionId != current.SourceConnectionId
+            || replacement.SourceConnectionGeneration != current.SourceConnectionGeneration
+            || replacement.TargetConnectionId != current.TargetConnectionId
+            || replacement.TargetConnectionGeneration != current.TargetConnectionGeneration
+            || replacement.Mode != current.Mode
+            || replacement.IdempotencyKey != current.IdempotencyKey
+            || replacement.CreatedAt != current.CreatedAt
+            || replacement.QueuedAt != current.QueuedAt)
+            throw new ArgumentException(
+                "Operation replacement cannot change immutable identity fields.",
+                nameof(replacement));
+    }
+
+    private static void ValidateTransition(
+        EntitySyncOperation current,
+        EntitySyncOperation replacement)
+    {
+        var legal = (current.Status, replacement.Status) switch
+        {
+            (EntitySyncOperationStatus.Queued, EntitySyncOperationStatus.Leased) =>
+                replacement.Attempt == checked(current.Attempt + 1)
+                && replacement.LeaseOwner is not null
+                && replacement.LeaseExpiresAt is not null
+                && replacement.StartedAt is null
+                && replacement.CompletedAt is null,
+            (EntitySyncOperationStatus.Leased, EntitySyncOperationStatus.Running) =>
+                replacement.Attempt == current.Attempt
+                && replacement.LeaseOwner == current.LeaseOwner
+                && replacement.LeaseExpiresAt == current.LeaseExpiresAt
+                && replacement.StartedAt is not null
+                && replacement.CompletedAt is null,
+            (EntitySyncOperationStatus.Running,
+                EntitySyncOperationStatus.Succeeded
+                    or EntitySyncOperationStatus.Partial
+                    or EntitySyncOperationStatus.Failed) =>
+                replacement.Attempt == current.Attempt
+                && replacement.LeaseOwner is null
+                && replacement.LeaseExpiresAt is null
+                && replacement.StartedAt == current.StartedAt
+                && replacement.CompletedAt is not null,
+            (EntitySyncOperationStatus.Queued
+                    or EntitySyncOperationStatus.Leased
+                    or EntitySyncOperationStatus.Running,
+                EntitySyncOperationStatus.Cancelled) =>
+                replacement.Attempt == current.Attempt
+                && replacement.LeaseOwner is null
+                && replacement.LeaseExpiresAt is null
+                && replacement.StartedAt == current.StartedAt
+                && replacement.CompletedAt is not null,
+            _ => false
+        };
+        if (!legal)
+            throw new InvalidOperationException(
+                $"Illegal operation transition from {current.Status} to {replacement.Status}.");
     }
 
     private static void AddOperationKey(NpgsqlCommand command, string tenantId, Guid operationId)

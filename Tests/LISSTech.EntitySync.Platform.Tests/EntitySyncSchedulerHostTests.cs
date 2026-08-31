@@ -200,6 +200,17 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
         string? overriddenVariableName = null,
         string? overriddenValue = null)
     {
+        var keyPath = Values["ENTITYSYNC_DATA_PROTECTION_KEY_PATH"]
+            ?? throw new InvalidOperationException("Scheduler test key path is required.");
+        Directory.CreateDirectory(keyPath);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                keyPath,
+                UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.UserExecute);
+        }
         var variableNames = overriddenVariableName is null
             ? Values.Keys
             : Values.Keys.Append(overriddenVariableName);

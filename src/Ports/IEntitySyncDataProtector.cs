@@ -29,13 +29,33 @@ public sealed record IdempotentResponse
     public EntitySyncJsonValue ResponseBody { get; }
 }
 
+public sealed record IdempotencyExecutionContext
+{
+    public IdempotencyExecutionContext(string tenantId, string key, string token)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(key))
+            throw new ArgumentException("Idempotency key is required.", nameof(key));
+        if (string.IsNullOrWhiteSpace(token))
+            throw new ArgumentException("Idempotency token is required.", nameof(token));
+        TenantId = tenantId.Trim();
+        Key = key.Trim();
+        Token = token.Trim();
+    }
+
+    public string TenantId { get; }
+    public string Key { get; }
+    public string Token { get; }
+}
+
 public interface IIdempotentCommandExecutor
 {
     Task<IdempotentResponse> ExecuteAsync(
         string tenantId,
         string key,
         string requestHash,
-        Func<CancellationToken, Task<IdempotentResponse>> command,
+        Func<IdempotencyExecutionContext, CancellationToken, Task<IdempotentResponse>> command,
         CancellationToken cancellationToken);
 }
 

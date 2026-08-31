@@ -43,6 +43,17 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     public void Hosting_resolves_control_repositories_with_external_data_protection()
     {
         using var keyRing = new TemporaryDirectory();
+        using var insecureKeyRing = new TemporaryDirectory();
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                keyRing.Path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(
+                insecureKeyRing.Path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
         var original = Environment.GetEnvironmentVariable("ENTITYSYNC_DATA_PROTECTION_KEY_PATH");
         try
         {
@@ -52,6 +63,15 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 new ServiceCollection().AddEntitySyncPlatform(
                     "Host=127.0.0.1;Database=unused;Username=unused;Password=unused",
                     EntitySyncHostMode.Http));
+            if (!OperatingSystem.IsWindows())
+            {
+                Environment.SetEnvironmentVariable(
+                    "ENTITYSYNC_DATA_PROTECTION_KEY_PATH", insecureKeyRing.Path);
+                Assert.Throws<InvalidOperationException>(() =>
+                    new ServiceCollection().AddEntitySyncPlatform(
+                        "Host=127.0.0.1;Database=unused;Username=unused;Password=unused",
+                        EntitySyncHostMode.Http));
+            }
             Environment.SetEnvironmentVariable(
                 "ENTITYSYNC_DATA_PROTECTION_KEY_PATH", keyRing.Path);
             var services = new ServiceCollection();
@@ -81,6 +101,20 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 "host-secret",
                 protector.Unprotect(
                     EntitySyncDataProtectionPurpose.ConnectionSecret, ciphertext));
+            if (!OperatingSystem.IsWindows())
+            {
+                var keyFiles = Directory.GetFiles(keyRing.Path, "*.xml");
+                Assert.NotEmpty(keyFiles);
+                foreach (var keyFile in keyFiles)
+                {
+                    var mode = File.GetUnixFileMode(keyFile);
+                    Assert.Equal(
+                        (UnixFileMode)0,
+                        mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite
+                            | UnixFileMode.GroupExecute | UnixFileMode.OtherRead
+                            | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute));
+                }
+            }
         }
         finally
         {
@@ -179,6 +213,23 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await Assert.ThrowsAnyAsync<Exception>(() =>
             repository.InsertAsync(badContext.TenantId, badManifest, default));
         Assert.Null(await repository.GetAsync(badContext.TenantId, badManifest.Plan.PlanId, default));
+    }
+
+    [Fact]
+    public async Task Large_manifest_copy_round_trips_every_item_atomically()
+    {
+        var context = await SeedControlContextAsync("large-manifest");
+        var repository = new PostgresDurableSyncPlanRepository(Database);
+        var manifest = Manifest(context, itemCount: 2_500);
+
+        await repository.InsertAsync(context.TenantId, manifest, default);
+
+        var finalPage = await repository.GetPageAsync(
+            context.TenantId, manifest.Plan.PlanId, 25, 100, default);
+        Assert.Equal(2_500, finalPage.TotalItems);
+        Assert.Equal(100, finalPage.Items.Count);
+        Assert.Equal(2_400, finalPage.Items[0].ItemOrdinal);
+        Assert.Equal(2_499, finalPage.Items[^1].ItemOrdinal);
     }
 
     [Fact]
@@ -289,6 +340,103 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Connection_generation_changes_fence_inspection_approval_and_consumption()
+    {
+        var connections = new PostgresConnectionDefinitionRepository(Database);
+
+        var openContext = await SeedControlContextAsync("generation-open");
+        var openPlans = new PostgresDurableSyncPlanRepository(Database);
+        var openManifest = Manifest(openContext, 1);
+        await openPlans.InsertAsync(openContext.TenantId, openManifest, default);
+        await BumpAsync(openContext, openContext.Source);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => openPlans.OpenInspectionAsync(
+            openContext.TenantId, Guid.NewGuid(), openManifest.Plan.PlanId,
+            openManifest.Plan.PlanDigestSha256, openContext.Source.ConnectionId, 1,
+            openContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            openContext.Now.AddMinutes(1), default));
+
+        var approveContext = await SeedControlContextAsync("generation-approve");
+        var approvePlans = new PostgresDurableSyncPlanRepository(Database);
+        var approveManifest = Manifest(approveContext, 1);
+        await approvePlans.InsertAsync(approveContext.TenantId, approveManifest, default);
+        var approveInspectionId = Guid.NewGuid();
+        var approveNow = approveContext.Now.AddMinutes(1);
+        await approvePlans.OpenInspectionAsync(
+            approveContext.TenantId, approveInspectionId, approveManifest.Plan.PlanId,
+            approveManifest.Plan.PlanDigestSha256, approveContext.Source.ConnectionId, 1,
+            approveContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            approveNow, default);
+        await approvePlans.RecordInspectionRangeAsync(
+            approveContext.TenantId, approveInspectionId, Guid.NewGuid(), 0, 0,
+            approveNow, default);
+        await approvePlans.CompleteInspectionAsync(
+            approveContext.TenantId, approveInspectionId, approveManifest.Plan.PlanId,
+            approveManifest.Plan.PlanDigestSha256, approveContext.Source.ConnectionId, 1,
+            approveContext.Target.ConnectionId, 1, approveNow.AddMinutes(1), default);
+        await BumpAsync(approveContext, approveContext.Source);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            approvePlans.ApproveInspectionAsync(
+                approveContext.TenantId, Guid.NewGuid(), approveInspectionId,
+                approveManifest.Plan.PlanId, approveManifest.Plan.PlanDigestSha256,
+                approveContext.Source.ConnectionId, 1, approveContext.Target.ConnectionId, 1,
+                new EntitySyncActor("approver"), approveNow.AddMinutes(2),
+                approveNow.AddMinutes(10), default));
+        Assert.Equal(EntitySyncDurablePlanStatus.Draft,
+            (await approvePlans.GetAsync(
+                approveContext.TenantId, approveManifest.Plan.PlanId, default))!.Status);
+
+        var consumeContext = await SeedControlContextAsync("generation-consume");
+        var consumePlans = new PostgresDurableSyncPlanRepository(Database);
+        var consumeManifest = Manifest(consumeContext, 1);
+        await consumePlans.InsertAsync(consumeContext.TenantId, consumeManifest, default);
+        var consumeInspectionId = Guid.NewGuid();
+        var consumeNow = consumeContext.Now.AddMinutes(1);
+        await consumePlans.OpenInspectionAsync(
+            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+            consumeManifest.Plan.PlanDigestSha256, consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            consumeNow, default);
+        await consumePlans.RecordInspectionRangeAsync(
+            consumeContext.TenantId, consumeInspectionId, Guid.NewGuid(), 0, 0,
+            consumeNow, default);
+        await consumePlans.CompleteInspectionAsync(
+            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+            consumeManifest.Plan.PlanDigestSha256, consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1, consumeNow.AddMinutes(1), default);
+        var consumeApprovalId = Guid.NewGuid();
+        await consumePlans.ApproveInspectionAsync(
+            consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
+            consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
+            consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1,
+            new EntitySyncActor("approver"), consumeNow.AddMinutes(2),
+            consumeNow.AddMinutes(10), default);
+        await BumpAsync(consumeContext, consumeContext.Target);
+        var apply = EntitySyncOperation.QueueApply(
+            consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
+            consumeApprovalId, "generation-apply", "route-a",
+            consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1,
+            consumeNow.AddMinutes(3));
+        Assert.False(await consumePlans.TryConsumeApprovalAsync(
+            consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
+            consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
+            consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1,
+            apply, OperationItems(apply, consumeManifest.Items, consumeNow.AddDays(1)),
+            consumeNow.AddMinutes(3), default));
+
+        async Task BumpAsync(
+            ControlContext context,
+            EntitySyncConnectionDefinition definition)
+        {
+            var next = definition.NextGeneration(
+                definition.DisplayName, definition.Enabled, definition.PublicConfiguration,
+                definition.SecretCiphertext, new EntitySyncActor("rotator"),
+                context.Now.AddSeconds(1));
+            Assert.True(await connections.TryReplaceAsync(
+                context.TenantId, definition.ConnectionId, 1, next, default));
+        }
+    }
+
+    [Fact]
     public async Task Lease_reclamation_and_item_compare_and_set_fence_stale_workers()
     {
         var context = await SeedControlContextAsync("lease");
@@ -336,6 +484,214 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Operation_graph_and_transitions_enforce_queue_identity_and_terminal_consistency()
+    {
+        var context = await SeedControlContextAsync("operation-transitions");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var now = context.Now.AddMinutes(1);
+        var queued = EntitySyncOperation.QueueDryRun(
+            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, "transition-op",
+            "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now);
+        var items = OperationItems(queued, manifest.Items, now.AddDays(1));
+        var preLeased = queued.Lease("invalid-worker", now.AddMinutes(5));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            operations.InsertAsync(context.TenantId, preLeased, items, default));
+
+        await operations.InsertAsync(context.TenantId, queued, items, default);
+        var illegalTerminal = EntitySyncOperation.Rehydrate(
+            queued.TenantId, queued.OperationId, queued.PlanId, queued.ApprovalId,
+            queued.RouteScope, queued.SourceConnectionId, queued.SourceConnectionGeneration,
+            queued.TargetConnectionId, queued.TargetConnectionGeneration, queued.Mode,
+            EntitySyncOperationStatus.Succeeded, queued.IdempotencyKey, null, null, 0,
+            queued.CreatedAt, queued.QueuedAt, null, now.AddMinutes(1));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => operations.TryReplaceAsync(
+            context.TenantId, queued.OperationId, EntitySyncOperationStatus.Queued,
+            illegalTerminal, default));
+        Assert.Equal(EntitySyncOperationStatus.Queued,
+            (await operations.GetAsync(context.TenantId, queued.OperationId, default))!.Status);
+
+        var leased = await operations.TryLeaseNextAsync(
+            context.TenantId, "transition-worker", now.AddMinutes(1),
+            now.AddMinutes(10), default);
+        Assert.NotNull(leased);
+        var running = leased.Start(now.AddMinutes(2));
+        Assert.True(await operations.TryReplaceAsync(
+            context.TenantId, leased.OperationId, EntitySyncOperationStatus.Leased,
+            running, default));
+        var succeeded = running.Complete(
+            EntitySyncOperationStatus.Succeeded, now.AddMinutes(3));
+        Assert.False(await operations.TryReplaceAsync(
+            context.TenantId, running.OperationId, EntitySyncOperationStatus.Running,
+            succeeded, default));
+
+        var completedItem = CompleteItem(items[0], now.AddMinutes(2), now.AddMinutes(3));
+        Assert.True(await operations.TryReplaceItemAsync(
+
+            context.TenantId, running.OperationId, running.PlanId, items[0].ItemId,
+            running.Attempt, running.LeaseOwner!, now.AddMinutes(3),
+            EntitySyncItemOutcome.Pending, completedItem, default));
+        Assert.True(await operations.TryReplaceAsync(
+            context.TenantId, running.OperationId, EntitySyncOperationStatus.Running,
+            succeeded, default));
+
+        var changedIdentity = EntitySyncOperation.Rehydrate(
+            succeeded.TenantId, succeeded.OperationId, succeeded.PlanId, succeeded.ApprovalId,
+            "changed-route", succeeded.SourceConnectionId,
+            succeeded.SourceConnectionGeneration, succeeded.TargetConnectionId,
+            succeeded.TargetConnectionGeneration, succeeded.Mode, succeeded.Status,
+            succeeded.IdempotencyKey, succeeded.LeaseOwner, succeeded.LeaseExpiresAt,
+            succeeded.Attempt, succeeded.CreatedAt, succeeded.QueuedAt,
+            succeeded.StartedAt, succeeded.CompletedAt);
+        await Assert.ThrowsAsync<ArgumentException>(() => operations.TryReplaceAsync(
+            context.TenantId, succeeded.OperationId, EntitySyncOperationStatus.Succeeded,
+            changedIdentity, default));
+    }
+    [Fact]
+    public async Task Operation_failed_partial_and_cancelled_terminal_paths_match_item_outcomes()
+    {
+        await RunTerminalAsync(
+            "terminal-failed",
+            EntitySyncOperationStatus.Failed,
+            [EntitySyncItemOutcome.Failed]);
+        await RunTerminalAsync(
+            "terminal-partial",
+            EntitySyncOperationStatus.Partial,
+            [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Failed]);
+
+        var cancelContext = await SeedControlContextAsync("terminal-cancelled");
+        var cancelPlans = new PostgresDurableSyncPlanRepository(Database);
+        var cancelOperations = new PostgresSyncOperationRepository(Database);
+        var cancelManifest = Manifest(cancelContext, 1);
+        await cancelPlans.InsertAsync(cancelContext.TenantId, cancelManifest, default);
+        var cancelQueued = EntitySyncOperation.QueueDryRun(
+            cancelContext.TenantId, Guid.NewGuid(), cancelManifest.Plan.PlanId,
+            "cancel-op", "route-a", cancelContext.Source.ConnectionId, 1,
+            cancelContext.Target.ConnectionId, 1, cancelContext.Now);
+        await cancelOperations.InsertAsync(
+            cancelContext.TenantId, cancelQueued,
+            OperationItems(cancelQueued, cancelManifest.Items, cancelContext.Now.AddDays(1)),
+            default);
+        Assert.True(await cancelOperations.TryReplaceAsync(
+            cancelContext.TenantId, cancelQueued.OperationId,
+            EntitySyncOperationStatus.Queued,
+            cancelQueued.Cancel(cancelContext.Now.AddMinutes(1)), default));
+
+        async Task RunTerminalAsync(
+            string suffix,
+            EntitySyncOperationStatus terminalStatus,
+            IReadOnlyList<EntitySyncItemOutcome> outcomes)
+        {
+            var context = await SeedControlContextAsync(suffix);
+            var plans = new PostgresDurableSyncPlanRepository(Database);
+            var operations = new PostgresSyncOperationRepository(Database);
+            var manifest = Manifest(context, outcomes.Count);
+            await plans.InsertAsync(context.TenantId, manifest, default);
+            var queued = EntitySyncOperation.QueueDryRun(
+                context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, $"{suffix}-op",
+                "route-a", context.Source.ConnectionId, 1,
+                context.Target.ConnectionId, 1, context.Now);
+            var items = OperationItems(queued, manifest.Items, context.Now.AddDays(1));
+            await operations.InsertAsync(context.TenantId, queued, items, default);
+            var leased = await operations.TryLeaseNextAsync(
+                context.TenantId, $"{suffix}-worker", context.Now.AddMinutes(1),
+                context.Now.AddMinutes(10), default)
+                ?? throw new InvalidOperationException("Expected operation lease.");
+            var running = leased.Start(context.Now.AddMinutes(2));
+            Assert.True(await operations.TryReplaceAsync(
+                context.TenantId, leased.OperationId, EntitySyncOperationStatus.Leased,
+                running, default));
+            for (var index = 0; index < items.Count; index++)
+            {
+                var replacement = outcomes[index] == EntitySyncItemOutcome.Succeeded
+                    ? CompleteItem(
+                        items[index], context.Now.AddMinutes(2),
+                        context.Now.AddMinutes(3))
+                    : EntitySyncOperationItem.Rehydrate(
+                        items[index].TenantId, items[index].OperationId,
+                        items[index].PlanId, items[index].ItemId,
+                        items[index].SourceVendor, items[index].SourceConnectionId,
+                        items[index].SourceEntityType, items[index].SourceEntityKey,
+                        items[index].SourceEntityId, items[index].TargetVendor,
+                        items[index].TargetConnectionId, items[index].TargetEntityType,
+                        items[index].TargetEntityId, items[index].Action,
+                        items[index].RedactedBefore, items[index].RedactedDesired,
+                        items[index].BeforePayloadSha256,
+                        items[index].DesiredPayloadSha256, null,
+                        items[index].SnapshotsExpireAt, "failed-request",
+                        EntitySyncItemOutcome.Failed, "vendor_error", "failed",
+                        context.Now.AddMinutes(2), context.Now.AddMinutes(3));
+                Assert.True(await operations.TryReplaceItemAsync(
+                    context.TenantId, running.OperationId, running.PlanId,
+                    items[index].ItemId, running.Attempt, running.LeaseOwner!,
+                    context.Now.AddMinutes(3), EntitySyncItemOutcome.Pending,
+                    replacement, default));
+            }
+            Assert.True(await operations.TryReplaceAsync(
+                context.TenantId, running.OperationId,
+                EntitySyncOperationStatus.Running,
+                running.Complete(terminalStatus, context.Now.AddMinutes(4)), default));
+        }
+    }
+
+    [Fact]
+    public async Task Snapshot_and_direct_idempotency_repository_methods_are_bounded_and_tenant_scoped()
+    {
+        var context = await SeedControlContextAsync("direct-repositories");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var operation = EntitySyncOperation.QueueDryRun(
+            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, "snapshot-op",
+            "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+            context.Now);
+        var expiredAt = context.Now.AddMinutes(-1);
+        var items = OperationItems(operation, manifest.Items, expiredAt);
+        await operations.InsertAsync(context.TenantId, operation, items, default);
+        var snapshot = new EntitySyncOperationItemSnapshot(
+            context.TenantId, operation.OperationId, items[0].ItemId,
+            "encrypted-before", null, expiredAt);
+        await operations.InsertSnapshotAsync(context.TenantId, snapshot, default);
+        Assert.Equal(snapshot, await operations.GetSnapshotAsync(
+            context.TenantId, operation.OperationId, items[0].ItemId, default));
+        Assert.Null(await operations.GetSnapshotAsync(
+            "other-tenant", operation.OperationId, items[0].ItemId, default));
+        Assert.Equal(1, await operations.DeleteExpiredSnapshotsAsync(
+            context.TenantId, DateTimeOffset.UtcNow, 1, default));
+
+        var idempotency = new PostgresIdempotencyRepository(Database, TimeProvider.System);
+        var createdAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var receipt = new EntitySyncIdempotencyReceipt(
+            context.TenantId, "direct-key", new EntitySyncSha256(new string('1', 64)),
+            null, null, createdAt, null, createdAt.AddHours(1));
+        Assert.True(await idempotency.TryInsertAsync(context.TenantId, receipt, default));
+        Assert.False(await idempotency.TryInsertAsync(context.TenantId, receipt, default));
+        Assert.False(await idempotency.TryCompleteAsync(
+            context.TenantId, receipt.IdempotencyKey,
+            new EntitySyncSha256(new string('2', 64)), 200,
+            new EntitySyncJsonValue("{}"), DateTimeOffset.UtcNow, default));
+        Assert.True(await idempotency.TryCompleteAsync(
+            context.TenantId, receipt.IdempotencyKey, receipt.RequestSha256, 200,
+            new EntitySyncJsonValue("{\"ok\":true}"), DateTimeOffset.UtcNow, default));
+        var stored = await idempotency.GetAsync(
+            context.TenantId, receipt.IdempotencyKey, default);
+        Assert.Equal(200, stored!.ResponseStatusCode);
+        Assert.Equal("{\"ok\":true}", stored.ResponseBody!.Json);
+
+        var expiredReceipt = new EntitySyncIdempotencyReceipt(
+            context.TenantId, "expired-direct-key",
+            new EntitySyncSha256(new string('3', 64)), null, null,
+            createdAt, null, createdAt.AddMinutes(1));
+        Assert.True(await idempotency.TryInsertAsync(
+            context.TenantId, expiredReceipt, default));
+        Assert.Equal(1, await idempotency.DeleteExpiredAsync(
+            context.TenantId, DateTimeOffset.UtcNow, 1, default));
+    }
+
+    [Fact]
     public async Task Schedule_audit_retention_and_plan_expiration_are_tenant_scoped()
     {
         var context = await SeedControlContextAsync("schedule");
@@ -354,6 +710,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             new EntitySyncJsonValue("[\"name\"]"), context.Now, context.Now,
             EntitySyncCanonicalChangeStatus.Pending);
         await schedules.InsertChangeEventAsync(context.TenantId, change, default);
+        Assert.Single(await schedules.ListPendingChangeEventsAsync(
+            context.TenantId, 10, default));
+        Assert.Empty(await schedules.ListPendingChangeEventsAsync(
+            "other-tenant", 10, default));
         Assert.True(await schedules.TrySetChangeEventStatusAsync(
             context.TenantId, change.EventId, EntitySyncCanonicalChangeStatus.Pending,
             EntitySyncCanonicalChangeStatus.Planned, default));
@@ -375,7 +735,24 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await audits.AppendAsync(context.TenantId, audit,
             new EntitySyncAuditEventFullValues(context.TenantId, eventId, fullCiphertext,
                 context.Now.AddMinutes(-1)), default);
-        Assert.Single((await audits.ListAsync(context.TenantId, null, null, 10, default)).Events);
+        for (var index = 1; index <= 2; index++)
+        {
+            var pagedAudit = new EntitySyncAuditEvent(
+                context.TenantId, Guid.NewGuid(), context.Now.AddMinutes(index),
+                $"Paged{index}", new EntitySyncActor("actor"), null, null, null, null,
+                $"correlation-{index}", new EntitySyncJsonValue("{}"),
+                new EntitySyncSha256(new string((char)('a' + index), 64)), null, null);
+            await audits.AppendAsync(context.TenantId, pagedAudit, null, default);
+        }
+        var firstAuditPage = await audits.ListAsync(
+            context.TenantId, null, null, 2, default);
+        Assert.Equal(2, firstAuditPage.Events.Count);
+        Assert.NotNull(firstAuditPage.ContinuationOccurredAt);
+        var secondAuditPage = await audits.ListAsync(
+            context.TenantId, firstAuditPage.ContinuationOccurredAt,
+            firstAuditPage.ContinuationEventId, 2, default);
+        Assert.Single(secondAuditPage.Events);
+        Assert.Null(secondAuditPage.ContinuationEventId);
         Assert.Null(await audits.GetFullValuesAsync("other-tenant", eventId, default));
         Assert.Equal(fullCiphertext,
             (await audits.GetFullValuesAsync(context.TenantId, eventId, default))!.FullValuesCiphertext);
@@ -399,8 +776,13 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var executor = new PostgresIdempotencyRepository(Database, TimeProvider.System);
         var executions = 0;
         var hash = new string('f', 64);
-        Task<IdempotentResponse> Command(CancellationToken _)
+        Task<IdempotentResponse> Command(
+            IdempotencyExecutionContext context,
+            CancellationToken _)
         {
+            Assert.Equal("idempotency-tenant", context.TenantId);
+            Assert.Equal("same-key", context.Key);
+            Assert.False(string.IsNullOrWhiteSpace(context.Token));
             Interlocked.Increment(ref executions);
             return Task.FromResult(new IdempotentResponse(201, new EntitySyncJsonValue("{\"id\":1}")));
         }
@@ -414,10 +796,42 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await Assert.ThrowsAsync<IdempotencyConflictException>(() => executor.ExecuteAsync(
             "idempotency-tenant", "same-key", new string('a', 64), Command, default));
         Assert.Null(await executor.GetAsync("other-tenant", "same-key", default));
+        var downstreamTokens = new HashSet<string>(StringComparer.Ordinal);
+        var logicalEffects = 0;
+        var crashInvocations = 0;
+        async Task<IdempotentResponse> CrashSafeCommand(
+            IdempotencyExecutionContext context,
+            CancellationToken _)
+        {
+            if (downstreamTokens.Add(context.Token)) logicalEffects++;
+            if (Interlocked.Increment(ref crashInvocations) == 1)
+                throw new InvalidOperationException("simulated process crash after downstream effect");
+            await Task.Yield();
+            return new IdempotentResponse(202, new EntitySyncJsonValue("{\"resumed\":true}"));
+        }
+
         await Assert.ThrowsAsync<InvalidOperationException>(() => executor.ExecuteAsync(
-            "idempotency-tenant", "failed-key", hash,
-            _ => throw new InvalidOperationException("command failed"), default));
-        Assert.Null(await executor.GetAsync("idempotency-tenant", "failed-key", default));
+            "idempotency-tenant", "crash-key", hash, CrashSafeCommand, default));
+        var durableClaim = await executor.GetAsync(
+            "idempotency-tenant", "crash-key", default);
+        Assert.NotNull(durableClaim);
+        Assert.Null(durableClaim.ResponseStatusCode);
+        var conflictingInvocations = 0;
+        await Assert.ThrowsAsync<IdempotencyConflictException>(() => executor.ExecuteAsync(
+            "idempotency-tenant", "crash-key", new string('e', 64),
+            (_, _) =>
+            {
+                conflictingInvocations++;
+                return Task.FromResult(
+                    new IdempotentResponse(200, new EntitySyncJsonValue("{}")));
+            },
+            default));
+        Assert.Equal(0, conflictingInvocations);
+        var resumed = await executor.ExecuteAsync(
+            "idempotency-tenant", "crash-key", hash, CrashSafeCommand, default);
+        Assert.Equal(202, resumed.StatusCode);
+        Assert.Equal(1, logicalEffects);
+        Assert.Equal(2, crashInvocations);
     }
 
     public async Task InitializeAsync()
@@ -512,6 +926,21 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                     new EntitySyncJsonValue("\"desired\""))])).ToArray();
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
     }
+
+    private static EntitySyncOperationItem CompleteItem(
+        EntitySyncOperationItem item,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt) =>
+        EntitySyncOperationItem.Rehydrate(
+            item.TenantId, item.OperationId, item.PlanId, item.ItemId,
+            item.SourceVendor, item.SourceConnectionId, item.SourceEntityType,
+            item.SourceEntityKey, item.SourceEntityId, item.TargetVendor,
+            item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,
+            item.Action, item.RedactedBefore, item.RedactedDesired,
+            item.BeforePayloadSha256, item.DesiredPayloadSha256,
+            new EntitySyncSha256(new string('c', 64)), item.SnapshotsExpireAt,
+            "request-complete", EntitySyncItemOutcome.Succeeded, null, null,
+            startedAt, completedAt);
 
     private static IReadOnlyList<EntitySyncOperationItem> OperationItems(
         EntitySyncOperation operation, IReadOnlyList<EntitySyncDurablePlanItem> planItems,

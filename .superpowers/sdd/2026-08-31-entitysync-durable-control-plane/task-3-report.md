@@ -71,7 +71,7 @@ No formatter, linter, Pester, or project-wide test suite was run.
 - Approval consumption locks/transitions the exact unexpired Approved plan, verifies the exact manifest item count, inserts the full Apply operation graph, and commits once. The plan CAS and unique Apply-approval index make consumption single-use under races.
 - Operation leasing uses `FOR UPDATE SKIP LOCKED`, reclaims expired Leased or Running operations, increments attempts, replaces owner/expiry, and clears stale start/completion state. Operation state replacement fences the attempt and live lease; item CAS additionally fences tenant, operation, plan, item, attempt, owner, expiry, and expected outcome.
 - Bounded snapshot, audit full-value, and idempotency retention use ordered `FOR UPDATE SKIP LOCKED` deletion batches. Audit event plus encrypted full values are inserted transactionally.
-- The idempotent executor takes a transaction-scoped advisory lock derived from tenant plus key, compares normalized SHA-256 hashes under row lock, replays only a complete safe JSON response, and writes the response in the same transaction. Command exceptions roll back without a receipt.
+- The idempotent executor uses a session advisory lock across a durable two-transaction protocol: it commits an incomplete tenant/key/hash claim before invoking the downstream command with a stable idempotency context token, then atomically stores the safe response. Crashes retain the claim; same-hash retries reuse the token; different hashes conflict before invocation.
 
 ## Self-Review
 
@@ -82,5 +82,63 @@ No formatter, linter, Pester, or project-wide test suite was run.
 - Focused output is warning-free.
 
 ## Concerns
+
+None.
+
+## Fix Round 1
+
+### Status
+
+DONE
+
+### Parent Commit
+
+`f143e0a505f605f40ebacd8c57389e7a3a518c1d` — `feat(control): persist and encrypt control state`
+
+The fix commit SHA is returned in the Task 3 fix-round terminal result because a commit cannot embed its own object ID.
+
+### RED
+
+The exact focused command failed at compile time after adding the durable crash/restart contract:
+
+```text
+ControlRepositoryTests.cs: error CS0246: The type or namespace name
+'IdempotencyExecutionContext' could not be found
+```
+
+The new behavioral tests also target live connection-generation races, illegal operation transitions, pending-item terminal rejection, Unix key-ring permissions, a 2,500-item manifest, snapshot retention, direct idempotency methods, pending canonical changes, and audit pagination.
+
+### GREEN
+
+Exact repository command:
+
+```text
+dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --configuration Release --filter FullyQualifiedName~ControlRepositoryTests
+```
+
+Result:
+
+```text
+Passed! - Failed: 0, Passed: 14, Skipped: 0, Total: 14, Duration: 3 s
+```
+
+Individually filtered scheduler-host validation:
+
+```text
+Passed! - Failed: 0, Passed: 1, Skipped: 0, Total: 1, Duration: < 1 ms
+```
+
+No broad suite, formatter, linter, or Pester run was performed.
+
+### Fixes
+
+- The executor now holds a session advisory lock across a two-transaction protocol. Transaction one persists and commits an incomplete claim. The downstream callback receives `IdempotencyExecutionContext` with tenant, key, and a deterministic tenant/key/hash token. Transaction two stores the response. A simulated post-effect crash proves the claim survives and the idempotent fake downstream observes one logical effect across restart; a different hash never invokes the callback.
+- Inspection open, approval, and consumption revalidate both current tenant-scoped connection IDs and generations. Rotation after planning now fails before session, approval, plan-status, or operation mutation.
+- New operation graphs require a fresh Queued attempt-zero operation and fresh Pending items. Replacement locks and compares immutable identity, admits only legal lifecycle edges, fences live leases and attempts, and atomically checks Succeeded/Partial/Failed item outcome consistency. Item outcomes allow one Pending-to-terminal transition.
+- Production key directories must already exist for HTTP/scheduler, be writable by the process, and use Unix owner-only 0700 permissions. Container directories are created as the non-root application owner's 0700 directory. Focused protection proves generated key XML has no group/other permissions.
+- Plan items use typed Npgsql binary `COPY` inside the plan transaction. The 2,500-item focused test round-trips the final page and total count; the existing malformed-JSON test still proves the COPY failure rolls back the plan.
+- Focused SQL tests now exercise direct idempotency claim/complete/delete behavior, snapshot get/delete retention, operation terminal variants, pending canonical-change listing/CAS, audit continuation pagination/full-value deletion, and crash/restart behavior.
+
+### Concerns
 
 None.

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 using Npgsql;
@@ -92,94 +94,154 @@ public sealed class PostgresIdempotencyRepository(NpgsqlDataSource dataSource, T
 
     public async Task<IdempotentResponse> ExecuteAsync(
         string tenantId, string key, string requestHash,
-        Func<CancellationToken, Task<IdempotentResponse>> command,
+        Func<IdempotencyExecutionContext, CancellationToken, Task<IdempotentResponse>> command,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
         var requestSha256 = new EntitySyncSha256(requestHash);
-        if (string.IsNullOrWhiteSpace(tenantId)) throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
-        if (string.IsNullOrWhiteSpace(key)) throw new ArgumentException("Idempotency key is required.", nameof(key));
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(key))
+            throw new ArgumentException("Idempotency key is required.", nameof(key));
         tenantId = tenantId.Trim();
         key = key.Trim();
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
         const string lockSql = """
-            SELECT pg_advisory_xact_lock(
+            SELECT pg_advisory_lock(
                 hashtextextended(@tenant_id || chr(31) || @idempotency_key, 0))
             """;
-        await using (var advisoryLock = new NpgsqlCommand(lockSql, connection, transaction))
+        await using (var advisoryLock = new NpgsqlCommand(lockSql, connection))
         {
             AddKey(advisoryLock, tenantId, key);
             await advisoryLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        var now = timeProvider.GetUtcNow();
-        var existing = await GetForUpdateAsync(connection, transaction, tenantId, key, cancellationToken)
-            .ConfigureAwait(false);
-        if (existing is not null && existing.ExpiresAt <= now)
+        try
         {
-            const string deleteSql = """
-                DELETE FROM entitysync.api_idempotency_records
-                WHERE tenant_id = @tenant_id AND idempotency_key = @idempotency_key
-                  AND expires_at <= @now
-                """;
-            await using var delete = new NpgsqlCommand(deleteSql, connection, transaction);
-            AddKey(delete, tenantId, key);
-            PostgresControlPersistence.Add(delete, "now", NpgsqlDbType.TimestampTz, now);
-            await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            existing = null;
-        }
-        if (existing is not null)
-        {
-            if (existing.RequestSha256 != requestSha256)
-                throw new IdempotencyConflictException("The idempotency key is already bound to a different request hash.");
-            if (existing.ResponseStatusCode is not null && existing.ResponseBody is not null)
+            var now = timeProvider.GetUtcNow();
+            await using (var claimTransaction = await connection
+                .BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new IdempotentResponse(existing.ResponseStatusCode.Value, existing.ResponseBody);
-            }
-        }
+                var existing = await GetForUpdateAsync(
+                    connection, claimTransaction, tenantId, key, cancellationToken)
+                    .ConfigureAwait(false);
+                if (existing is not null && existing.ExpiresAt <= now)
+                {
+                    const string deleteSql = """
+                        DELETE FROM entitysync.api_idempotency_records
+                        WHERE tenant_id = @tenant_id
+                          AND idempotency_key = @idempotency_key
+                          AND expires_at <= @now
+                        """;
+                    await using var delete = new NpgsqlCommand(
+                        deleteSql, connection, claimTransaction);
+                    AddKey(delete, tenantId, key);
+                    PostgresControlPersistence.Add(
+                        delete, "now", NpgsqlDbType.TimestampTz, now);
+                    await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    existing = null;
+                }
 
-        var response = await command(cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The idempotent command returned no response.");
-        if (existing is null)
-        {
-            var receipt = new EntitySyncIdempotencyReceipt(
-                tenantId, key, requestSha256, response.StatusCode, response.ResponseBody,
-                now, now, now + ReceiptLifetime);
-            const string insertSql = """
-                INSERT INTO entitysync.api_idempotency_records (
-                    tenant_id, idempotency_key, request_sha256, response_status_code,
-                    response_body, created_at, completed_at, expires_at)
-                VALUES (@tenant_id, @idempotency_key, @request_sha256, @response_status_code,
-                    @response_body, @created_at, @completed_at, @expires_at)
-                """;
-            await using var insert = new NpgsqlCommand(insertSql, connection, transaction);
-            AddReceipt(insert, receipt);
-            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
+                if (existing is not null && existing.RequestSha256 != requestSha256)
+                    throw new IdempotencyConflictException(
+                        "The idempotency key is already bound to a different request hash.");
+                if (existing?.ResponseStatusCode is not null
+                    && existing.ResponseBody is not null)
+                {
+                    var replay = new IdempotentResponse(
+                        existing.ResponseStatusCode.Value, existing.ResponseBody);
+                    await claimTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    return replay;
+                }
+
+                if (existing is null)
+                {
+                    var claim = new EntitySyncIdempotencyReceipt(
+                        tenantId, key, requestSha256, null, null, now, null,
+                        now + ReceiptLifetime);
+                    const string insertSql = """
+                        INSERT INTO entitysync.api_idempotency_records (
+                            tenant_id, idempotency_key, request_sha256,
+                            response_status_code, response_body, created_at,
+                            completed_at, expires_at)
+                        VALUES (
+                            @tenant_id, @idempotency_key, @request_sha256,
+                            @response_status_code, @response_body, @created_at,
+                            @completed_at, @expires_at)
+                        """;
+                    await using var insert = new NpgsqlCommand(
+                        insertSql, connection, claimTransaction);
+                    AddReceipt(insert, claim);
+                    await insert.ExecuteNonQueryAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                await claimTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var context = new IdempotencyExecutionContext(
+                tenantId, key, CreateStableToken(tenantId, key, requestSha256));
+            var response = await command(context, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    "The idempotent command returned no response.");
+
+            await using var completionTransaction = await connection
+                .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             const string completeSql = """
                 UPDATE entitysync.api_idempotency_records
                 SET response_status_code = @response_status_code,
                     response_body = @response_body,
                     completed_at = @completed_at
-                WHERE tenant_id = @tenant_id AND idempotency_key = @idempotency_key
+                WHERE tenant_id = @tenant_id
+                  AND idempotency_key = @idempotency_key
                   AND request_sha256 = @request_sha256
-                  AND response_status_code IS NULL AND response_body IS NULL
+                  AND response_status_code IS NULL
+                  AND response_body IS NULL
+                  AND completed_at IS NULL
                 """;
-            await using var complete = new NpgsqlCommand(completeSql, connection, transaction);
-            AddKey(complete, tenantId, key);
-            PostgresControlPersistence.Add(complete, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
-            PostgresControlPersistence.Add(complete, "response_status_code", NpgsqlDbType.Integer, response.StatusCode);
-            PostgresControlPersistence.Add(complete, "response_body", NpgsqlDbType.Jsonb, response.ResponseBody.Json);
-            PostgresControlPersistence.Add(complete, "completed_at", NpgsqlDbType.TimestampTz, now);
-            if (await complete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-                throw new InvalidOperationException("The incomplete idempotency receipt could not be completed.");
+            await using (var complete = new NpgsqlCommand(
+                completeSql, connection, completionTransaction))
+            {
+                AddKey(complete, tenantId, key);
+                PostgresControlPersistence.Add(
+                    complete, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+                PostgresControlPersistence.Add(
+                    complete, "response_status_code", NpgsqlDbType.Integer,
+                    response.StatusCode);
+                PostgresControlPersistence.Add(
+                    complete, "response_body", NpgsqlDbType.Jsonb,
+                    response.ResponseBody.Json);
+                PostgresControlPersistence.Add(
+                    complete, "completed_at", NpgsqlDbType.TimestampTz,
+                    timeProvider.GetUtcNow());
+                if (await complete.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false) != 1)
+                    throw new InvalidOperationException(
+                        "The durable idempotency claim could not be completed.");
+            }
+            await completionTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return response;
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return response;
+        finally
+        {
+            const string unlockSql = """
+                SELECT pg_advisory_unlock(
+                    hashtextextended(@tenant_id || chr(31) || @idempotency_key, 0))
+                """;
+            await using var unlock = new NpgsqlCommand(unlockSql, connection);
+            AddKey(unlock, tenantId, key);
+            await unlock.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private static string CreateStableToken(
+        string tenantId,
+        string key,
+        EntitySyncSha256 requestSha256)
+    {
+        var material = $"{tenantId.Length}:{tenantId}{key.Length}:{key}{requestSha256.Value}";
+        return Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
     }
 
     private static async Task<EntitySyncIdempotencyReceipt?> GetForUpdateAsync(
