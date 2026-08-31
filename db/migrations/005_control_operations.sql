@@ -70,11 +70,10 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_inspections (
     plan_digest_sha256 char(64) NOT NULL,
     source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
     target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
-    range_start integer NOT NULL,
-    range_end integer NOT NULL,
+    status text NOT NULL,
     inspected_at timestamptz NOT NULL,
     inspected_by text NOT NULL,
-    completed_at timestamptz NOT NULL,
+    completed_at timestamptz,
     PRIMARY KEY (tenant_id, inspection_id),
     UNIQUE (
         tenant_id, inspection_id, plan_id, plan_digest_sha256,
@@ -86,14 +85,36 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_inspections (
         REFERENCES entitysync.sync_plans (
             tenant_id, plan_id, plan_digest_sha256,
             source_connection_generation, target_connection_generation),
-    CONSTRAINT sync_plan_inspections_range_check
-        CHECK (range_start >= 0 AND range_end >= range_start),
+    CONSTRAINT sync_plan_inspections_status_check
+        CHECK (status IN ('Open','Completed')),
+    CONSTRAINT sync_plan_inspections_completion_check
+        CHECK ((status = 'Open' AND completed_at IS NULL)
+            OR (status = 'Completed' AND completed_at IS NOT NULL)),
     CONSTRAINT sync_plan_inspections_digest_sha256_check
         CHECK (plan_digest_sha256 ~ '^[0-9a-f]{64}$')
 );
 
-CREATE INDEX IF NOT EXISTS sync_plan_inspections_tenant_plan_range_idx
-    ON entitysync.sync_plan_inspections (tenant_id, plan_id, range_start, range_end);
+CREATE INDEX IF NOT EXISTS sync_plan_inspections_tenant_plan_idx
+    ON entitysync.sync_plan_inspections (tenant_id, plan_id, status);
+
+CREATE TABLE IF NOT EXISTS entitysync.sync_plan_inspection_ranges (
+    tenant_id text NOT NULL,
+    inspection_id uuid NOT NULL,
+    range_id uuid NOT NULL,
+    range_start integer NOT NULL,
+    range_end integer NOT NULL,
+    inspected_at timestamptz NOT NULL,
+    PRIMARY KEY (tenant_id, inspection_id, range_id),
+    CONSTRAINT sync_plan_inspection_ranges_session_fkey
+        FOREIGN KEY (tenant_id, inspection_id)
+        REFERENCES entitysync.sync_plan_inspections (tenant_id, inspection_id),
+    CONSTRAINT sync_plan_inspection_ranges_bounds_check
+        CHECK (range_start >= 0 AND range_end >= range_start)
+);
+
+CREATE INDEX IF NOT EXISTS sync_plan_inspection_ranges_coverage_idx
+    ON entitysync.sync_plan_inspection_ranges (
+        tenant_id, inspection_id, range_start, range_end);
 
 CREATE TABLE IF NOT EXISTS entitysync.sync_approvals (
     tenant_id text NOT NULL,
@@ -129,35 +150,107 @@ CREATE OR REPLACE FUNCTION entitysync.enforce_complete_inspection_coverage()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM entitysync.sync_plan_inspections
+         WHERE tenant_id = NEW.tenant_id
+           AND inspection_id = NEW.inspection_id
+           AND plan_id = NEW.plan_id
+           AND plan_digest_sha256 = NEW.plan_digest_sha256
+           AND source_connection_generation = NEW.source_connection_generation
+           AND target_connection_generation = NEW.target_connection_generation
+           AND status = 'Completed'
+           AND completed_at IS NOT NULL) THEN
+        RAISE EXCEPTION 'Approval requires a completed inspection session'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.enforce_inspection_completion()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
 DECLARE
-    covered_start integer;
-    covered_end integer;
     item_count integer;
     first_ordinal integer;
     last_ordinal integer;
+    final_covered_ordinal integer;
+    invalid_ranges integer;
 BEGIN
-    SELECT range_start, range_end
-      INTO covered_start, covered_end
-      FROM entitysync.sync_plan_inspections
-     WHERE tenant_id = NEW.tenant_id
-       AND inspection_id = NEW.inspection_id
-       AND plan_id = NEW.plan_id
-       AND plan_digest_sha256 = NEW.plan_digest_sha256
-       AND source_connection_generation = NEW.source_connection_generation
-       AND target_connection_generation = NEW.target_connection_generation;
+    IF TG_OP = 'DELETE'
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+        OR NEW.inspection_id IS DISTINCT FROM OLD.inspection_id
+        OR NEW.plan_id IS DISTINCT FROM OLD.plan_id
+        OR NEW.plan_digest_sha256 IS DISTINCT FROM OLD.plan_digest_sha256
+        OR NEW.source_connection_generation IS DISTINCT FROM OLD.source_connection_generation
+        OR NEW.target_connection_generation IS DISTINCT FROM OLD.target_connection_generation
+        OR NEW.inspected_at IS DISTINCT FROM OLD.inspected_at
+        OR NEW.inspected_by IS DISTINCT FROM OLD.inspected_by
+        OR OLD.status <> 'Open'
+        OR NEW.status <> 'Completed'
+        OR OLD.completed_at IS NOT NULL
+        OR NEW.completed_at IS NULL THEN
+        RAISE EXCEPTION 'Inspection sessions allow only one Open-to-Completed transition'
+            USING ERRCODE = '55000';
+    END IF;
 
     SELECT count(*)::integer, min(item_ordinal), max(item_ordinal)
       INTO item_count, first_ordinal, last_ordinal
       FROM entitysync.sync_plan_items
      WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id;
 
-    IF covered_start IS NULL
-        OR item_count = 0
-        OR covered_start <> 0
-        OR covered_end <> item_count - 1
+    WITH ordered_ranges AS (
+        SELECT range_start,
+               range_end,
+               row_number() OVER (ORDER BY range_start, range_end) AS position,
+               lag(range_end) OVER (ORDER BY range_start, range_end) AS previous_end
+          FROM entitysync.sync_plan_inspection_ranges
+         WHERE tenant_id = NEW.tenant_id AND inspection_id = NEW.inspection_id
+    )
+    SELECT count(*) FILTER (
+               WHERE (position = 1 AND range_start <> 0)
+                  OR (position > 1 AND range_start <> previous_end + 1)
+                  OR range_end >= item_count),
+           max(range_end)
+      INTO invalid_ranges, final_covered_ordinal
+      FROM ordered_ranges;
+
+    IF item_count = 0
         OR first_ordinal <> 0
-        OR last_ordinal <> item_count - 1 THEN
-        RAISE EXCEPTION 'Approval requires completed inspection coverage of every plan item'
+        OR last_ordinal <> item_count - 1
+        OR invalid_ranges <> 0
+        OR final_covered_ordinal IS NULL
+        OR final_covered_ordinal <> item_count - 1 THEN
+        RAISE EXCEPTION 'Inspection ranges must exactly cover every plan ordinal without gaps or overlaps'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.enforce_open_inspection_range()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    session_status text;
+BEGIN
+    SELECT status
+      INTO session_status
+      FROM entitysync.sync_plan_inspections
+     WHERE tenant_id = NEW.tenant_id AND inspection_id = NEW.inspection_id
+     FOR UPDATE;
+    IF session_status IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    IF session_status <> 'Open' THEN
+        RAISE EXCEPTION 'Inspection ranges require an open inspection session'
             USING ERRCODE = '55000';
     END IF;
 
@@ -376,6 +469,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    IF NEW.status <> 'Open' OR NEW.completed_at IS NOT NULL THEN
+        RAISE EXCEPTION 'Inspection sessions must start open'
+            USING ERRCODE = '55000';
+    END IF;
+
     PERFORM 1
       FROM entitysync.sync_plans
      WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id
@@ -479,10 +577,23 @@ CREATE TRIGGER sync_plan_inspections_lock
     BEFORE INSERT ON entitysync.sync_plan_inspections
     FOR EACH ROW EXECUTE FUNCTION entitysync.lock_sync_plan_for_inspection();
 
-DROP TRIGGER IF EXISTS sync_plan_inspections_immutable ON entitysync.sync_plan_inspections;
-CREATE TRIGGER sync_plan_inspections_immutable
+DROP TRIGGER IF EXISTS sync_plan_inspections_completion ON entitysync.sync_plan_inspections;
+CREATE TRIGGER sync_plan_inspections_completion
     BEFORE UPDATE OR DELETE ON entitysync.sync_plan_inspections
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_inspection_completion();
+
+DROP TRIGGER IF EXISTS sync_plan_inspection_ranges_open
+    ON entitysync.sync_plan_inspection_ranges;
+CREATE TRIGGER sync_plan_inspection_ranges_open
+    BEFORE INSERT ON entitysync.sync_plan_inspection_ranges
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_open_inspection_range();
+
+DROP TRIGGER IF EXISTS sync_plan_inspection_ranges_immutable
+    ON entitysync.sync_plan_inspection_ranges;
+CREATE TRIGGER sync_plan_inspection_ranges_immutable
+    BEFORE UPDATE OR DELETE ON entitysync.sync_plan_inspection_ranges
     FOR EACH ROW EXECUTE FUNCTION entitysync.reject_immutable_row_mutation();
+
 
 DROP TRIGGER IF EXISTS sync_approvals_immutable ON entitysync.sync_approvals;
 CREATE TRIGGER sync_approvals_immutable
