@@ -46,18 +46,16 @@ public sealed class EntityExclusionService(
         ArgumentNullException.ThrowIfNull(request);
         var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
         var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
-        await using var sourceLease = await connections.AcquireCurrentAsync(
+        var source = await connections.ResolveCurrentDefinitionAsync(
             request.TenantId,
             sourceVendor,
             request.SourceConnectionId,
             cancellationToken).ConfigureAwait(false);
-        await using var targetLease = await connections.AcquireCurrentAsync(
+        var target = await connections.ResolveCurrentDefinitionAsync(
             request.TenantId,
             targetVendor,
             request.TargetConnectionId,
             cancellationToken).ConfigureAwait(false);
-        var source = sourceLease.Definition;
-        var target = targetLease.Definition;
         return EntityExclusionRoute.Create(
             request.TenantId,
             source.Vendor,

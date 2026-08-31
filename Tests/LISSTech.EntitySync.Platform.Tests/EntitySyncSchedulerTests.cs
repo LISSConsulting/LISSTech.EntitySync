@@ -776,6 +776,17 @@ public sealed class EntitySyncSchedulerTests
                 connectionId,
                 cancellationToken);
         }
+
+        public Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken) =>
+            inner.ResolveCurrentDefinitionAsync(
+                tenantId,
+                vendor,
+                connectionId,
+                cancellationToken);
         public void Dispose() => inner.Dispose();
     }
 

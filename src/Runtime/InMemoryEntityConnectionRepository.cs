@@ -138,6 +138,34 @@ public sealed class InMemoryEntityConnectionRepository
             new RuntimeLease(lease, Definition(lease.Connection)));
     }
 
+    public Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalizedVendor = EntitySyncVendors.Normalize(vendor);
+        var matches = List(tenantId)
+            .Where(connection =>
+                connection.Vendor.Equals(normalizedVendor, StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(connectionId)
+                    || connection.Id.Equals(connectionId.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        var registration = matches.Length switch
+        {
+            1 => matches[0],
+            0 when !string.IsNullOrWhiteSpace(connectionId) =>
+                throw new ConnectionNotFoundException(tenantId, connectionId.Trim()),
+            0 => throw new InvalidOperationException(
+                $"No enabled connection exists for vendor '{normalizedVendor}'."),
+            _ => throw new InvalidOperationException(
+                $"Multiple enabled connections exist for vendor '{normalizedVendor}'. "
+                + "Specify a connection ID.")
+        };
+        return Task.FromResult(Definition(registration));
+    }
+
     private static EntitySyncConnectionDefinition Definition(
         EntityConnectionRegistration registration)
     {

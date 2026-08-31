@@ -435,6 +435,22 @@ public sealed class SyncPolicyServiceTests
                 definition.Generation,
                 cancellationToken);
         }
+
+        public async Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken)
+        {
+            var matches = await connections.ListAsync(
+                tenantId,
+                vendor,
+                enabled: true,
+                cancellationToken);
+            return connectionId is null
+                ? Assert.Single(matches)
+                : matches.Single(value => value.ConnectionId == connectionId);
+        }
     }
 
     private sealed class RuntimeLease(

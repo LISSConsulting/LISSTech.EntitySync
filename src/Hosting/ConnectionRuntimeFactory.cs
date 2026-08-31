@@ -74,6 +74,24 @@ public sealed class ConnectionRuntimeFactory(
         string? connectionId,
         CancellationToken cancellationToken)
     {
+        var definition = await ResolveCurrentDefinitionAsync(
+            tenantId,
+            vendor,
+            connectionId,
+            cancellationToken).ConfigureAwait(false);
+        return await AcquireAsync(
+            tenantId,
+            definition.ConnectionId,
+            definition.Generation,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken)
+    {
         tenantId = Require(tenantId, nameof(tenantId));
         vendor = EntitySyncVendors.Normalize(Require(vendor, nameof(vendor)));
         EntitySyncConnectionDefinition definition;
@@ -104,11 +122,8 @@ public sealed class ConnectionRuntimeFactory(
                     + "Specify a connection ID.")
             };
         }
-        return await AcquireAsync(
-            tenantId,
-            definition.ConnectionId,
-            definition.Generation,
-            cancellationToken).ConfigureAwait(false);
+        RequireAvailable(definition, definition.Generation);
+        return definition;
     }
 
     private static Dictionary<string, JsonElement> ReadPublicConfiguration(

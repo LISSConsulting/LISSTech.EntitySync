@@ -38,6 +38,12 @@ public interface IConnectionRuntimeFactory
         string vendor,
         string? connectionId,
         CancellationToken cancellationToken);
+
+    Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken);
 }
 
 public sealed class ConnectionNotFoundException : KeyNotFoundException
