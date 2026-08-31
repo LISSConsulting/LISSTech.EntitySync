@@ -146,7 +146,23 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         const string sql = """
             INSERT INTO entitysync.sync_plan_inspection_ranges (
                 tenant_id, inspection_id, range_id, range_start, range_end, inspected_at)
-            VALUES (@tenant_id, @inspection_id, @range_id, @range_start, @range_end, @inspected_at)
+            SELECT @tenant_id, @inspection_id, @range_id, @range_start, @range_end,
+                   @inspected_at
+            FROM entitysync.sync_plan_inspections inspection
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = inspection.tenant_id
+             AND plan.plan_id = inspection.plan_id
+            JOIN entitysync.connection_definitions source_connection
+              ON source_connection.tenant_id = plan.tenant_id
+             AND source_connection.connection_id = plan.source_connection_id
+             AND source_connection.generation = plan.source_connection_generation
+            JOIN entitysync.connection_definitions target_connection
+              ON target_connection.tenant_id = plan.tenant_id
+             AND target_connection.connection_id = plan.target_connection_id
+             AND target_connection.generation = plan.target_connection_generation
+            WHERE inspection.tenant_id = @tenant_id
+              AND inspection.inspection_id = @inspection_id
+              AND inspection.status = 'Open'
             """;
         await using var command = dataSource.CreateCommand(sql);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
@@ -155,7 +171,9 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         PostgresControlPersistence.Add(command, "range_start", NpgsqlDbType.Integer, rangeStart);
         PostgresControlPersistence.Add(command, "range_end", NpgsqlDbType.Integer, rangeEnd);
         PostgresControlPersistence.Add(command, "inspected_at", NpgsqlDbType.TimestampTz, inspectedAt);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            throw new InvalidOperationException(
+                "The exact open inspection no longer has current connection generations.");
         return range;
     }
 
@@ -176,6 +194,16 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.tenant_id = inspection.tenant_id AND plan.plan_id = inspection.plan_id
               AND plan.source_connection_id = @source_connection_id
               AND plan.target_connection_id = @target_connection_id AND plan.tenant_id = @tenant_id
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions source_connection
+                    WHERE source_connection.tenant_id = @tenant_id
+                      AND source_connection.connection_id = plan.source_connection_id
+                      AND source_connection.generation = plan.source_connection_generation)
+              AND EXISTS (
+                    SELECT 1 FROM entitysync.connection_definitions target_connection
+                    WHERE target_connection.tenant_id = @tenant_id
+                      AND target_connection.connection_id = plan.target_connection_id
+                      AND target_connection.generation = plan.target_connection_generation)
             RETURNING inspection.inspected_at, inspection.inspected_by, inspection.completed_at
             """;
         await using var command = dataSource.CreateCommand(sql);

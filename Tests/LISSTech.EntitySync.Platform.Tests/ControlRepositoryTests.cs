@@ -355,6 +355,45 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             openContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
             openContext.Now.AddMinutes(1), default));
 
+        var rangeContext = await SeedControlContextAsync("generation-range");
+        var rangePlans = new PostgresDurableSyncPlanRepository(Database);
+        var rangeManifest = Manifest(rangeContext, 1);
+        await rangePlans.InsertAsync(rangeContext.TenantId, rangeManifest, default);
+        var rangeInspectionId = Guid.NewGuid();
+        await rangePlans.OpenInspectionAsync(
+            rangeContext.TenantId, rangeInspectionId, rangeManifest.Plan.PlanId,
+            rangeManifest.Plan.PlanDigestSha256, rangeContext.Source.ConnectionId, 1,
+            rangeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            rangeContext.Now.AddMinutes(1), default);
+        await BumpAsync(rangeContext, rangeContext.Target);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            rangePlans.RecordInspectionRangeAsync(
+                rangeContext.TenantId, rangeInspectionId, Guid.NewGuid(), 0, 0,
+                rangeContext.Now.AddMinutes(2), default));
+
+        var completeContext = await SeedControlContextAsync("generation-complete");
+        var completePlans = new PostgresDurableSyncPlanRepository(Database);
+        var completeManifest = Manifest(completeContext, 1);
+        await completePlans.InsertAsync(completeContext.TenantId, completeManifest, default);
+        var completeInspectionId = Guid.NewGuid();
+        await completePlans.OpenInspectionAsync(
+            completeContext.TenantId, completeInspectionId, completeManifest.Plan.PlanId,
+            completeManifest.Plan.PlanDigestSha256,
+            completeContext.Source.ConnectionId, 1,
+            completeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            completeContext.Now.AddMinutes(1), default);
+        await completePlans.RecordInspectionRangeAsync(
+            completeContext.TenantId, completeInspectionId, Guid.NewGuid(), 0, 0,
+            completeContext.Now.AddMinutes(1), default);
+        await BumpAsync(completeContext, completeContext.Source);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            completePlans.CompleteInspectionAsync(
+                completeContext.TenantId, completeInspectionId,
+                completeManifest.Plan.PlanId, completeManifest.Plan.PlanDigestSha256,
+                completeContext.Source.ConnectionId, 1,
+                completeContext.Target.ConnectionId, 1,
+                completeContext.Now.AddMinutes(2), default));
+
         var approveContext = await SeedControlContextAsync("generation-approve");
         var approvePlans = new PostgresDurableSyncPlanRepository(Database);
         var approveManifest = Manifest(approveContext, 1);
