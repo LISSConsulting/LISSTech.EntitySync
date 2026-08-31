@@ -18,7 +18,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
     private const int InspectionPageSize = 100;
     private readonly IEntitySyncSchedulerRunLock runLock;
     private readonly IServerManagedEntityAdapterFactory adapterFactory;
-    private readonly IEntityConnectionRepository connections;
+    private readonly IConnectionRuntimeFactory connections;
     private readonly IEntitySyncPlanRepository plans;
     private readonly EntitySyncService service;
     private readonly EntitySyncSchedulerStatus status;
@@ -29,7 +29,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         EntitySyncSchedulerOptions options,
         IEntitySyncSchedulerRunLock runLock,
         IServerManagedEntityAdapterFactory adapterFactory,
-        IEntityConnectionRepository connections,
+        IConnectionRuntimeFactory connections,
         IEntitySyncPlanRepository plans,
         EntitySyncService service,
         EntitySyncSchedulerStatus status,
@@ -84,11 +84,11 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
 
 
             stage = RunStage.VendorConnections;
-            var source = await RegisterFreshAdapterAsync(
+            await using var source = await AcquireCurrentAdapterAsync(
                 EntitySyncSchedulerOptions.SourceVendor,
                 EntitySyncSchedulerOptions.SourceConnectionId,
                 cancellationToken).ConfigureAwait(false);
-            var target = await RegisterFreshAdapterAsync(
+            await using var target = await AcquireCurrentAdapterAsync(
                 EntitySyncSchedulerOptions.TargetVendor,
                 EntitySyncSchedulerOptions.TargetConnectionId,
                 cancellationToken).ConfigureAwait(false);
@@ -214,34 +214,15 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         }
     }
 
-    private async Task<EntityConnectionRegistration> RegisterFreshAdapterAsync(
+    private Task<IConnectionRuntimeLease> AcquireCurrentAdapterAsync(
         string vendor,
         string connectionId,
-        CancellationToken cancellationToken)
-    {
-        using var admission = connections.BeginRegistration(
+        CancellationToken cancellationToken) =>
+        connections.AcquireCurrentAsync(
             EntitySyncSchedulerOptions.TenantId,
+            vendor,
             connectionId,
-            vendor);
-        IEntityAdapter? adapter = null;
-        try
-        {
-            adapter = await adapterFactory.CreateAsync(vendor, null, cancellationToken).ConfigureAwait(false);
-            var registration = connections.Register(
-                EntitySyncSchedulerOptions.TenantId,
-                connectionId,
-                adapter);
-            adapter = null;
-            return registration;
-        }
-        finally
-        {
-            if (adapter is IAsyncDisposable asyncDisposable)
-                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
-            else if (adapter is IDisposable disposable)
-                disposable.Dispose();
-        }
-    }
+            cancellationToken);
 
     private string InspectEveryPage(string planId)
     {

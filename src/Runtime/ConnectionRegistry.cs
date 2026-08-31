@@ -6,7 +6,8 @@ namespace LISSTech.EntitySync.Runtime;
 public static class ConnectionRegistry
 {
     private const string PowerShellTenant = "powershell";
-    private static readonly InMemoryEntityConnectionRepository ConnectionsRepository = new();
+    private static readonly InMemoryEntityConnectionRepository ConnectionsRepository =
+        InMemoryEntityConnectionRepository.CreateLocalProfile();
 
     public static void Set(IEntityAdapter adapter)
     {

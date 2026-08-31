@@ -3,13 +3,17 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Runtime;
 
-public sealed class InMemoryEntityConnectionRepository : IEntityConnectionRepository, IDisposable
+public sealed class InMemoryEntityConnectionRepository
+    : IEntityConnectionRepository, IConnectionRuntimeFactory, IDisposable
 {
     private const int MaxConnectionsPerTenant = 32;
     private readonly object gate = new();
     private readonly Dictionary<string, ConnectionEntry> connections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> registrationAdmissions = new(StringComparer.OrdinalIgnoreCase);
     private bool disposed;
+
+    public static InMemoryEntityConnectionRepository CreateLocalProfile() => new();
+
 
     public IEntityConnectionAdmission BeginRegistration(string tenantId, string? connectionId, string vendor)
     {
@@ -94,10 +98,64 @@ public sealed class InMemoryEntityConnectionRepository : IEntityConnectionReposi
             var entry = ResolveLocked(tenantId, vendor, connectionId);
             var current = entry.Current!;
             if (generation.HasValue && current.Generation != generation.Value)
-                throw new InvalidOperationException("A plan connection changed after planning; create a new plan.");
+                throw new StaleConnectionGenerationException(
+                    current.Id,
+                    generation.Value,
+                    current.Generation);
             entry.Leases[current.Generation] = entry.Leases.GetValueOrDefault(current.Generation) + 1;
             return new ConnectionLease(current, () => Release(entry, current.Generation));
         }
+    }
+
+    public Task<IConnectionRuntimeLease> AcquireAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var registration = List(tenantId).SingleOrDefault(connection =>
+            connection.Id.Equals(connectionId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ConnectionNotFoundException(tenantId, connectionId);
+        var lease = Acquire(
+            tenantId,
+            registration.Vendor,
+            registration.Id,
+            expectedGeneration);
+        return Task.FromResult<IConnectionRuntimeLease>(
+            new RuntimeLease(lease, Definition(registration)));
+    }
+
+    public Task<IConnectionRuntimeLease> AcquireCurrentAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var lease = Acquire(tenantId, vendor, connectionId);
+        return Task.FromResult<IConnectionRuntimeLease>(
+            new RuntimeLease(lease, Definition(lease.Connection)));
+    }
+
+    private static EntitySyncConnectionDefinition Definition(
+        EntityConnectionRegistration registration)
+    {
+        var now = DateTimeOffset.UnixEpoch;
+        var actor = new EntitySyncActor("local-profile");
+        return new EntitySyncConnectionDefinition(
+            registration.TenantId,
+            registration.Id,
+            registration.Vendor,
+            registration.Id,
+            registration.Generation,
+            true,
+            new EntitySyncJsonValue("{}"),
+            "local-profile",
+            now,
+            actor,
+            now,
+            actor);
     }
 
     public IReadOnlyList<EntityConnectionRegistration> List(string tenantId)
@@ -211,6 +269,22 @@ public sealed class InMemoryEntityConnectionRepository : IEntityConnectionReposi
         public string TenantId { get; } = tenantId;
         public string ConnectionId { get; } = connectionId;
         public void Dispose() => Interlocked.Exchange(ref release, null)?.Invoke();
+    }
+
+    private sealed class RuntimeLease(
+        IEntityConnectionLease lease,
+        EntitySyncConnectionDefinition definition) : IConnectionRuntimeLease
+    {
+        private IEntityConnectionLease? lease = lease;
+        public EntitySyncConnectionDefinition Definition { get; } = definition;
+        public IEntityAdapter Adapter => lease?.Connection.Adapter
+            ?? throw new ObjectDisposedException(nameof(RuntimeLease));
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Exchange(ref lease, null)?.Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class ConnectionLease(EntityConnectionRegistration connection, Action release) : IEntityConnectionLease

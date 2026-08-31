@@ -674,20 +674,25 @@ public sealed class PlatformTests
         using var connections = new InMemoryEntityConnectionRepository();
         var factory = new RecordingServerManagedEntityAdapterFactory();
         var context = new McpRequestContext("tenant", true);
+        using var services = new ServiceCollection()
+            .AddSingleton<IEntityConnectionRepository>(connections)
+            .BuildServiceProvider();
 
         var firstResponse = await ConnectionTools.ConnectVendor(
-            connections,
+            services,
             factory,
-            context,
-            "HaloPSA",
-            "primary",
+            definitions: null,
+            context: context,
+            vendor: "HaloPSA",
+            connectionId: "primary",
             cancellationToken: CancellationToken.None);
         var secondResponse = await ConnectionTools.ConnectVendor(
-            connections,
+            services,
             factory,
-            context,
-            "HaloPSA",
-            "primary",
+            definitions: null,
+            context: context,
+            vendor: "HaloPSA",
+            connectionId: "primary",
             cancellationToken: CancellationToken.None);
 
         using var firstJson = JsonDocument.Parse(firstResponse);
@@ -1186,7 +1191,9 @@ public sealed class PlatformTests
         using var connections = new InMemoryEntityConnectionRepository();
         connections.Register("tenant", "ncentral", new FakeAdapter("NCentral"));
         connections.Register("tenant", "agentcontroller", new FakeAdapter("AgentController"));
-        var service = new EntityExclusionService(connections, new InMemoryEntityExclusionRepository());
+        var service = new EntityExclusionService(
+            connections,
+            new InMemoryEntityExclusionRepository());
         var request = new EntityExclusionRouteRequest
         {
             TenantId = "tenant",
@@ -1269,7 +1276,7 @@ public sealed class PlatformTests
     }
 
     private static EntitySyncService CreateService(
-        IEntityConnectionRepository connections,
+        IConnectionRuntimeFactory connections,
         IEntitySyncPlanRepository? plans = null,
         IEntityExclusionRepository? exclusions = null)
     {
@@ -1357,6 +1364,73 @@ public sealed class PlatformTests
         }
     }
 
+    private sealed class TestConnectionDefinitionRepository(
+        InMemoryEntityConnectionRepository connections)
+        : IConnectionDefinitionRepository
+    {
+        public Task InsertAsync(
+            string tenantId,
+            EntitySyncConnectionDefinition definition,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<EntitySyncConnectionDefinition?> GetAsync(
+            string tenantId,
+            string connectionId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(
+                connections.List(tenantId)
+                    .Where(value => value.Id == connectionId)
+                    .Select(Definition)
+                    .SingleOrDefault());
+
+        public Task<IReadOnlyList<EntitySyncConnectionDefinition>> ListAsync(
+            string tenantId,
+            string? vendor,
+            bool? enabled,
+            CancellationToken cancellationToken)
+        {
+            IReadOnlyList<EntitySyncConnectionDefinition> result = connections
+                .List(tenantId)
+                .Where(value => vendor is null
+                    || value.Vendor.Equals(vendor, StringComparison.OrdinalIgnoreCase))
+                .Select(Definition)
+                .ToArray();
+            return Task.FromResult(result);
+        }
+
+        public Task<bool> TryReplaceAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            EntitySyncConnectionDefinition nextGeneration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        private static EntitySyncConnectionDefinition Definition(
+            EntityConnectionRegistration registration) =>
+            new(
+                registration.TenantId,
+                registration.Id,
+                registration.Vendor,
+                registration.Id,
+                registration.Generation,
+                true,
+                new EntitySyncJsonValue("{}"),
+                "test",
+                DateTimeOffset.UnixEpoch,
+                new EntitySyncActor("test"),
+                DateTimeOffset.UnixEpoch,
+                new EntitySyncActor("test"));
+    }
+
     private sealed class RecordingServerManagedEntityAdapterFactory : IServerManagedEntityAdapterFactory
     {
         public List<(string Vendor, IReadOnlyDictionary<string, string>? ProfileSettings)> Calls { get; } = [];
@@ -1373,6 +1447,20 @@ public sealed class PlatformTests
             Adapters.Add(adapter);
             return Task.FromResult<IEntityAdapter>(adapter);
         }
+
+        public Task<IEntityAdapter> CreateDurableAsync(
+            string vendor,
+            IReadOnlyDictionary<string, JsonElement> publicConfiguration,
+            IReadOnlyDictionary<string, string> secretConfiguration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ServerManagedConnectionConfiguration GetConnectionConfiguration(
+            string vendor,
+            IReadOnlyDictionary<string, string>? profileSettings) =>
+            new(
+                new Dictionary<string, JsonElement>(),
+                new Dictionary<string, string>());
 
         public void ValidateNetSuiteHaloFixedRouteConfiguration()
         {

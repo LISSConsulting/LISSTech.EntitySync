@@ -39,7 +39,19 @@ public static class EntitySyncHostingServiceCollectionExtensions
             .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
 
         services.AddSingleton(NpgsqlDataSource.Create(connectionString.Trim()));
-        services.AddSingleton<IEntityConnectionRepository, InMemoryEntityConnectionRepository>();
+        if (hostMode == EntitySyncHostMode.LocalStdio)
+        {
+            services.AddSingleton(
+                _ => InMemoryEntityConnectionRepository.CreateLocalProfile());
+            services.AddSingleton<IEntityConnectionRepository>(
+                provider => provider.GetRequiredService<InMemoryEntityConnectionRepository>());
+            services.AddSingleton<IConnectionRuntimeFactory>(
+                provider => provider.GetRequiredService<InMemoryEntityConnectionRepository>());
+        }
+        else
+        {
+            services.AddSingleton<IConnectionRuntimeFactory, ConnectionRuntimeFactory>();
+        }
         services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
         services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
         services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
@@ -58,10 +70,13 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
         services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
         services.AddSingleton<IServerManagedEntityAdapterFactory, ServerManagedEntityAdapterFactory>();
+
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<EntitySyncPlanner>();
         services.AddSingleton<EntitySyncService>();
         services.AddSingleton<EntityExclusionService>();
+        services.AddScoped<ConnectionDefinitionService>();
+        services.AddScoped<SyncPolicyService>();
         services.AddHostedService<EntitySyncDatabaseMigrationHostedService>();
         return services;
     }

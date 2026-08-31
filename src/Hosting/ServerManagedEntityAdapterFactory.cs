@@ -134,6 +134,256 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         throw new InvalidOperationException("Unsupported vendor.");
     }
 
+    public async Task<IEntityAdapter> CreateDurableAsync(
+        string vendor,
+        IReadOnlyDictionary<string, JsonElement> publicConfiguration,
+        IReadOnlyDictionary<string, string> secretConfiguration,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(publicConfiguration);
+        ArgumentNullException.ThrowIfNull(secretConfiguration);
+        var settings = new Dictionary<string, string>(
+            publicConfiguration.Count + secretConfiguration.Count,
+            StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var pair in publicConfiguration)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key))
+                    throw new ArgumentException(
+                        "Public configuration keys are required.",
+                        nameof(publicConfiguration));
+                settings.Add(pair.Key, ConfigurationValue(pair.Key, pair.Value));
+            }
+            foreach (var pair in secretConfiguration)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key)
+                    || string.IsNullOrWhiteSpace(pair.Value))
+                    throw new ArgumentException(
+                        "Secret configuration keys and values are required.",
+                        nameof(secretConfiguration));
+                settings.Add(pair.Key, pair.Value);
+            }
+
+            if (EntitySyncVendors.IsAgentController(vendor))
+            {
+                var durableEnvironment = new Dictionary<string, string?>(
+                    StringComparer.Ordinal)
+                {
+                    ["AGENTCONTROLLER_AUTH_BASE_URL"] =
+                        RequireSetting(settings, "AgentControllerAuthBaseUrl"),
+                    ["AGENTCONTROLLER_ENTRA_TENANT_ID"] =
+                        RequireSetting(settings, "AgentControllerEntraTenantId"),
+                    ["AGENTCONTROLLER_ENTRA_CLIENT_ID"] =
+                        RequireSetting(settings, "AgentControllerEntraClientId"),
+                    ["AGENTCONTROLLER_ENTRA_CLIENT_SECRET"] =
+                        RequireSetting(settings, "AgentControllerEntraClientSecret"),
+                    ["AGENTCONTROLLER_ENTRA_SCOPE"] =
+                        RequireSetting(settings, "AgentControllerEntraScope")
+                };
+                try
+                {
+                    return await ConnectAgentControllerAsync(
+                        durableEnvironment,
+                        static configuration => new AgentControllerTokenProvider(configuration),
+                        static options => new LTACEntityAdapter(options),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    durableEnvironment.Clear();
+                }
+            }
+
+
+            var definitionOnlyFactory = new ServerManagedEntityAdapterFactory(
+                new Dictionary<string, string?>(StringComparer.Ordinal));
+            return await definitionOnlyFactory.CreateAsync(
+                vendor,
+                settings,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            settings.Clear();
+        }
+    }
+
+    public ServerManagedConnectionConfiguration GetConnectionConfiguration(
+        string vendor,
+        IReadOnlyDictionary<string, string>? profileSettings)
+    {
+        var normalized = EntitySyncVendors.Normalize(vendor);
+        var publicConfiguration = new Dictionary<string, JsonElement>(
+            StringComparer.OrdinalIgnoreCase);
+        var secretConfiguration = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+
+        void AddPublic(string key, string value) =>
+            publicConfiguration.Add(key, JsonSerializer.SerializeToElement(value));
+        void AddOptionalPublic(string key, string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value)) AddPublic(key, value);
+        }
+
+        if (normalized.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+        {
+            AddPublic("HaloBaseUrl", Resolve(profileSettings, "HaloBaseUrl", "HALO_BASE_URL"));
+            AddPublic("HaloClientId", Resolve(profileSettings, "HaloClientId", "HALO_CLIENT_ID"));
+            AddOptionalPublic("HaloScope", ResolveOptional(profileSettings, "HaloScope"));
+            AddOptionalPublic(
+                "HaloNetSuiteCustomerIdFieldId",
+                ResolveOptional(
+                    profileSettings,
+                    "HaloNetSuiteCustomerIdFieldId",
+                    "HALO_NETSUITE_CUSTOMER_ID_FIELD_ID"));
+            AddOptionalPublic(
+                "HaloNetSuiteCustomerNameField",
+                ResolveOptional(
+                    profileSettings,
+                    "HaloNetSuiteCustomerNameField",
+                    "HALO_NETSUITE_CUSTOMER_NAME_FIELD"));
+            AddOptionalPublic(
+                "HaloAccountManagerEmail",
+                ResolveOptional(
+                    profileSettings,
+                    "HaloAccountManagerEmail",
+                    "HALO_ACCOUNT_MANAGER_EMAIL"));
+            AddOptionalPublic(
+                "HaloNCentralIntegrationId",
+                ResolveOptional(
+                    profileSettings,
+                    "HaloNCentralIntegrationId",
+                    "HALO_NCENTRAL_INTEGRATION_ID"));
+            secretConfiguration.Add(
+                "HaloClientSecret",
+                Resolve(profileSettings, "HaloClientSecret", "HALO_CLIENT_SECRET"));
+        }
+        else if (normalized.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
+        {
+            AddPublic("NetSuiteAccountId", Resolve(profileSettings, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID"));
+            AddPublic("NetSuiteConsumerKey", Resolve(profileSettings, "NetSuiteConsumerKey", "NETSUITE_CONSUMER_KEY"));
+            AddPublic("NetSuiteTokenId", Resolve(profileSettings, "NetSuiteTokenId", "NETSUITE_TOKEN_ID"));
+            secretConfiguration.Add(
+                "NetSuiteConsumerSecret",
+                Resolve(profileSettings, "NetSuiteConsumerSecret", "NETSUITE_CONSUMER_SECRET"));
+            secretConfiguration.Add(
+                "NetSuiteTokenSecret",
+                Resolve(profileSettings, "NetSuiteTokenSecret", "NETSUITE_TOKEN_SECRET"));
+        }
+        else if (normalized.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+        {
+            AddPublic("NCentralBaseUrl", Resolve(profileSettings, "NCentralBaseUrl", "NCENTRAL_BASE_URL"));
+            AddPublic("NCentralServiceOrgId", Resolve(profileSettings, "NCentralServiceOrgId", "NCENTRAL_SERVICE_ORG_ID"));
+            AddOptionalPublic(
+                "NCentralSoapUsername",
+                ResolveOptional(profileSettings, "NCentralSoapUsername", "NCENTRAL_SOAP_USERNAME"));
+            AddOptionalPublic(
+                "NCentralSoapEndpointPath",
+                ResolveOptional(
+                    profileSettings,
+                    "NCentralSoapEndpointPath",
+                    "NCENTRAL_SOAP_ENDPOINT_PATH"));
+            AddOptionalPublic(
+                "NCentralSoapNamespace",
+                ResolveOptional(
+                    profileSettings,
+                    "NCentralSoapNamespace",
+                    "NCENTRAL_SOAP_NAMESPACE"));
+            AddOptionalPublic(
+                "NCentralHaloPsaIdPropertyLabel",
+                ResolveOptional(
+                    profileSettings,
+                    "NCentralHaloPsaIdPropertyLabel",
+                    "NCENTRAL_HALOPSA_ID_PROPERTY_LABEL"));
+            AddOptionalPublic(
+                "NCentralNetSuiteIdPropertyLabel",
+                ResolveOptional(
+                    profileSettings,
+                    "NCentralNetSuiteIdPropertyLabel",
+                    "NCENTRAL_NETSUITE_ID_PROPERTY_LABEL"));
+            AddOptionalPublic(
+                "NCentralNetSuiteNamePropertyLabel",
+                ResolveOptional(
+                    profileSettings,
+                    "NCentralNetSuiteNamePropertyLabel",
+                    "NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL"));
+            secretConfiguration.Add(
+                "NCentralUserApiToken",
+                Resolve(profileSettings, "NCentralUserApiToken", "NCENTRAL_USER_API_TOKEN"));
+            var soapPassword = ResolveOptional(
+                profileSettings,
+                "NCentralSoapPassword",
+                "NCENTRAL_SOAP_PASSWORD");
+            if (!string.IsNullOrWhiteSpace(soapPassword))
+                secretConfiguration.Add("NCentralSoapPassword", soapPassword);
+        }
+        else if (EntitySyncVendors.IsAgentController(normalized))
+        {
+            AddPublic(
+                "AgentControllerAuthBaseUrl",
+                Resolve(profileSettings, "AgentControllerAuthBaseUrl", "AGENTCONTROLLER_AUTH_BASE_URL"));
+            AddPublic(
+                "AgentControllerEntraTenantId",
+                Resolve(profileSettings, "AgentControllerEntraTenantId", "AGENTCONTROLLER_ENTRA_TENANT_ID"));
+            AddPublic(
+                "AgentControllerEntraClientId",
+                Resolve(profileSettings, "AgentControllerEntraClientId", "AGENTCONTROLLER_ENTRA_CLIENT_ID"));
+            AddPublic(
+                "AgentControllerEntraScope",
+                Resolve(profileSettings, "AgentControllerEntraScope", "AGENTCONTROLLER_ENTRA_SCOPE"));
+            secretConfiguration.Add(
+                "AgentControllerEntraClientSecret",
+                Resolve(
+                    profileSettings,
+                    "AgentControllerEntraClientSecret",
+                    "AGENTCONTROLLER_ENTRA_CLIENT_SECRET"));
+        }
+        else if (EntitySyncVendors.IsBillCom(normalized))
+        {
+            AddPublic(
+                "BillComBaseUrl",
+                ResolveOptional(profileSettings, "BillComBaseUrl", "BILLCOM_BASE_URL")
+                    ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields");
+            AddOptionalPublic(
+                "BillComClientFieldName",
+                ResolveOptional(profileSettings, "BillComClientFieldName", "BILLCOM_CLIENT_FIELD_NAME"));
+            secretConfiguration.Add(
+                "BillComApiToken",
+                Resolve(profileSettings, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN"));
+        }
+        else
+        {
+            throw new InvalidOperationException("Unsupported vendor.");
+        }
+
+        return new ServerManagedConnectionConfiguration(
+            publicConfiguration,
+            secretConfiguration);
+    }
+
+    private static string ConfigurationValue(string key, JsonElement value) =>
+        value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString()!,
+            JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False =>
+                value.GetRawText(),
+            _ => throw new ArgumentException(
+                $"Public configuration '{key}' must be a string, number, or boolean.",
+                nameof(value))
+        };
+
+    private static string RequireSetting(
+        IReadOnlyDictionary<string, string> settings,
+        string key)
+    {
+        if (settings.TryGetValue(key, out var value)
+            && !string.IsNullOrWhiteSpace(value))
+            return value;
+        throw new InvalidOperationException(
+            $"Stored connection configuration is missing required setting '{key}'.");
+    }
+
     public void ValidateNetSuiteHaloFixedRouteConfiguration()
     {
         _ = CreateNetSuiteOptions(null);

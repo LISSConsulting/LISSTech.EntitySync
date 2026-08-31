@@ -5,7 +5,7 @@ namespace LISSTech.EntitySync.Application;
 
 public sealed class EntitySyncService(
     EntitySyncPlanner planner,
-    IEntityConnectionRepository connections,
+    IConnectionRuntimeFactory connections,
     IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
     IEntityMapper mapper,
@@ -56,8 +56,16 @@ public sealed class EntitySyncService(
     {
         var plan = plans.Get(tenantId, planId);
         var changeStateRoute = PrepareChangeStateRoute(plan);
-        using var sourceLease = connections.Acquire(tenantId, plan.SourceVendor, plan.Execution.SourceConnectionId, plan.Execution.SourceConnectionGeneration);
-        using var targetLease = connections.Acquire(tenantId, plan.TargetVendor, plan.Execution.TargetConnectionId, plan.Execution.TargetConnectionGeneration);
+        await using var sourceLease = await connections.AcquireAsync(
+            tenantId,
+            plan.Execution.SourceConnectionId,
+            plan.Execution.SourceConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
+        await using var targetLease = await connections.AcquireAsync(
+            tenantId,
+            plan.Execution.TargetConnectionId,
+            plan.Execution.TargetConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
         if (plan.Items.Any(item => item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)))
         {
             var route = EntityExclusionRoute.Create(
@@ -102,7 +110,7 @@ public sealed class EntitySyncService(
             if (!plans.TryTransition(tenantId, planId, EntitySyncPlanStatuses.Approved, EntitySyncPlanStatuses.Applying)) throw new InvalidOperationException("Plan is already being applied or has been consumed.");
         }
 
-        var target = targetLease.Connection;
+        var target = targetLease.Adapter;
         var results = new List<EntitySyncApplyItemResult>();
         var completed = false;
         var succeeded = 0;
@@ -145,13 +153,13 @@ public sealed class EntitySyncService(
                     if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                     {
                         var request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions);
-                        write = await target.Adapter.CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                        write = await target.CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
                         if (item.Target == null) throw new InvalidOperationException("Target is required for link and update actions.");
                         var request = mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions);
-                        write = await target.Adapter.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                        write = await target.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
                     if (write.Success)
                     {

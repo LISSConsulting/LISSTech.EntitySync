@@ -606,6 +606,20 @@ public sealed class EntitySyncSchedulerTests
             return Task.FromResult<IEntityAdapter>(adapter);
         }
 
+        public Task<IEntityAdapter> CreateDurableAsync(
+            string vendor,
+            IReadOnlyDictionary<string, System.Text.Json.JsonElement> publicConfiguration,
+            IReadOnlyDictionary<string, string> secretConfiguration,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ServerManagedConnectionConfiguration GetConnectionConfiguration(
+            string vendor,
+            IReadOnlyDictionary<string, string>? profileSettings) =>
+            new(
+                new Dictionary<string, System.Text.Json.JsonElement>(),
+                new Dictionary<string, string>());
+
         public void ValidateNetSuiteHaloFixedRouteConfiguration()
         {
         }
@@ -708,7 +722,7 @@ public sealed class EntitySyncSchedulerTests
     }
 
     private sealed class ThrowingRegisterConnectionRepository(string failedVendor)
-        : IEntityConnectionRepository, IDisposable
+        : IEntityConnectionRepository, IConnectionRuntimeFactory, IDisposable
     {
         private readonly InMemoryEntityConnectionRepository inner = new();
 
@@ -736,6 +750,32 @@ public sealed class EntitySyncSchedulerTests
             inner.Acquire(tenantId, vendor, connectionId, generation);
 
         public IReadOnlyList<EntityConnectionRegistration> List(string tenantId) => inner.List(tenantId);
+
+        public Task<IConnectionRuntimeLease> AcquireAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            CancellationToken cancellationToken) =>
+            inner.AcquireAsync(
+                tenantId,
+                connectionId,
+                expectedGeneration,
+                cancellationToken);
+
+        public Task<IConnectionRuntimeLease> AcquireCurrentAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken)
+        {
+            if (vendor.Equals(failedVendor, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Registration failed.");
+            return inner.AcquireCurrentAsync(
+                tenantId,
+                vendor,
+                connectionId,
+                cancellationToken);
+        }
         public void Dispose() => inner.Dispose();
     }
 

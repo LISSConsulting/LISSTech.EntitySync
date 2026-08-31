@@ -9,6 +9,15 @@ public interface ISyncPolicyRepository
         EntitySyncPolicy policy,
         CancellationToken cancellationToken);
 
+    Task<bool> TryInsertValidatedAsync(
+        string tenantId,
+        EntitySyncPolicy policy,
+        string sourceConnectionId,
+        long sourceGeneration,
+        string targetConnectionId,
+        long targetGeneration,
+        CancellationToken cancellationToken);
+
     Task<EntitySyncPolicy?> GetAsync(
         string tenantId,
         Guid policyId,

@@ -108,6 +108,92 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
     }
 
+    public async Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string lockSql = """
+            SELECT generation
+            FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+            FOR UPDATE
+            """;
+        await using var lockCommand = new NpgsqlCommand(lockSql, connection, transaction);
+        AddKey(lockCommand, tenantId, connectionId);
+        var generationValue = await lockCommand.ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (generationValue is null)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return ConnectionDefinitionDeleteResult.NotFound;
+        }
+        if ((long)generationValue != expectedGeneration)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return ConnectionDefinitionDeleteResult.GenerationMismatch;
+        }
+
+        const string referenceSql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM entitysync.sync_policies
+                WHERE tenant_id = @tenant_id
+                  AND (
+                    definition ->> 'SourceConnectionId' = @connection_id
+                    OR definition ->> 'TargetConnectionId' = @connection_id
+                  )
+                UNION ALL
+                SELECT 1
+                FROM entitysync.sync_plans
+                WHERE tenant_id = @tenant_id
+                  AND (
+                    source_connection_id = @connection_id
+                    OR target_connection_id = @connection_id
+                  )
+            )
+            """;
+        await using var referenceCommand = new NpgsqlCommand(
+            referenceSql,
+            connection,
+            transaction);
+        AddKey(referenceCommand, tenantId, connectionId);
+        if ((bool)(await referenceCommand.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false))!)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return ConnectionDefinitionDeleteResult.Referenced;
+        }
+
+        const string deleteSql = """
+            DELETE FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id
+              AND connection_id = @connection_id
+              AND generation = @expected_generation
+            """;
+        await using var deleteCommand = new NpgsqlCommand(
+            deleteSql,
+            connection,
+            transaction);
+        AddKey(deleteCommand, tenantId, connectionId);
+        PostgresControlPersistence.Add(
+            deleteCommand,
+            "expected_generation",
+            NpgsqlDbType.Bigint,
+            expectedGeneration);
+        var deleted = await deleteCommand.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deleted == 1
+            ? ConnectionDefinitionDeleteResult.Deleted
+            : ConnectionDefinitionDeleteResult.GenerationMismatch;
+    }
+
     private static void AddKey(NpgsqlCommand command, string tenantId, string connectionId)
     {
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);

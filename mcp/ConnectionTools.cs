@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using System.Text.Json;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using ModelContextProtocol.Server;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace LISSTech.EntitySync.Mcp;
 
@@ -14,30 +16,119 @@ public static class ConnectionTools
     [McpServerTool]
     [Description("Connect a tenant-scoped vendor adapter using server-managed configuration. Remote callers cannot supply endpoints or credentials.")]
     public static async Task<string> ConnectVendor(
-        IEntityConnectionRepository connections,
+        IServiceProvider services,
         IServerManagedEntityAdapterFactory adapterFactory,
+        ConnectionDefinitionService? definitions,
         McpRequestContext context,
         [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, or Bill.com")] string vendor,
         [Description("Stable connection ID. Use distinct IDs for multiple accounts of the same vendor.")] string? connectionId = null,
         [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        IEntityAdapter? adapter = null;
-        IEntityConnectionAdmission? admission = null;
+        var normalized = EntitySyncVendors.Normalize(vendor);
+        if (context.AllowProfiles)
+        {
+            return await ConnectLocalAsync(
+                services.GetRequiredService<IEntityConnectionRepository>(),
+                adapterFactory,
+                context,
+                normalized,
+                connectionId,
+                profileName,
+                cancellationToken).ConfigureAwait(false);
+        }
+        if (!string.IsNullOrWhiteSpace(profileName))
+            return Error("Profiles are disabled for remote MCP transport.");
+        definitions ??= services.GetRequiredService<ConnectionDefinitionService>();
+
+        var configuration = adapterFactory.GetConnectionConfiguration(
+            normalized,
+            profileSettings: null);
+        var resolvedConnectionId = string.IsNullOrWhiteSpace(connectionId)
+            ? normalized.ToLowerInvariant()
+            : connectionId.Trim();
+        var request = new ConnectionDefinitionRequest(
+            normalized,
+            resolvedConnectionId,
+            normalized,
+            configuration.PublicConfiguration,
+            configuration.SecretConfiguration);
         try
         {
-            var tenantId = context.TenantId;
-            var normalized = EntitySyncVendors.Normalize(vendor);
-            admission = connections.BeginRegistration(tenantId, connectionId, normalized);
-            connectionId = admission.ConnectionId;
-            if (!context.AllowProfiles && !string.IsNullOrWhiteSpace(profileName))
-                throw new InvalidOperationException("Profiles are disabled for remote MCP transport.");
-            var profile = context.AllowProfiles ? FindProfile(normalized, profileName) : null;
-            adapter = await adapterFactory
-                .CreateAsync(normalized, profile?.Settings, cancellationToken)
-                .ConfigureAwait(false);
+            EntitySyncConnectionDefinition definition;
+            try
+            {
+                var current = await definitions.GetAsync(
+                    context.TenantId,
+                    resolvedConnectionId,
+                    cancellationToken).ConfigureAwait(false);
+                definition = await definitions.UpdateAsync(
+                    context.TenantId,
+                    resolvedConnectionId,
+                    current.Generation,
+                    request,
+                    new EntitySyncActor(context.Actor),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConnectionNotFoundException)
+            {
+                definition = await definitions.CreateAsync(
+                    context.TenantId,
+                    request,
+                    new EntitySyncActor(context.Actor),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                Id = definition.ConnectionId,
+                definition.Vendor,
+                definition.Generation
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (InvalidOperationException exception)
+        {
+            return Error(exception.Message);
+        }
+        catch
+        {
+            return Error("Connection failed. Check server logs for the correlated operation.");
+        }
+        finally
+        {
+            if (configuration.SecretConfiguration is IDictionary<string, string> secrets)
+                secrets.Clear();
+        }
+    }
 
-            var registration = connections.Register(tenantId, connectionId, adapter);
+    private static async Task<string> ConnectLocalAsync(
+        IEntityConnectionRepository connections,
+        IServerManagedEntityAdapterFactory adapterFactory,
+        McpRequestContext context,
+        string vendor,
+        string? connectionId,
+        string? profileName,
+        CancellationToken cancellationToken)
+    {
+        IEntityAdapter? adapter = null;
+        using var admission = connections.BeginRegistration(
+            context.TenantId,
+            connectionId,
+            vendor);
+        try
+        {
+            var profile = FindProfile(vendor, profileName);
+            adapter = await adapterFactory
+                .CreateAsync(vendor, profile?.Settings, cancellationToken)
+                .ConfigureAwait(false);
+            var registration = connections.Register(
+                context.TenantId,
+                admission.ConnectionId,
+                adapter);
             adapter = null;
             return JsonSerializer.Serialize(new
             {
@@ -48,22 +139,12 @@ public static class ConnectionTools
                 profile = profile?.Name
             });
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Error(ex.Message);
-        }
-        catch
-        {
-            return Error("Connection failed. Check server logs for the correlated operation.");
-        }
         finally
         {
-            if (adapter is IDisposable disposable) disposable.Dispose();
-            admission?.Dispose();
+            if (adapter is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            else if (adapter is IDisposable disposable)
+                disposable.Dispose();
         }
     }
 
@@ -86,7 +167,7 @@ public static class ConnectionTools
     [McpServerTool]
     [Description("Test a tenant-scoped vendor connection.")]
     public static async Task<string> TestConnection(
-        IEntityConnectionRepository connections,
+        IConnectionRuntimeFactory connections,
         McpRequestContext context,
         [Description("Vendor name")] string vendor,
         [Description("Connection ID. Required when multiple connections exist for this vendor.")] string? connectionId = null,
@@ -94,10 +175,19 @@ public static class ConnectionTools
     {
         try
         {
-            using var lease = connections.Acquire(context.TenantId, vendor, connectionId);
-            var connection = lease.Connection;
-            var connected = await connection.Adapter.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.Serialize(new { success = true, connection.Id, connection.Vendor, connected });
+            await using var lease = await connections.AcquireCurrentAsync(
+                context.TenantId,
+                vendor,
+                connectionId,
+                cancellationToken).ConfigureAwait(false);
+            var connected = await lease.Adapter.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                Id = lease.Definition.ConnectionId,
+                lease.Definition.Vendor,
+                connected
+            });
         }
         catch (OperationCanceledException)
         {
@@ -111,16 +201,45 @@ public static class ConnectionTools
 
     [McpServerTool]
     [Description("List tenant-scoped connected vendor adapters.")]
-    public static string ListConnections(IEntityConnectionRepository connections, McpRequestContext context)
+    public static async Task<string> ListConnections(
+        IServiceProvider services,
+        IConnectionDefinitionRepository connections,
+        McpRequestContext context,
+        CancellationToken cancellationToken = default)
     {
-        var result = connections.List(context.TenantId).Select(connection => new { connection.Id, connection.Vendor, connection.Generation });
+        if (context.AllowProfiles)
+        {
+            var local = services.GetRequiredService<IEntityConnectionRepository>()
+                .List(context.TenantId)
+                .Select(connection => new
+                {
+                    Id = connection.Id,
+                    connection.Vendor,
+                    connection.Generation,
+                    Enabled = true
+                });
+            return JsonSerializer.Serialize(new { success = true, connections = local });
+        }
+
+        var result = (await connections.ListAsync(
+                context.TenantId,
+                vendor: null,
+                enabled: null,
+                cancellationToken).ConfigureAwait(false))
+            .Select(connection => new
+            {
+                Id = connection.ConnectionId,
+                connection.Vendor,
+                connection.Generation,
+                connection.Enabled
+            });
         return JsonSerializer.Serialize(new { success = true, connections = result });
     }
 
     [McpServerTool]
     [Description("Read a bounded page of canonical entities from a tenant-scoped connection.")]
     public static async Task<string> GetEntities(
-        IEntityConnectionRepository connections,
+        IConnectionRuntimeFactory connections,
         McpRequestContext context,
         [Description("Vendor name")] string vendor,
         [Description("Entity type")] string entityType = "Customer",
@@ -134,9 +253,12 @@ public static class ConnectionTools
         if (search?.Length > 512) return Error("Search cannot exceed 512 characters.");
         try
         {
-            using var lease = connections.Acquire(context.TenantId, vendor, connectionId);
-            var connection = lease.Connection;
-            var entities = await connection.Adapter.GetEntitiesAsync(new EntityQuery
+            await using var lease = await connections.AcquireCurrentAsync(
+                context.TenantId,
+                vendor,
+                connectionId,
+                cancellationToken).ConfigureAwait(false);
+            var entities = await lease.Adapter.GetEntitiesAsync(new EntityQuery
             {
                 EntityType = entityType,
                 Search = search,

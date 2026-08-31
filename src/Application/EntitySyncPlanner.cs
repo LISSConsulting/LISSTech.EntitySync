@@ -5,7 +5,7 @@ using LISSTech.EntitySync.Ports;
 namespace LISSTech.EntitySync.Application;
 
 public sealed class EntitySyncPlanner(
-    IEntityConnectionRepository connections,
+    IConnectionRuntimeFactory connections,
     IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
     IEntityMatcher matcher,
@@ -20,10 +20,18 @@ public sealed class EntitySyncPlanner(
         var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
         var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
         ValidateWorkflow(sourceVendor, targetVendor);
-        using var sourceLease = connections.Acquire(request.TenantId, sourceVendor, request.SourceConnectionId);
-        using var targetLease = connections.Acquire(request.TenantId, targetVendor, request.TargetConnectionId);
-        var sourceConnection = sourceLease.Connection;
-        var targetConnection = targetLease.Connection;
+        await using var sourceLease = await connections.AcquireCurrentAsync(
+            request.TenantId,
+            sourceVendor,
+            request.SourceConnectionId,
+            cancellationToken).ConfigureAwait(false);
+        await using var targetLease = await connections.AcquireCurrentAsync(
+            request.TenantId,
+            targetVendor,
+            request.TargetConnectionId,
+            cancellationToken).ConfigureAwait(false);
+        var sourceConnection = sourceLease.Definition;
+        var targetConnection = targetLease.Definition;
         var sourceType = request.SourceEntityType ?? DefaultEntityType(sourceVendor);
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
@@ -38,7 +46,7 @@ public sealed class EntitySyncPlanner(
         var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
 
-        var sources = await sourceConnection.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
+        var sources = await sourceLease.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
         if (request.SourceEntityId is not null)
         {
             var expectedSourceId = request.SourceEntityId.Trim();
@@ -50,7 +58,7 @@ public sealed class EntitySyncPlanner(
                     $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
                     nameof(request));
         }
-        var targets = await targetConnection.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
+        var targets = await targetLease.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, EntityExclusion> exclusionsBySourceId;
         if (request.CreateMissing)
@@ -58,10 +66,10 @@ public sealed class EntitySyncPlanner(
             var exclusionRoute = EntityExclusionRoute.Create(
                 request.TenantId,
                 sourceVendor,
-                sourceConnection.Id,
+                sourceConnection.ConnectionId,
                 sourceType,
                 targetVendor,
-                targetConnection.Id,
+                targetConnection.ConnectionId,
                 targetType);
             try
             {
@@ -88,11 +96,11 @@ public sealed class EntitySyncPlanner(
         if (sources.Count > MaxEntitiesPerPlanSide || targets.Count > MaxEntitiesPerPlanSide)
             throw new InvalidOperationException($"A plan is limited to {MaxEntitiesPerPlanSide} source and target entities. Narrow the synchronization scope.");
 
-        var customerLinks = HaloNCentralPlanLinks.IsCustomerPlan(sourceVendor, sourceType, targetVendor, targetType, sourceConnection.Adapter);
-        var siteLinks = HaloNCentralPlanLinks.IsSitePlan(sourceVendor, sourceType, targetVendor, targetType, sourceConnection.Adapter);
+        var customerLinks = HaloNCentralPlanLinks.IsCustomerPlan(sourceVendor, sourceType, targetVendor, targetType, sourceLease.Adapter);
+        var siteLinks = HaloNCentralPlanLinks.IsSitePlan(sourceVendor, sourceType, targetVendor, targetType, sourceLease.Adapter);
         if (customerLinks || siteLinks)
         {
-            await HaloNCentralPlanLinks.ApplyAsync(sources, targets, sourceConnection.Adapter, siteLinks, cancellationToken).ConfigureAwait(false);
+            await HaloNCentralPlanLinks.ApplyAsync(sources, targets, sourceLease.Adapter, siteLinks, cancellationToken).ConfigureAwait(false);
         }
 
         var externalIdName = request.SourceExternalIdName
@@ -115,10 +123,10 @@ public sealed class EntitySyncPlanner(
                 request.TenantId,
                 request.ChangeStateScope!,
                 sourceVendor,
-                sourceConnection.Id,
+                sourceConnection.ConnectionId,
                 sourceType,
                 targetVendor,
-                targetConnection.Id,
+                targetConnection.ConnectionId,
                 targetType);
             storedChangeStates = await changeStates
                 .GetBySourceIdsAsync(route, sources.Select(source => source.Id).ToArray(), cancellationToken)
@@ -135,9 +143,9 @@ public sealed class EntitySyncPlanner(
             TargetCandidates = targets.ToList(),
             Execution = new EntitySyncPlanExecution
             {
-                SourceConnectionId = sourceConnection.Id,
+                SourceConnectionId = sourceConnection.ConnectionId,
                 SourceConnectionGeneration = sourceConnection.Generation,
-                TargetConnectionId = targetConnection.Id,
+                TargetConnectionId = targetConnection.ConnectionId,
                 TargetConnectionGeneration = targetConnection.Generation,
                 MatchOptions = options,
                 UpdatePolicy = request.UpdatePolicy,

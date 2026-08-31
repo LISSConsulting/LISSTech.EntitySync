@@ -27,6 +27,98 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<bool> TryInsertValidatedAsync(
+        string tenantId,
+        EntitySyncPolicy policy,
+        string sourceConnectionId,
+        long sourceGeneration,
+        string targetConnectionId,
+        long targetGeneration,
+        CancellationToken cancellationToken)
+    {
+        PostgresControlPersistence.RequireTenant(
+            tenantId,
+            policy.TenantId,
+            nameof(policy));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string lockSql = """
+            SELECT connection_id, generation, enabled
+            FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id
+              AND connection_id IN (@source_connection_id, @target_connection_id)
+            ORDER BY connection_id
+            FOR SHARE
+            """;
+        await using var lockCommand = new NpgsqlCommand(lockSql, connection, transaction);
+        PostgresControlPersistence.Add(
+            lockCommand,
+            "tenant_id",
+            NpgsqlDbType.Text,
+            tenantId);
+        PostgresControlPersistence.Add(
+            lockCommand,
+            "source_connection_id",
+            NpgsqlDbType.Text,
+            sourceConnectionId);
+        PostgresControlPersistence.Add(
+            lockCommand,
+            "target_connection_id",
+            NpgsqlDbType.Text,
+            targetConnectionId);
+        var generations = new Dictionary<string, (long Generation, bool Enabled)>(
+            StringComparer.Ordinal);
+        await using (var reader = await lockCommand.ExecuteReaderAsync(cancellationToken)
+                         .ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                generations.Add(
+                    reader.GetString(0),
+                    (reader.GetInt64(1), reader.GetBoolean(2)));
+        }
+        if (!Matches(sourceConnectionId, sourceGeneration)
+            || !Matches(targetConnectionId, targetGeneration))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        const string insertSql = """
+            INSERT INTO entitysync.sync_policies (
+                tenant_id, policy_id, version, name, route_scope, definition,
+                definition_sha256, enabled, created_at, created_by)
+            VALUES (
+                @tenant_id, @policy_id, @version, @name, @route_scope, @definition,
+                @definition_sha256, @enabled, @created_at, @created_by)
+            """;
+        await using var insertCommand = new NpgsqlCommand(
+            insertSql,
+            connection,
+            transaction);
+        AddPolicy(insertCommand, policy);
+        try
+        {
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (PostgresException exception)
+            when (exception.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        bool Matches(string connectionId, long generation) =>
+            generations.TryGetValue(connectionId, out var current)
+            && current.Enabled
+            && current.Generation == generation;
+    }
+
+
     public Task<EntitySyncPolicy?> GetAsync(
         string tenantId,
         Guid policyId,
@@ -133,7 +225,15 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
             definition.TargetVendor, definition.TargetConnectionId, definition.TargetEntityType,
             definition.IncludeInactive, definition.CreateMissing, definition.AutoLinkScore,
             definition.ReviewScore, definition.SourceExternalIdName, definition.TargetCustomFieldName,
-            definition.UpdatePolicy, definition.AllowedFields.ToArray(), definition.BlockedFields.ToArray(),
+            definition.UpdatePolicy,
+            definition.AllowedFields
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value, StringComparer.Ordinal)
+                .ToArray(),
+            definition.BlockedFields
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value, StringComparer.Ordinal)
+                .ToArray(),
             definition.ScheduledApplySafeSubset));
 
     private static EntitySyncPolicyDefinition Deserialize(string json)

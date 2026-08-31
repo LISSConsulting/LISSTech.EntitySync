@@ -377,7 +377,7 @@ public sealed class EntitySyncApplyCoordinatorTests
     }
 
     private static EntitySyncService CreateService(
-        IEntityConnectionRepository connections,
+        IConnectionRuntimeFactory connections,
         IEntitySyncPlanRepository plans)
     {
         var mapper = new DefaultEntityMapper();

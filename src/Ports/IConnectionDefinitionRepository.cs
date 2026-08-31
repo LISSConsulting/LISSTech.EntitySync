@@ -1,6 +1,14 @@
 using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Ports;
+public enum ConnectionDefinitionDeleteResult
+{
+    Deleted,
+    Referenced,
+    NotFound,
+    GenerationMismatch
+}
+
 
 public interface IConnectionDefinitionRepository
 {
@@ -25,5 +33,11 @@ public interface IConnectionDefinitionRepository
         string connectionId,
         long expectedGeneration,
         EntitySyncConnectionDefinition nextGeneration,
+        CancellationToken cancellationToken);
+
+    Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
         CancellationToken cancellationToken);
 }
