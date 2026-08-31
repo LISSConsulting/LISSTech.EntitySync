@@ -4,8 +4,13 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
     policy_id uuid NOT NULL,
     policy_version integer NOT NULL CHECK (policy_version > 0),
     route_scope text NOT NULL,
+    source_connection_id text NOT NULL,
+    target_connection_id text NOT NULL,
     source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
     target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
+    source_search text,
+    source_count integer,
+    source_entity_id text,
     plan_digest_sha256 char(64) NOT NULL,
     status text NOT NULL,
     created_at timestamptz NOT NULL,
@@ -21,6 +26,16 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
         CHECK (status IN ('Draft','Approved','Consumed','Expired')),
     CONSTRAINT sync_plans_digest_sha256_check
         CHECK (plan_digest_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT sync_plans_source_count_check
+        CHECK (source_count IS NULL OR source_count > 0),
+    CONSTRAINT sync_plans_source_count_search_check
+        CHECK (source_count IS NULL OR source_search IS NOT NULL),
+    CONSTRAINT sync_plans_connection_ids_check
+        CHECK (btrim(source_connection_id) <> '' AND btrim(target_connection_id) <> ''),
+    CONSTRAINT sync_plans_source_search_check
+        CHECK (source_search IS NULL OR btrim(source_search) <> ''),
+    CONSTRAINT sync_plans_source_entity_id_check
+        CHECK (source_entity_id IS NULL OR btrim(source_entity_id) <> ''),
     CONSTRAINT sync_plans_policy_fkey
         FOREIGN KEY (tenant_id, policy_id, policy_version)
         REFERENCES entitysync.sync_policies (tenant_id, policy_id, version)
@@ -44,6 +59,10 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_items (
     target_entity_type text NOT NULL,
     target_entity_id text,
     action text NOT NULL,
+    match_score integer NOT NULL,
+    match_type text NOT NULL,
+    match_reasons jsonb NOT NULL,
+    field_diffs jsonb NOT NULL,
     redacted_before jsonb NOT NULL,
     redacted_desired jsonb NOT NULL,
     before_payload_sha256 char(64),
@@ -53,6 +72,14 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_items (
     CONSTRAINT sync_plan_items_plan_fkey
         FOREIGN KEY (tenant_id, plan_id)
         REFERENCES entitysync.sync_plans (tenant_id, plan_id),
+    CONSTRAINT sync_plan_items_match_score_check
+        CHECK (match_score BETWEEN 0 AND 100),
+    CONSTRAINT sync_plan_items_match_type_check
+        CHECK (btrim(match_type) <> ''),
+    CONSTRAINT sync_plan_items_match_reasons_check
+        CHECK (jsonb_typeof(match_reasons) = 'array'),
+    CONSTRAINT sync_plan_items_field_diffs_check
+        CHECK (jsonb_typeof(field_diffs) = 'array'),
     CONSTRAINT sync_plan_items_before_payload_sha256_check
         CHECK (before_payload_sha256 IS NULL OR before_payload_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT sync_plan_items_desired_payload_sha256_check
@@ -417,8 +444,12 @@ BEGIN
         RAISE EXCEPTION 'Rows in %.% cannot be deleted', TG_TABLE_SCHEMA, TG_TABLE_NAME
             USING ERRCODE = '55000';
     END IF;
-
-    IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    IF NEW.source_connection_id IS DISTINCT FROM OLD.source_connection_id
+        OR NEW.target_connection_id IS DISTINCT FROM OLD.target_connection_id
+        OR NEW.source_search IS DISTINCT FROM OLD.source_search
+        OR NEW.source_count IS DISTINCT FROM OLD.source_count
+        OR NEW.source_entity_id IS DISTINCT FROM OLD.source_entity_id
+        OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
         OR NEW.plan_id IS DISTINCT FROM OLD.plan_id
         OR NEW.policy_id IS DISTINCT FROM OLD.policy_id
         OR NEW.policy_version IS DISTINCT FROM OLD.policy_version
@@ -431,6 +462,35 @@ BEGIN
         OR NEW.expires_at IS DISTINCT FROM OLD.expires_at THEN
         RAISE EXCEPTION 'Plan content in %.% is immutable', TG_TABLE_SCHEMA, TG_TABLE_NAME
             USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.validate_sync_plan_connections()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.source_connection_generation <= 0 OR NEW.target_connection_generation <= 0 THEN
+        RETURN NEW;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM entitysync.connection_definitions
+         WHERE tenant_id = NEW.tenant_id
+           AND connection_id = NEW.source_connection_id
+           AND generation = NEW.source_connection_generation)
+       OR NOT EXISTS (
+        SELECT 1
+          FROM entitysync.connection_definitions
+         WHERE tenant_id = NEW.tenant_id
+           AND connection_id = NEW.target_connection_id
+           AND generation = NEW.target_connection_generation) THEN
+        RAISE EXCEPTION 'Plan connection IDs and generations must reference existing connections'
+            USING ERRCODE = '23503';
     END IF;
 
     RETURN NEW;
@@ -451,6 +511,16 @@ BEGIN
       FROM entitysync.sync_plans
      WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id
      FOR UPDATE;
+    IF NOT EXISTS (
+        SELECT 1
+          FROM entitysync.sync_plans
+         WHERE tenant_id = NEW.tenant_id
+           AND plan_id = NEW.plan_id
+           AND source_connection_id = NEW.source_connection_id
+           AND target_connection_id = NEW.target_connection_id) THEN
+        RAISE EXCEPTION 'Plan item connection IDs must match its plan'
+            USING ERRCODE = '23514';
+    END IF;
 
     IF EXISTS (
         SELECT 1
@@ -561,6 +631,11 @@ BEGIN
     RETURN OLD;
 END;
 $$;
+
+DROP TRIGGER IF EXISTS sync_plans_connections ON entitysync.sync_plans;
+CREATE TRIGGER sync_plans_connections
+    BEFORE INSERT ON entitysync.sync_plans
+    FOR EACH ROW EXECUTE FUNCTION entitysync.validate_sync_plan_connections();
 
 DROP TRIGGER IF EXISTS sync_plans_immutable ON entitysync.sync_plans;
 CREATE TRIGGER sync_plans_immutable

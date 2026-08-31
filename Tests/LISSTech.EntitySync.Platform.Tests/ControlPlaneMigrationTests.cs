@@ -284,12 +284,14 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
                 source_entity_type, source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
+                match_score, match_type, match_reasons, field_diffs,
                 redacted_before, redacted_desired, desired_payload_sha256)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000303', 1, 'source', 'source-1',
                 'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
-                'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+                'TARGET-2', 'Update', 80, 'Fuzzy', '[]', '[]',
+                '{}', '{}', repeat('4', 64));
 
             INSERT INTO entitysync.sync_plan_inspections (
                 tenant_id, inspection_id, plan_id, plan_digest_sha256,
@@ -319,22 +321,18 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     public async Task Connection_generations_are_positive_and_bound_to_operations()
     {
         await MigrateAsync();
+        await SeedConnectionPolicyAsync();
         await using var command = Database.CreateCommand("""
-            INSERT INTO entitysync.sync_policies (
-                tenant_id, policy_id, version, name, route_scope, definition,
-                definition_sha256, enabled, created_at, created_by)
-            VALUES (
-                'tenant-a', '00000000-0000-0000-0000-000000000100', 1, 'policy-a',
-                'route-a', '{}', repeat('0', 64), true, now(), 'tester');
-
             INSERT INTO entitysync.sync_plans (
                 tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
                 source_connection_generation, target_connection_generation,
                 plan_digest_sha256, status, created_at, created_by, expires_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
-                0, 11, repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+                'source-1', 'target-1', 0, 11, repeat('1', 64),
+                'Draft', now(), 'tester', now() + interval '1 day');
             """);
         var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
         Assert.Equal("23514", error.SqlState);
@@ -389,12 +387,14 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
                 source_entity_type, source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
+                match_score, match_type, match_reasons, field_diffs,
                 redacted_before, redacted_desired, desired_payload_sha256)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000304', 1, 'source', 'source-1',
                 'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
-                'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+                'TARGET-2', 'Update', 80, 'Fuzzy', '[]', '[]',
+                '{}', '{}', repeat('4', 64));
             """);
         var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
         Assert.Equal("55000", error.SqlState);
@@ -615,6 +615,228 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.Equal("55000", approvalError.SqlState);
     }
 
+    [Fact]
+    public async Task Plans_persist_connection_ids_and_coexisting_source_bounds_immutably()
+    {
+        await MigrateAsync();
+        await SeedConnectionPolicyAsync();
+        await using (var insert = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
+                source_connection_generation, target_connection_generation,
+                source_search, source_count, source_entity_id,
+                plan_digest_sha256, status, created_at, created_by, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                'source-1', 'target-1', 7, 11, 'acme', 25, 'ENTITY-1',
+                repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+            """))
+        {
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        await using var read = Database.CreateCommand("""
+            SELECT source_connection_id, target_connection_id, source_search, source_count, source_entity_id
+            FROM entitysync.sync_plans
+            WHERE tenant_id = 'tenant-a'
+              AND plan_id = '00000000-0000-0000-0000-000000000101';
+            """);
+        await using (var reader = await read.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("source-1", reader.GetString(0));
+            Assert.Equal("target-1", reader.GetString(1));
+            Assert.Equal("acme", reader.GetString(2));
+            Assert.Equal(25, reader.GetInt32(3));
+            Assert.Equal("ENTITY-1", reader.GetString(4));
+        }
+
+        await using var mutate = Database.CreateCommand("""
+            UPDATE entitysync.sync_plans
+            SET source_connection_id = 'source-2', target_connection_id = 'target-2',
+                source_search = 'changed', source_count = 50, source_entity_id = 'ENTITY-2'
+            WHERE tenant_id = 'tenant-a'
+              AND plan_id = '00000000-0000-0000-0000-000000000101';
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => mutate.ExecuteNonQueryAsync());
+        Assert.Equal("55000", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Plans_reject_nonpositive_counts_and_unbound_connection_generations()
+    {
+        await MigrateAsync();
+        await SeedConnectionPolicyAsync();
+        await using var wrongGeneration = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
+                source_connection_generation, target_connection_generation,
+                plan_digest_sha256, status, created_at, created_by, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                'source-1', 'target-1', 8, 11,
+                repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+            """);
+        var generationError =
+            await Assert.ThrowsAsync<PostgresException>(() => wrongGeneration.ExecuteNonQueryAsync());
+        Assert.Equal("23503", generationError.SqlState);
+
+        await using var zeroCount = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
+                source_connection_generation, target_connection_generation,
+                source_search, source_count,
+                plan_digest_sha256, status, created_at, created_by, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000102',
+                '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                'source-1', 'target-1', 7, 11, 'acme', 0,
+                repeat('2', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+            """);
+        var countError = await Assert.ThrowsAsync<PostgresException>(() => zeroCount.ExecuteNonQueryAsync());
+        Assert.Equal("23514", countError.SqlState);
+
+        await using var countWithoutSearch = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
+                source_connection_generation, target_connection_generation,
+                source_count, plan_digest_sha256, status, created_at, created_by, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000103',
+                '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                'source-1', 'target-1', 7, 11, 5, repeat('3', 64),
+                'Draft', now(), 'tester', now() + interval '1 day');
+            """);
+        var relationshipError =
+            await Assert.ThrowsAsync<PostgresException>(() => countWithoutSearch.ExecuteNonQueryAsync());
+        Assert.Equal("23514", relationshipError.SqlState);
+    }
+
+    [Fact]
+    public async Task Plan_item_match_details_require_ordered_arrays_and_are_immutable()
+    {
+        await MigrateAsync();
+        await SeedPlansAsync();
+        await using (var valid = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                match_score, match_type, match_reasons, field_diffs,
+                redacted_before, redacted_desired, desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000305', 1, 'source', 'source-1',
+                'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
+                'TARGET-2', 'Update', 87, 'Fuzzy',
+                '["name similarity","domain match"]',
+                '[{"field":"name","before":"Acme","desired":"ACME"}]',
+                '{}', '{}', repeat('5', 64));
+            """))
+        {
+            await valid.ExecuteNonQueryAsync();
+        }
+
+        await using (var read = Database.CreateCommand("""
+            SELECT match_reasons ->> 0, match_reasons ->> 1, field_diffs -> 0 ->> 'field'
+            FROM entitysync.sync_plan_items
+            WHERE tenant_id = 'tenant-a'
+              AND plan_id = '00000000-0000-0000-0000-000000000101'
+              AND item_id = '00000000-0000-0000-0000-000000000305';
+            """))
+        await using (var reader = await read.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("name similarity", reader.GetString(0));
+            Assert.Equal("domain match", reader.GetString(1));
+            Assert.Equal("name", reader.GetString(2));
+        }
+
+        await using var invalidScore = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, action, match_score, match_type,
+                match_reasons, field_diffs, redacted_before, redacted_desired,
+                desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000306', 2, 'source', 'source-1',
+                'company', 'entity-3', 'ENTITY-3', 'target', 'target-1', 'account',
+                'Create', 101, 'Fuzzy', '[]', '[]', '{}', '{}', repeat('6', 64));
+            """);
+        var scoreError = await Assert.ThrowsAsync<PostgresException>(() => invalidScore.ExecuteNonQueryAsync());
+        Assert.Equal("23514", scoreError.SqlState);
+
+        await using var invalidShape = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, action, match_score, match_type,
+                match_reasons, field_diffs, redacted_before, redacted_desired,
+                desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000307', 3, 'source', 'source-1',
+                'company', 'entity-4', 'ENTITY-4', 'target', 'target-1', 'account',
+                'Create', 50, 'Fuzzy', '{"reason":"unordered"}', '[]',
+                '{}', '{}', repeat('7', 64));
+            """);
+        var shapeError = await Assert.ThrowsAsync<PostgresException>(() => invalidShape.ExecuteNonQueryAsync());
+        Assert.Equal("23514", shapeError.SqlState);
+
+        await using var invalidDiffs = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, action, match_score, match_type,
+                match_reasons, field_diffs, redacted_before, redacted_desired,
+                desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000308', 4, 'source', 'source-1',
+                'company', 'entity-5', 'ENTITY-5', 'target', 'target-1', 'account',
+                'Create', 50, 'Fuzzy', '[]', '{"field":"unordered"}',
+                '{}', '{}', repeat('8', 64));
+            """);
+        var diffsError = await Assert.ThrowsAsync<PostgresException>(() => invalidDiffs.ExecuteNonQueryAsync());
+        Assert.Equal("23514", diffsError.SqlState);
+
+        await using var invalidConnection = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, action, match_score, match_type,
+                match_reasons, field_diffs, redacted_before, redacted_desired,
+                desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000309', 5, 'source', 'source-2',
+                'company', 'entity-6', 'ENTITY-6', 'target', 'target-1', 'account',
+                'Create', 50, 'Fuzzy', '[]', '[]', '{}', '{}', repeat('9', 64));
+            """);
+        var connectionError =
+            await Assert.ThrowsAsync<PostgresException>(() => invalidConnection.ExecuteNonQueryAsync());
+        Assert.Equal("23514", connectionError.SqlState);
+
+        await using var mutate = Database.CreateCommand("""
+            UPDATE entitysync.sync_plan_items
+            SET match_score = 99, match_type = 'Changed',
+                match_reasons = '["changed"]', field_diffs = '[]'
+            WHERE tenant_id = 'tenant-a'
+              AND plan_id = '00000000-0000-0000-0000-000000000101'
+              AND item_id = '00000000-0000-0000-0000-000000000305';
+            """);
+        var immutableError = await Assert.ThrowsAsync<PostgresException>(() => mutate.ExecuteNonQueryAsync());
+        Assert.Equal("55000", immutableError.SqlState);
+    }
+
     public async Task InitializeAsync()
     {
         var adminConnectionString = Environment.GetEnvironmentVariable("DATABASE_URL");
@@ -678,42 +900,68 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         }
     }
 
-    private async Task SeedPlansAsync()
+    private async Task SeedConnectionPolicyAsync()
     {
         await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.connection_definitions (
+                tenant_id, connection_id, vendor, display_name, generation, enabled,
+                public_configuration, secret_ciphertext, created_at, created_by, updated_at, updated_by)
+            VALUES
+                ('tenant-a', 'source-1', 'source', 'Source 1', 7, true,
+                 '{}', 'source-secret-1', now(), 'tester', now(), 'tester'),
+                ('tenant-a', 'target-1', 'target', 'Target 1', 11, true,
+                 '{}', 'target-secret-1', now(), 'tester', now(), 'tester'),
+                ('tenant-a', 'source-2', 'source', 'Source 2', 13, true,
+                 '{}', 'source-secret-2', now(), 'tester', now(), 'tester'),
+                ('tenant-a', 'target-2', 'target', 'Target 2', 17, true,
+                 '{}', 'target-secret-2', now(), 'tester', now(), 'tester');
+
             INSERT INTO entitysync.sync_policies (
                 tenant_id, policy_id, version, name, route_scope, definition,
                 definition_sha256, enabled, created_at, created_by)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000100', 1, 'policy-a',
                 'route-a', '{}', repeat('0', 64), true, now(), 'tester');
+            """);
+        await command.ExecuteNonQueryAsync();
+    }
 
+    private async Task SeedPlansAsync()
+    {
+        await SeedConnectionPolicyAsync();
+        await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_plans (
                 tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
                 source_connection_generation, target_connection_generation,
                 plan_digest_sha256, status, created_at, created_by, expires_at)
             VALUES
                 ('tenant-a', '00000000-0000-0000-0000-000000000101',
-                 '00000000-0000-0000-0000-000000000100', 1, 'route-a', 7, 11,
+                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                 'source-1', 'target-1', 7, 11,
                  repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day'),
                 ('tenant-a', '00000000-0000-0000-0000-000000000102',
-                 '00000000-0000-0000-0000-000000000100', 1, 'route-a', 13, 17,
+                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                 'source-2', 'target-2', 13, 17,
                  repeat('2', 64), 'Draft', now(), 'tester', now() + interval '1 day');
 
             INSERT INTO entitysync.sync_plan_items (
                 tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
                 source_entity_type, source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
+                match_score, match_type, match_reasons, field_diffs,
                 redacted_before, redacted_desired, desired_payload_sha256)
             VALUES
                 ('tenant-a', '00000000-0000-0000-0000-000000000101',
                  '00000000-0000-0000-0000-000000000302', 0, 'source', 'source-1',
                  'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
-                 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64)),
+                 'TARGET-1', 'Update', 100, 'Exact', '[]', '[]',
+                 '{}', '{}', repeat('3', 64)),
                 ('tenant-a', '00000000-0000-0000-0000-000000000102',
                  '00000000-0000-0000-0000-000000000303', 0, 'source', 'source-2',
                  'company', 'entity-2', 'ENTITY-2', 'target', 'target-2', 'account',
-                 'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+                 'TARGET-2', 'Update', 100, 'Exact', '[]', '[]',
+                 '{}', '{}', repeat('4', 64));
             """);
         await command.ExecuteNonQueryAsync();
     }
@@ -725,12 +973,14 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
                 source_entity_type, source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
+                match_score, match_type, match_reasons, field_diffs,
                 redacted_before, redacted_desired, desired_payload_sha256)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000304', 1, 'source', 'source-1',
                 'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
-                'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+                'TARGET-2', 'Update', 80, 'Fuzzy', '[]', '[]',
+                '{}', '{}', repeat('4', 64));
             """);
         await command.ExecuteNonQueryAsync();
     }
