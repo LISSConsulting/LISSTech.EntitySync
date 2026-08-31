@@ -1,0 +1,168 @@
+using System.Text.Json;
+using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace LISSTech.EntitySync.Runtime;
+
+public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : ISyncPolicyRepository
+{
+    public async Task InsertAsync(
+        string tenantId,
+        EntitySyncPolicy policy,
+        CancellationToken cancellationToken)
+    {
+        PostgresControlPersistence.RequireTenant(tenantId, policy.TenantId, nameof(policy));
+        const string sql = """
+            INSERT INTO entitysync.sync_policies (
+                tenant_id, policy_id, version, name, route_scope, definition,
+                definition_sha256, enabled, created_at, created_by)
+            VALUES (
+                @tenant_id, @policy_id, @version, @name, @route_scope, @definition,
+                @definition_sha256, @enabled, @created_at, @created_by)
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddPolicy(command, policy);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<EntitySyncPolicy?> GetAsync(
+        string tenantId,
+        Guid policyId,
+        int version,
+        CancellationToken cancellationToken) =>
+        GetOneAsync(
+            """
+            SELECT tenant_id, policy_id, version, name, route_scope, definition::text,
+                   definition_sha256, enabled, created_at, created_by
+            FROM entitysync.sync_policies
+            WHERE tenant_id = @tenant_id AND policy_id = @policy_id AND version = @version
+            """,
+            tenantId, policyId, version, cancellationToken);
+
+    public Task<EntitySyncPolicy?> GetLatestAsync(
+        string tenantId,
+        Guid policyId,
+        CancellationToken cancellationToken) =>
+        GetOneAsync(
+            """
+            SELECT tenant_id, policy_id, version, name, route_scope, definition::text,
+                   definition_sha256, enabled, created_at, created_by
+            FROM entitysync.sync_policies
+            WHERE tenant_id = @tenant_id AND policy_id = @policy_id
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            tenantId, policyId, null, cancellationToken);
+
+    public async Task<IReadOnlyList<EntitySyncPolicy>> ListLatestAsync(
+        string tenantId,
+        string? routeScope,
+        bool? enabled,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT latest.tenant_id, latest.policy_id, latest.version, latest.name,
+                   latest.route_scope, latest.definition::text,
+                   latest.definition_sha256, latest.enabled, latest.created_at,
+                   latest.created_by
+            FROM (
+                SELECT DISTINCT ON (policy_id)
+                       tenant_id, policy_id, version, name, route_scope, definition,
+                       definition_sha256, enabled, created_at, created_by
+                FROM entitysync.sync_policies
+                WHERE tenant_id = @tenant_id
+                ORDER BY policy_id, version DESC
+            ) latest
+            WHERE latest.tenant_id = @tenant_id
+              AND (@route_scope IS NULL OR latest.route_scope = @route_scope)
+              AND (@enabled IS NULL OR latest.enabled = @enabled)
+            ORDER BY latest.policy_id
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "route_scope", NpgsqlDbType.Text, routeScope);
+        PostgresControlPersistence.Add(command, "enabled", NpgsqlDbType.Boolean, enabled);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<EntitySyncPolicy>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(Read(reader));
+        return result;
+    }
+
+    private async Task<EntitySyncPolicy?> GetOneAsync(
+        string sql,
+        string tenantId,
+        Guid policyId,
+        int? version,
+        CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "policy_id", NpgsqlDbType.Uuid, policyId);
+        if (version is not null)
+            PostgresControlPersistence.Add(command, "version", NpgsqlDbType.Integer, version.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? Read(reader) : null;
+    }
+
+    private static void AddPolicy(NpgsqlCommand command, EntitySyncPolicy policy)
+    {
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, policy.TenantId);
+        PostgresControlPersistence.Add(command, "policy_id", NpgsqlDbType.Uuid, policy.PolicyId);
+        PostgresControlPersistence.Add(command, "version", NpgsqlDbType.Integer, policy.Version);
+        PostgresControlPersistence.Add(command, "name", NpgsqlDbType.Text, policy.Name);
+        PostgresControlPersistence.Add(command, "route_scope", NpgsqlDbType.Text, policy.RouteScope);
+        PostgresControlPersistence.Add(command, "definition", NpgsqlDbType.Jsonb, Serialize(policy.Definition));
+        PostgresControlPersistence.Add(command, "definition_sha256", NpgsqlDbType.Char, policy.DefinitionSha256.Value);
+        PostgresControlPersistence.Add(command, "enabled", NpgsqlDbType.Boolean, policy.Enabled);
+        PostgresControlPersistence.Add(command, "created_at", NpgsqlDbType.TimestampTz, policy.CreatedAt);
+        PostgresControlPersistence.Add(command, "created_by", NpgsqlDbType.Text, policy.CreatedBy.ActorId);
+    }
+
+    private static EntitySyncPolicy Read(NpgsqlDataReader reader) =>
+        new(
+            reader.GetString(0), reader.GetGuid(1), reader.GetInt32(2), reader.GetString(3),
+            reader.GetString(4), Deserialize(reader.GetString(5)),
+            new EntitySyncSha256(reader.GetString(6)), reader.GetBoolean(7),
+            reader.GetFieldValue<DateTimeOffset>(8), new EntitySyncActor(reader.GetString(9)));
+
+    private static string Serialize(EntitySyncPolicyDefinition definition) => JsonSerializer.Serialize(
+        new PolicyDefinitionStorage(
+            definition.SourceVendor, definition.SourceConnectionId, definition.SourceEntityType,
+            definition.TargetVendor, definition.TargetConnectionId, definition.TargetEntityType,
+            definition.IncludeInactive, definition.CreateMissing, definition.AutoLinkScore,
+            definition.ReviewScore, definition.SourceExternalIdName, definition.TargetCustomFieldName,
+            definition.UpdatePolicy, definition.AllowedFields.ToArray(), definition.BlockedFields.ToArray(),
+            definition.ScheduledApplySafeSubset));
+
+    private static EntitySyncPolicyDefinition Deserialize(string json)
+    {
+        var stored = JsonSerializer.Deserialize<PolicyDefinitionStorage>(json)
+            ?? throw new InvalidOperationException("Stored policy definition is null.");
+        return new EntitySyncPolicyDefinition(
+            stored.SourceVendor, stored.SourceConnectionId, stored.SourceEntityType,
+            stored.TargetVendor, stored.TargetConnectionId, stored.TargetEntityType,
+            stored.IncludeInactive, stored.CreateMissing, stored.AutoLinkScore, stored.ReviewScore,
+            stored.SourceExternalIdName, stored.TargetCustomFieldName, stored.UpdatePolicy,
+            stored.AllowedFields, stored.BlockedFields, stored.ScheduledApplySafeSubset);
+    }
+
+    private sealed record PolicyDefinitionStorage(
+        string SourceVendor,
+        string SourceConnectionId,
+        string SourceEntityType,
+        string TargetVendor,
+        string TargetConnectionId,
+        string TargetEntityType,
+        bool IncludeInactive,
+        bool CreateMissing,
+        int AutoLinkScore,
+        int ReviewScore,
+        string? SourceExternalIdName,
+        string? TargetCustomFieldName,
+        EntitySyncUpdatePolicy UpdatePolicy,
+        string[] AllowedFields,
+        string[] BlockedFields,
+        bool ScheduledApplySafeSubset);
+}

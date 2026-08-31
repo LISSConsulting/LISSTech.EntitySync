@@ -248,7 +248,8 @@ public sealed class PlatformTests
         var services = new ServiceCollection();
 
         services.AddEntitySyncPlatform(
-            "Host=127.0.0.1;Database=unused;Username=unused;Password=unused");
+            "Host=127.0.0.1;Database=unused;Username=unused;Password=unused",
+            EntitySyncHostMode.LocalStdio);
 
         using var provider = services.BuildServiceProvider();
         Assert.NotNull(provider.GetRequiredService<NpgsqlDataSource>());

@@ -34,6 +34,7 @@ services:
       MCP_OAUTH_TOKEN_ENDPOINT: "${MCP_OAUTH_TOKEN_ENDPOINT:-}"
       MCP_OAUTH_PUBLIC_CLIENT_ID: "${MCP_OAUTH_PUBLIC_CLIENT_ID:-}"
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable exclusions}"
+      ENTITYSYNC_DATA_PROTECTION_KEY_PATH: /var/lib/entitysync-dataprotection
       MCP_TRANSPORT: http
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:?OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be set to the Logfire /v1/logs endpoint}"
       OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL_EXPORTER_OTLP_HEADERS must contain the Logfire Authorization write token}"
@@ -79,6 +80,8 @@ services:
       start_period: 10s
     init: true
     read_only: true
+    volumes:
+      - entitysync-data-protection-keys:/var/lib/entitysync-dataprotection
     tmpfs:
       - /tmp:size=64m,mode=1777
     security_opt:
@@ -96,6 +99,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable state}"
+      ENTITYSYNC_DATA_PROTECTION_KEY_PATH: /var/lib/entitysync-dataprotection
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:?OTEL logs endpoint is required}"
       OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL headers are required}"
       OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
@@ -121,6 +125,8 @@ services:
       start_period: 10s
     init: true
     read_only: true
+    volumes:
+      - entitysync-data-protection-keys:/var/lib/entitysync-dataprotection
     tmpfs:
       - /tmp:size=64m,mode=1777
     security_opt:
@@ -131,3 +137,4 @@ services:
 
 volumes:
   entitysync-db-data:
+  entitysync-data-protection-keys:

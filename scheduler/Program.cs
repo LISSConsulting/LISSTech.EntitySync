@@ -36,7 +36,8 @@ namespace LISSTech.EntitySync.Scheduler
             LogfireLogging.Configure(builder.Services, builder.Logging, logfireSettings);
 
             builder.Services.AddEntitySyncPlatform(
-                Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
+                Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
+                EntitySyncHostMode.Scheduler);
             builder.Services.AddSingleton<EntitySyncSchedulerOptions>();
             builder.Services.AddSingleton<EntitySyncSchedulerStatus>();
             builder.Services.AddSingleton<IEntitySyncSchedulerRunLock, PostgresEntitySyncSchedulerRunLock>();

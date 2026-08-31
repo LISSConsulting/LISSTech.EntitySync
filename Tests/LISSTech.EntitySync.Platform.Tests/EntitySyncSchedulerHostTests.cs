@@ -173,6 +173,8 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
         new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["DATABASE_URL"] = "Host=127.0.0.1;Database=entitysync_test;Username=test;Password=test",
+            ["ENTITYSYNC_DATA_PROTECTION_KEY_PATH"] =
+                Path.Combine(Path.GetTempPath(), "entitysync-scheduler-host-tests"),
             ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = "https://logfire-us.pydantic.dev/v1/logs",
             ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=test-token",
             ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
