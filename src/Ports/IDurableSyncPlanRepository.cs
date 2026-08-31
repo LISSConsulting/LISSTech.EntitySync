@@ -1,0 +1,98 @@
+using LISSTech.EntitySync.Core;
+
+namespace LISSTech.EntitySync.Ports;
+
+public interface IDurableSyncPlanRepository
+{
+    Task InsertAsync(
+        string tenantId,
+        EntitySyncDurablePlan plan,
+        IReadOnlyList<EntitySyncDurablePlanItem> items,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncDurablePlan?> GetAsync(
+        string tenantId,
+        Guid planId,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncDurablePlanPage> GetPageAsync(
+        string tenantId,
+        Guid planId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncInspectionSession> OpenInspectionAsync(
+        string tenantId,
+        Guid inspectionId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        EntitySyncActor actor,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncInspectionRange> RecordInspectionRangeAsync(
+        string tenantId,
+        Guid inspectionId,
+        Guid rangeId,
+        int rangeStart,
+        int rangeEnd,
+        DateTimeOffset inspectedAt,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncInspectionSession> CompleteInspectionAsync(
+        string tenantId,
+        Guid inspectionId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken);
+
+    Task<bool> HasCompleteInspectionAsync(
+        string tenantId,
+        Guid inspectionId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncApproval> ApproveInspectionAsync(
+        string tenantId,
+        Guid approvalId,
+        Guid inspectionId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        EntitySyncActor actor,
+        DateTimeOffset approvedAt,
+        DateTimeOffset? expiresAt,
+        CancellationToken cancellationToken);
+
+    Task<bool> TryConsumeApprovalAsync(
+        string tenantId,
+        Guid approvalId,
+        Guid inspectionId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        EntitySyncOperation applyOperation,
+        IReadOnlyList<EntitySyncOperationItem> operationItems,
+        CancellationToken cancellationToken);
+}
