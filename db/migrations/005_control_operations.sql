@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
     policy_id uuid NOT NULL,
     policy_version integer NOT NULL CHECK (policy_version > 0),
     route_scope text NOT NULL,
+    source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
+    target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
     plan_digest_sha256 char(64) NOT NULL,
     status text NOT NULL,
     created_at timestamptz NOT NULL,
@@ -11,7 +13,10 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
     expires_at timestamptz NOT NULL,
     PRIMARY KEY (tenant_id, plan_id),
     UNIQUE (tenant_id, plan_digest_sha256),
-    UNIQUE (tenant_id, plan_id, plan_digest_sha256),
+    UNIQUE (
+        tenant_id, plan_id, plan_digest_sha256,
+        source_connection_generation, target_connection_generation),
+    UNIQUE (tenant_id, plan_id, source_connection_generation, target_connection_generation),
     CONSTRAINT sync_plans_status_check
         CHECK (status IN ('Draft','Approved','Consumed','Expired')),
     CONSTRAINT sync_plans_digest_sha256_check
@@ -63,14 +68,24 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_inspections (
     inspection_id uuid NOT NULL,
     plan_id uuid NOT NULL,
     plan_digest_sha256 char(64) NOT NULL,
+    source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
+    target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
     range_start integer NOT NULL,
     range_end integer NOT NULL,
     inspected_at timestamptz NOT NULL,
     inspected_by text NOT NULL,
+    completed_at timestamptz NOT NULL,
     PRIMARY KEY (tenant_id, inspection_id),
+    UNIQUE (
+        tenant_id, inspection_id, plan_id, plan_digest_sha256,
+        source_connection_generation, target_connection_generation),
     CONSTRAINT sync_plan_inspections_plan_digest_fkey
-        FOREIGN KEY (tenant_id, plan_id, plan_digest_sha256)
-        REFERENCES entitysync.sync_plans (tenant_id, plan_id, plan_digest_sha256),
+        FOREIGN KEY (
+            tenant_id, plan_id, plan_digest_sha256,
+            source_connection_generation, target_connection_generation)
+        REFERENCES entitysync.sync_plans (
+            tenant_id, plan_id, plan_digest_sha256,
+            source_connection_generation, target_connection_generation),
     CONSTRAINT sync_plan_inspections_range_check
         CHECK (range_start >= 0 AND range_end >= range_start),
     CONSTRAINT sync_plan_inspections_digest_sha256_check
@@ -83,23 +98,77 @@ CREATE INDEX IF NOT EXISTS sync_plan_inspections_tenant_plan_range_idx
 CREATE TABLE IF NOT EXISTS entitysync.sync_approvals (
     tenant_id text NOT NULL,
     approval_id uuid NOT NULL,
+    inspection_id uuid NOT NULL,
     plan_id uuid NOT NULL,
     plan_digest_sha256 char(64) NOT NULL,
+    source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
+    target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
     approved_at timestamptz NOT NULL,
     approved_by text NOT NULL,
     expires_at timestamptz,
     PRIMARY KEY (tenant_id, approval_id),
     UNIQUE (tenant_id, plan_digest_sha256),
-    UNIQUE (tenant_id, approval_id, plan_id),
-    CONSTRAINT sync_approvals_plan_digest_fkey
-        FOREIGN KEY (tenant_id, plan_id, plan_digest_sha256)
-        REFERENCES entitysync.sync_plans (tenant_id, plan_id, plan_digest_sha256),
+    UNIQUE (
+        tenant_id, approval_id, plan_id,
+        source_connection_generation, target_connection_generation),
+    CONSTRAINT sync_approvals_inspection_fkey
+        FOREIGN KEY (
+            tenant_id, inspection_id, plan_id, plan_digest_sha256,
+            source_connection_generation, target_connection_generation)
+        REFERENCES entitysync.sync_plan_inspections (
+            tenant_id, inspection_id, plan_id, plan_digest_sha256,
+            source_connection_generation, target_connection_generation),
     CONSTRAINT sync_approvals_digest_sha256_check
         CHECK (plan_digest_sha256 ~ '^[0-9a-f]{64}$')
 );
 
 CREATE INDEX IF NOT EXISTS sync_approvals_tenant_plan_idx
     ON entitysync.sync_approvals (tenant_id, plan_id);
+
+CREATE OR REPLACE FUNCTION entitysync.enforce_complete_inspection_coverage()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    covered_start integer;
+    covered_end integer;
+    item_count integer;
+    first_ordinal integer;
+    last_ordinal integer;
+BEGIN
+    SELECT range_start, range_end
+      INTO covered_start, covered_end
+      FROM entitysync.sync_plan_inspections
+     WHERE tenant_id = NEW.tenant_id
+       AND inspection_id = NEW.inspection_id
+       AND plan_id = NEW.plan_id
+       AND plan_digest_sha256 = NEW.plan_digest_sha256
+       AND source_connection_generation = NEW.source_connection_generation
+       AND target_connection_generation = NEW.target_connection_generation;
+
+    SELECT count(*)::integer, min(item_ordinal), max(item_ordinal)
+      INTO item_count, first_ordinal, last_ordinal
+      FROM entitysync.sync_plan_items
+     WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id;
+
+    IF covered_start IS NULL
+        OR item_count = 0
+        OR covered_start <> 0
+        OR covered_end <> item_count - 1
+        OR first_ordinal <> 0
+        OR last_ordinal <> item_count - 1 THEN
+        RAISE EXCEPTION 'Approval requires completed inspection coverage of every plan item'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS sync_approvals_complete_inspection ON entitysync.sync_approvals;
+CREATE TRIGGER sync_approvals_complete_inspection
+    BEFORE INSERT ON entitysync.sync_approvals
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_complete_inspection_coverage();
 
 CREATE TABLE IF NOT EXISTS entitysync.api_idempotency_records (
     tenant_id text NOT NULL,
@@ -126,6 +195,8 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_operations (
     plan_id uuid NOT NULL,
     approval_id uuid,
     route_scope text NOT NULL,
+    source_connection_generation bigint NOT NULL CHECK (source_connection_generation > 0),
+    target_connection_generation bigint NOT NULL CHECK (target_connection_generation > 0),
     mode text NOT NULL,
     status text NOT NULL,
     idempotency_key text NOT NULL,
@@ -138,20 +209,37 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_operations (
     completed_at timestamptz,
     CONSTRAINT sync_operation_pkey PRIMARY KEY (tenant_id, operation_id),
     UNIQUE (tenant_id, idempotency_key),
-    CONSTRAINT sync_operations_plan_fkey
-        FOREIGN KEY (tenant_id, plan_id)
-        REFERENCES entitysync.sync_plans (tenant_id, plan_id),
-    CONSTRAINT sync_operations_approval_plan_fkey
-        FOREIGN KEY (tenant_id, approval_id, plan_id)
-        REFERENCES entitysync.sync_approvals (tenant_id, approval_id, plan_id),
+    UNIQUE (tenant_id, operation_id, plan_id),
+    UNIQUE (
+        tenant_id, operation_id, plan_id,
+        source_connection_generation, target_connection_generation),
+    CONSTRAINT sync_operations_plan_generation_fkey
+        FOREIGN KEY (
+            tenant_id, plan_id,
+            source_connection_generation, target_connection_generation)
+        REFERENCES entitysync.sync_plans (
+            tenant_id, plan_id,
+            source_connection_generation, target_connection_generation),
+    CONSTRAINT sync_operations_approval_plan_generation_fkey
+        FOREIGN KEY (
+            tenant_id, approval_id, plan_id,
+            source_connection_generation, target_connection_generation)
+        REFERENCES entitysync.sync_approvals (
+            tenant_id, approval_id, plan_id,
+            source_connection_generation, target_connection_generation),
     CONSTRAINT sync_operations_mode_check CHECK (mode IN ('DryRun','Apply')),
     CONSTRAINT sync_operations_status_check
         CHECK (status IN ('Queued','Leased','Running','Succeeded','Partial','Failed','Cancelled')),
+    CONSTRAINT sync_operations_apply_approval_check
+        CHECK (mode <> 'Apply' OR approval_id IS NOT NULL),
     CONSTRAINT sync_operations_attempt_check CHECK (attempt >= 0),
     CONSTRAINT sync_operations_lease_check
         CHECK ((lease_owner IS NULL) = (lease_expires_at IS NULL))
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS sync_operations_apply_approval_uidx
+    ON entitysync.sync_operations (tenant_id, approval_id)
+    WHERE mode = 'Apply';
 CREATE INDEX IF NOT EXISTS sync_operations_tenant_status_lease_idx
     ON entitysync.sync_operations (tenant_id, status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS sync_operations_tenant_plan_idx
@@ -160,6 +248,7 @@ CREATE INDEX IF NOT EXISTS sync_operations_tenant_plan_idx
 CREATE TABLE IF NOT EXISTS entitysync.sync_operation_items (
     tenant_id text NOT NULL,
     operation_id uuid NOT NULL,
+    plan_id uuid NOT NULL,
     item_id uuid NOT NULL,
     source_vendor text NOT NULL,
     source_connection_id text NOT NULL,
@@ -173,11 +262,10 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_operation_items (
     action text NOT NULL,
     redacted_before jsonb NOT NULL,
     redacted_desired jsonb NOT NULL,
-    encrypted_before_ciphertext text,
-    encrypted_after_ciphertext text,
     before_payload_sha256 char(64),
     desired_payload_sha256 char(64) NOT NULL,
     after_payload_sha256 char(64),
+    snapshots_expires_at timestamptz NOT NULL,
     vendor_request_id text,
     outcome text NOT NULL,
     error_code text,
@@ -185,9 +273,13 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_operation_items (
     started_at timestamptz,
     completed_at timestamptz,
     PRIMARY KEY (tenant_id, operation_id, item_id),
-    CONSTRAINT sync_operation_items_operation_fkey
-        FOREIGN KEY (tenant_id, operation_id)
-        REFERENCES entitysync.sync_operations (tenant_id, operation_id),
+    UNIQUE (tenant_id, operation_id, item_id, snapshots_expires_at),
+    CONSTRAINT sync_operation_items_operation_plan_fkey
+        FOREIGN KEY (tenant_id, operation_id, plan_id)
+        REFERENCES entitysync.sync_operations (tenant_id, operation_id, plan_id),
+    CONSTRAINT sync_operation_items_plan_item_fkey
+        FOREIGN KEY (tenant_id, plan_id, item_id)
+        REFERENCES entitysync.sync_plan_items (tenant_id, plan_id, item_id),
     CONSTRAINT sync_operation_items_outcome_check
         CHECK (outcome IN ('Pending','Succeeded','Failed','Skipped','Unknown')),
     CONSTRAINT sync_operation_items_before_payload_sha256_check
@@ -204,6 +296,25 @@ CREATE INDEX IF NOT EXISTS sync_operation_items_vendor_request_idx
     ON entitysync.sync_operation_items (tenant_id, vendor_request_id)
     WHERE vendor_request_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS entitysync.sync_operation_item_snapshots (
+    tenant_id text NOT NULL,
+    operation_id uuid NOT NULL,
+    item_id uuid NOT NULL,
+    encrypted_before_ciphertext text,
+    encrypted_after_ciphertext text,
+    expires_at timestamptz NOT NULL,
+    PRIMARY KEY (tenant_id, operation_id, item_id),
+    CONSTRAINT sync_operation_item_snapshots_item_fkey
+        FOREIGN KEY (tenant_id, operation_id, item_id, expires_at)
+        REFERENCES entitysync.sync_operation_items (
+            tenant_id, operation_id, item_id, snapshots_expires_at),
+    CONSTRAINT sync_operation_item_snapshots_values_check
+        CHECK (encrypted_before_ciphertext IS NOT NULL OR encrypted_after_ciphertext IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS sync_operation_item_snapshots_expiry_idx
+    ON entitysync.sync_operation_item_snapshots (tenant_id, expires_at);
+
 CREATE OR REPLACE FUNCTION entitysync.enforce_sync_plan_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -219,6 +330,8 @@ BEGIN
         OR NEW.policy_id IS DISTINCT FROM OLD.policy_id
         OR NEW.policy_version IS DISTINCT FROM OLD.policy_version
         OR NEW.route_scope IS DISTINCT FROM OLD.route_scope
+        OR NEW.source_connection_generation IS DISTINCT FROM OLD.source_connection_generation
+        OR NEW.target_connection_generation IS DISTINCT FROM OLD.target_connection_generation
         OR NEW.plan_digest_sha256 IS DISTINCT FROM OLD.plan_digest_sha256
         OR NEW.created_at IS DISTINCT FROM OLD.created_at
         OR NEW.created_by IS DISTINCT FROM OLD.created_by
@@ -231,7 +344,47 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION entitysync.enforce_sync_operation_item_immutability()
+CREATE OR REPLACE FUNCTION entitysync.enforce_sync_plan_item_immutability()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'Rows in %.% are immutable', TG_TABLE_SCHEMA, TG_TABLE_NAME
+            USING ERRCODE = '55000';
+    END IF;
+
+    PERFORM 1
+      FROM entitysync.sync_plans
+     WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id
+     FOR UPDATE;
+
+    IF EXISTS (
+        SELECT 1
+          FROM entitysync.sync_plan_inspections
+         WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id) THEN
+        RAISE EXCEPTION 'Inspected plan items cannot be extended'
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.lock_sync_plan_for_inspection()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    PERFORM 1
+      FROM entitysync.sync_plans
+     WHERE tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id
+     FOR UPDATE;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.enforce_sync_operation_item_binding()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -241,8 +394,10 @@ BEGIN
             USING ERRCODE = '55000';
     END IF;
 
-    IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+    IF TG_OP = 'UPDATE' AND (
+        NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
         OR NEW.operation_id IS DISTINCT FROM OLD.operation_id
+        OR NEW.plan_id IS DISTINCT FROM OLD.plan_id
         OR NEW.item_id IS DISTINCT FROM OLD.item_id
         OR NEW.source_vendor IS DISTINCT FROM OLD.source_vendor
         OR NEW.source_connection_id IS DISTINCT FROM OLD.source_connection_id
@@ -256,15 +411,56 @@ BEGIN
         OR NEW.action IS DISTINCT FROM OLD.action
         OR NEW.redacted_before IS DISTINCT FROM OLD.redacted_before
         OR NEW.redacted_desired IS DISTINCT FROM OLD.redacted_desired
-        OR NEW.encrypted_before_ciphertext IS DISTINCT FROM OLD.encrypted_before_ciphertext
         OR NEW.before_payload_sha256 IS DISTINCT FROM OLD.before_payload_sha256
-        OR NEW.desired_payload_sha256 IS DISTINCT FROM OLD.desired_payload_sha256 THEN
-        RAISE EXCEPTION 'Operation item identity and planned input in %.% are immutable',
-            TG_TABLE_SCHEMA, TG_TABLE_NAME
+        OR NEW.desired_payload_sha256 IS DISTINCT FROM OLD.desired_payload_sha256
+        OR NEW.snapshots_expires_at IS DISTINCT FROM OLD.snapshots_expires_at) THEN
+        RAISE EXCEPTION 'Operation item identity and planned input are immutable'
+            USING ERRCODE = '55000';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+          FROM entitysync.sync_operations operation
+          JOIN entitysync.sync_plan_items plan_item
+            ON plan_item.tenant_id = operation.tenant_id
+           AND plan_item.plan_id = operation.plan_id
+         WHERE operation.tenant_id = NEW.tenant_id
+           AND operation.operation_id = NEW.operation_id
+           AND operation.plan_id = NEW.plan_id
+           AND NEW.snapshots_expires_at <= operation.created_at + interval '365 days'
+           AND plan_item.item_id = NEW.item_id
+           AND plan_item.source_vendor = NEW.source_vendor
+           AND plan_item.source_connection_id = NEW.source_connection_id
+           AND plan_item.source_entity_type = NEW.source_entity_type
+           AND plan_item.source_entity_key = NEW.source_entity_key
+           AND plan_item.source_entity_id = NEW.source_entity_id
+           AND plan_item.target_vendor = NEW.target_vendor
+           AND plan_item.target_connection_id = NEW.target_connection_id
+           AND plan_item.target_entity_type = NEW.target_entity_type
+           AND plan_item.target_entity_id IS NOT DISTINCT FROM NEW.target_entity_id
+           AND plan_item.action = NEW.action
+           AND plan_item.redacted_before = NEW.redacted_before
+           AND plan_item.redacted_desired = NEW.redacted_desired
+           AND plan_item.before_payload_sha256 IS NOT DISTINCT FROM NEW.before_payload_sha256
+           AND plan_item.desired_payload_sha256 = NEW.desired_payload_sha256) THEN
+        RAISE EXCEPTION 'Operation item does not match its approved plan item'
             USING ERRCODE = '55000';
     END IF;
 
     RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.enforce_expired_ciphertext_deletion()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' OR OLD.expires_at > now() THEN
+        RAISE EXCEPTION 'Ciphertext is immutable until its retention period expires'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN OLD;
 END;
 $$;
 
@@ -275,8 +471,13 @@ CREATE TRIGGER sync_plans_immutable
 
 DROP TRIGGER IF EXISTS sync_plan_items_immutable ON entitysync.sync_plan_items;
 CREATE TRIGGER sync_plan_items_immutable
-    BEFORE UPDATE OR DELETE ON entitysync.sync_plan_items
-    FOR EACH ROW EXECUTE FUNCTION entitysync.reject_immutable_row_mutation();
+    BEFORE INSERT OR UPDATE OR DELETE ON entitysync.sync_plan_items
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_sync_plan_item_immutability();
+
+DROP TRIGGER IF EXISTS sync_plan_inspections_lock ON entitysync.sync_plan_inspections;
+CREATE TRIGGER sync_plan_inspections_lock
+    BEFORE INSERT ON entitysync.sync_plan_inspections
+    FOR EACH ROW EXECUTE FUNCTION entitysync.lock_sync_plan_for_inspection();
 
 DROP TRIGGER IF EXISTS sync_plan_inspections_immutable ON entitysync.sync_plan_inspections;
 CREATE TRIGGER sync_plan_inspections_immutable
@@ -288,7 +489,13 @@ CREATE TRIGGER sync_approvals_immutable
     BEFORE UPDATE OR DELETE ON entitysync.sync_approvals
     FOR EACH ROW EXECUTE FUNCTION entitysync.reject_immutable_row_mutation();
 
-DROP TRIGGER IF EXISTS sync_operation_items_immutable ON entitysync.sync_operation_items;
-CREATE TRIGGER sync_operation_items_immutable
-    BEFORE UPDATE OR DELETE ON entitysync.sync_operation_items
-    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_sync_operation_item_immutability();
+DROP TRIGGER IF EXISTS sync_operation_items_bound ON entitysync.sync_operation_items;
+CREATE TRIGGER sync_operation_items_bound
+    BEFORE INSERT OR UPDATE OR DELETE ON entitysync.sync_operation_items
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_sync_operation_item_binding();
+
+DROP TRIGGER IF EXISTS sync_operation_item_snapshots_retention
+    ON entitysync.sync_operation_item_snapshots;
+CREATE TRIGGER sync_operation_item_snapshots_retention
+    BEFORE UPDATE OR DELETE ON entitysync.sync_operation_item_snapshots
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_expired_ciphertext_deletion();

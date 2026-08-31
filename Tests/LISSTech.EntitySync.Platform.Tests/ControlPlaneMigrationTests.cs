@@ -21,8 +21,9 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         [
             "entity_exclusions", "entity_change_state", "connection_definitions",
             "sync_policies", "sync_plans", "sync_plan_items", "sync_plan_inspections",
-            "sync_approvals", "sync_operations", "sync_operation_items", "sync_schedules",
-            "canonical_change_events", "api_idempotency_records", "audit_events"
+            "sync_approvals", "sync_operations", "sync_operation_items",
+            "sync_operation_item_snapshots", "sync_schedules", "canonical_change_events",
+            "api_idempotency_records", "audit_events", "audit_event_full_values"
         ]);
         Assert.Equal(
             ["001_entity_exclusions", "002_entity_change_state", "003_harden_entity_change_state_key", "004_control_plane", "005_control_operations", "006_control_audit_scheduler"],
@@ -64,16 +65,33 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     {
         await MigrateAsync();
         await SeedPlansAsync();
+        await using (var inspection = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_inspections (
+                tenant_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                range_start, range_end, inspected_at, inspected_by, completed_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000201',
+                '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                7, 11, 0, 0, now(), 'tester', now());
+            """))
+        {
+            await inspection.ExecuteNonQueryAsync();
+        }
 
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_approvals (
-                tenant_id, approval_id, plan_id, plan_digest_sha256, approved_at, approved_by)
+                tenant_id, approval_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                approved_at, approved_by)
             VALUES (
-                'tenant-a', '00000000-0000-0000-0000-000000000102',
-                '00000000-0000-0000-0000-000000000101', repeat('2', 64), now(), 'tester');
+                'tenant-a', '00000000-0000-0000-0000-000000000111',
+                '00000000-0000-0000-0000-000000000201',
+                '00000000-0000-0000-0000-000000000101', repeat('2', 64),
+                7, 11, now(), 'tester');
             """);
         var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
-        Assert.Equal("23503", error.SqlState);
+        Assert.Equal("55000", error.SqlState);
     }
 
     [Fact]
@@ -85,11 +103,12 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_plan_inspections (
                 tenant_id, inspection_id, plan_id, plan_digest_sha256,
-                range_start, range_end, inspected_at, inspected_by)
+                source_connection_generation, target_connection_generation,
+                range_start, range_end, inspected_at, inspected_by, completed_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000201',
                 '00000000-0000-0000-0000-000000000101', repeat('2', 64),
-                0, 10, now(), 'tester');
+                7, 11, 0, 0, now(), 'tester', now());
             """);
         var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
         Assert.Equal("23503", error.SqlState);
@@ -104,12 +123,13 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
                 tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, attempt, created_at, queued_at)
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000112',
-                'route-a', 'Apply', 'Queued', 'operation-mismatch', 0, now(), now());
+                'route-a', 'Apply', 'Queued', 'operation-mismatch', 7, 11, 0, now(), now());
             """);
         var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
         Assert.Equal("23503", error.SqlState);
@@ -123,23 +143,27 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await using (var seed = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
                 tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, attempt, created_at, queued_at)
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000111',
-                'route-a', 'Apply', 'Queued', 'operation-valid', 0, now(), now());
+                'route-a', 'Apply', 'Queued', 'operation-valid', 7, 11, 0, now(), now());
 
             INSERT INTO entitysync.sync_operation_items (
-                tenant_id, operation_id, item_id, source_vendor, source_connection_id,
+                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
                 source_entity_type, source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
-                redacted_before, redacted_desired, desired_payload_sha256, outcome)
+                redacted_before, redacted_desired, desired_payload_sha256,
+                snapshots_expires_at, outcome)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
                 'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
-                'TARGET-1', 'Update', '{}', '{}', repeat('3', 64), 'Pending');
+                'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
+                now() + interval '365 days', 'Pending');
             """))
         {
             await seed.ExecuteNonQueryAsync();
@@ -163,6 +187,274 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
               AND item_id = '00000000-0000-0000-0000-000000000302';
             """);
         Assert.Equal(1, await advanceResult.ExecuteNonQueryAsync());
+    }
+
+    [Fact]
+    public async Task Operation_items_must_match_their_approved_plan_item()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
+                'operation-item-mismatch', 7, 11, 0, now(), now());
+
+            INSERT INTO entitysync.sync_operation_items (
+                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256,
+                snapshots_expires_at, outcome)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                'company', 'entity-1', 'DIFFERENT-ENTITY', 'target', 'target-1', 'account',
+                'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
+                now() + interval '365 days', 'Pending');
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("55000", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Apply_operations_require_and_consume_one_approval()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+
+        await using var missingApproval = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101', NULL, 'route-a', 'Apply', 'Queued',
+                'missing-approval', 7, 11, 0, now(), now());
+            """);
+        var missingError = await Assert.ThrowsAsync<PostgresException>(() => missingApproval.ExecuteNonQueryAsync());
+        Assert.Equal("23514", missingError.SqlState);
+
+        await using var consume = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES
+                ('tenant-a', '00000000-0000-0000-0000-000000000302',
+                 '00000000-0000-0000-0000-000000000101',
+                 '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
+                 'consume-approval-1', 7, 11, 0, now(), now()),
+                ('tenant-a', '00000000-0000-0000-0000-000000000303',
+                 '00000000-0000-0000-0000-000000000101',
+                 '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
+                 'consume-approval-2', 7, 11, 0, now(), now());
+            """);
+        var consumedError = await Assert.ThrowsAsync<PostgresException>(() => consume.ExecuteNonQueryAsync());
+        Assert.Equal("23505", consumedError.SqlState);
+    }
+
+    [Fact]
+    public async Task Approvals_reject_partial_inspection_coverage()
+    {
+        await MigrateAsync();
+        await SeedPlansAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000303', 1, 'source', 'source-1',
+                'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
+                'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+
+            INSERT INTO entitysync.sync_plan_inspections (
+                tenant_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                range_start, range_end, inspected_at, inspected_by, completed_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000203',
+                '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                7, 11, 0, 0, now(), 'tester', now());
+
+            INSERT INTO entitysync.sync_approvals (
+                tenant_id, approval_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                approved_at, approved_by)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000113',
+                '00000000-0000-0000-0000-000000000203',
+                '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                7, 11, now(), 'tester');
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("55000", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Connection_generations_are_positive_and_bound_to_operations()
+    {
+        await MigrateAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_policies (
+                tenant_id, policy_id, version, name, route_scope, definition,
+                definition_sha256, enabled, created_at, created_by)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000100', 1, 'policy-a',
+                'route-a', '{}', repeat('0', 64), true, now(), 'tester');
+
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_generation, target_connection_generation,
+                plan_digest_sha256, status, created_at, created_by, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                0, 11, repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("23514", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Approval_requires_a_completed_inspection()
+    {
+        await MigrateAsync();
+        await SeedPlansAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_approvals (
+                tenant_id, approval_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                approved_at, approved_by)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000111',
+                '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                7, 11, now(), 'tester');
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("55000", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Operation_generations_must_match_the_approved_plan()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000111',
+                'route-a', 'Apply', 'Queued', 'generation-mismatch', 13, 17, 0, now(), now());
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("23503", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Inspected_plan_items_cannot_be_extended_after_approval()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000304', 1, 'source', 'source-1',
+                'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
+                'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("55000", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Expired_ciphertext_is_removable_without_deleting_metadata()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
+                idempotency_key, source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000111',
+                'route-a', 'Apply', 'Succeeded', 'retention-operation', 7, 11,
+                1, now() - interval '2 days', now() - interval '2 days');
+
+            INSERT INTO entitysync.sync_operation_items (
+                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256,
+                after_payload_sha256, snapshots_expires_at, outcome, completed_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
+                'TARGET-1', 'Update', '{}', '{}', repeat('3', 64), repeat('5', 64),
+                now() - interval '1 day', 'Succeeded', now() - interval '2 days');
+
+            INSERT INTO entitysync.sync_operation_item_snapshots (
+                tenant_id, operation_id, item_id,
+                encrypted_before_ciphertext, encrypted_after_ciphertext, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000302',
+                'expired-before', 'expired-after', now() - interval '1 day');
+
+            INSERT INTO entitysync.audit_events (
+                tenant_id, audit_event_id, occurred_at, event_type, actor_id, correlation_id,
+                redacted_values, redacted_values_sha256, full_values_sha256,
+                full_values_expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000010', now() - interval '2 days',
+                'RetentionTest', 'tester', 'retention-1', '{}', repeat('c', 64),
+                repeat('d', 64), now() - interval '1 day');
+
+            INSERT INTO entitysync.audit_event_full_values (
+                tenant_id, audit_event_id, full_values_ciphertext, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000010',
+                'expired-ciphertext', now() - interval '1 day');
+
+            DELETE FROM entitysync.sync_operation_item_snapshots
+            WHERE tenant_id = 'tenant-a'
+              AND operation_id = '00000000-0000-0000-0000-000000000301'
+              AND item_id = '00000000-0000-0000-0000-000000000302';
+
+            DELETE FROM entitysync.audit_event_full_values
+            WHERE tenant_id = 'tenant-a'
+              AND audit_event_id = '00000000-0000-0000-0000-000000000010';
+            """);
+        await command.ExecuteNonQueryAsync();
+        Assert.Equal(1, await CountAsync("entitysync.sync_operation_items"));
+        Assert.Equal(0, await CountAsync("entitysync.sync_operation_item_snapshots"));
+        Assert.Equal(1, await CountAsync("entitysync.audit_events"));
+        Assert.Equal(0, await CountAsync("entitysync.audit_event_full_values"));
     }
 
     public async Task InitializeAsync()
@@ -240,14 +532,30 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
 
             INSERT INTO entitysync.sync_plans (
                 tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_generation, target_connection_generation,
                 plan_digest_sha256, status, created_at, created_by, expires_at)
             VALUES
                 ('tenant-a', '00000000-0000-0000-0000-000000000101',
-                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                 '00000000-0000-0000-0000-000000000100', 1, 'route-a', 7, 11,
                  repeat('1', 64), 'Draft', now(), 'tester', now() + interval '1 day'),
                 ('tenant-a', '00000000-0000-0000-0000-000000000102',
-                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
+                 '00000000-0000-0000-0000-000000000100', 1, 'route-a', 13, 17,
                  repeat('2', 64), 'Draft', now(), 'tester', now() + interval '1 day');
+
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256)
+            VALUES
+                ('tenant-a', '00000000-0000-0000-0000-000000000101',
+                 '00000000-0000-0000-0000-000000000302', 0, 'source', 'source-1',
+                 'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
+                 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64)),
+                ('tenant-a', '00000000-0000-0000-0000-000000000102',
+                 '00000000-0000-0000-0000-000000000303', 0, 'source', 'source-2',
+                 'company', 'entity-2', 'ENTITY-2', 'target', 'target-2', 'account',
+                 'TARGET-2', 'Update', '{}', '{}', repeat('4', 64));
             """);
         await command.ExecuteNonQueryAsync();
     }
@@ -256,13 +564,31 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     {
         await SeedPlansAsync();
         await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_inspections (
+                tenant_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                range_start, range_end, inspected_at, inspected_by, completed_at)
+            VALUES
+                ('tenant-a', '00000000-0000-0000-0000-000000000201',
+                 '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                 7, 11, 0, 0, now(), 'tester', now()),
+                ('tenant-a', '00000000-0000-0000-0000-000000000202',
+                 '00000000-0000-0000-0000-000000000102', repeat('2', 64),
+                 13, 17, 0, 0, now(), 'tester', now());
+
             INSERT INTO entitysync.sync_approvals (
-                tenant_id, approval_id, plan_id, plan_digest_sha256, approved_at, approved_by)
+                tenant_id, approval_id, inspection_id, plan_id, plan_digest_sha256,
+                source_connection_generation, target_connection_generation,
+                approved_at, approved_by)
             VALUES
                 ('tenant-a', '00000000-0000-0000-0000-000000000111',
-                 '00000000-0000-0000-0000-000000000101', repeat('1', 64), now(), 'tester'),
+                 '00000000-0000-0000-0000-000000000201',
+                 '00000000-0000-0000-0000-000000000101', repeat('1', 64),
+                 7, 11, now(), 'tester'),
                 ('tenant-a', '00000000-0000-0000-0000-000000000112',
-                 '00000000-0000-0000-0000-000000000102', repeat('2', 64), now(), 'tester');
+                 '00000000-0000-0000-0000-000000000202',
+                 '00000000-0000-0000-0000-000000000102', repeat('2', 64),
+                 13, 17, now(), 'tester');
             """);
         await command.ExecuteNonQueryAsync();
     }
@@ -298,15 +624,21 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
             INSERT INTO entitysync.audit_events (
                 tenant_id, audit_event_id, occurred_at, event_type, actor_id, operation_id,
                 run_id, plan_id, item_id, correlation_id, redacted_values,
-                redacted_values_sha256, full_values_ciphertext, full_values_sha256,
-                full_values_expires_at)
+                redacted_values_sha256, full_values_sha256, full_values_expires_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000010', now(), 'OperationQueued',
                 'tester', '00000000-0000-0000-0000-000000000020',
                 '00000000-0000-0000-0000-000000000030',
                 '00000000-0000-0000-0000-000000000040',
-                '00000000-0000-0000-0000-000000000050', 'correlation-1', '{"secret":"[redacted]"}',
-                repeat('c', 64), 'ciphertext', repeat('d', 64), now() + interval '365 days');
+                '00000000-0000-0000-0000-000000000050', 'correlation-1',
+                '{"secret":"[redacted]"}', repeat('c', 64), repeat('d', 64),
+                now() + interval '365 days');
+
+            INSERT INTO entitysync.audit_event_full_values (
+                tenant_id, audit_event_id, full_values_ciphertext, expires_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000010',
+                'ciphertext', now() + interval '365 days');
             """);
         await insert.ExecuteNonQueryAsync();
 

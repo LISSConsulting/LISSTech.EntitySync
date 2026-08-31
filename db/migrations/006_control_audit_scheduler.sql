@@ -57,20 +57,16 @@ CREATE TABLE IF NOT EXISTS entitysync.audit_events (
     correlation_id text NOT NULL,
     redacted_values jsonb NOT NULL,
     redacted_values_sha256 char(64) NOT NULL,
-    full_values_ciphertext text,
     full_values_sha256 char(64),
     full_values_expires_at timestamptz,
     PRIMARY KEY (tenant_id, audit_event_id),
+    UNIQUE (tenant_id, audit_event_id, full_values_expires_at),
     CONSTRAINT audit_events_redacted_values_sha256_check
         CHECK (redacted_values_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT audit_events_full_values_sha256_check
         CHECK (full_values_sha256 IS NULL OR full_values_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT audit_events_full_values_complete_check
-        CHECK (
-            (full_values_ciphertext IS NULL AND full_values_sha256 IS NULL AND full_values_expires_at IS NULL)
-            OR
-            (full_values_ciphertext IS NOT NULL AND full_values_sha256 IS NOT NULL AND full_values_expires_at IS NOT NULL)
-        ),
+        CHECK ((full_values_sha256 IS NULL) = (full_values_expires_at IS NULL)),
     CONSTRAINT audit_events_full_values_retention_check
         CHECK (full_values_expires_at IS NULL OR full_values_expires_at <= occurred_at + interval '365 days')
 );
@@ -92,7 +88,27 @@ CREATE INDEX IF NOT EXISTS audit_events_full_values_expiry_idx
     ON entitysync.audit_events (tenant_id, full_values_expires_at)
     WHERE full_values_expires_at IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS entitysync.audit_event_full_values (
+    tenant_id text NOT NULL,
+    audit_event_id uuid NOT NULL,
+    full_values_ciphertext text NOT NULL,
+    expires_at timestamptz NOT NULL,
+    PRIMARY KEY (tenant_id, audit_event_id),
+    CONSTRAINT audit_event_full_values_event_fkey
+        FOREIGN KEY (tenant_id, audit_event_id, expires_at)
+        REFERENCES entitysync.audit_events (
+            tenant_id, audit_event_id, full_values_expires_at)
+);
+
+CREATE INDEX IF NOT EXISTS audit_event_full_values_expiry_idx
+    ON entitysync.audit_event_full_values (tenant_id, expires_at);
+
 DROP TRIGGER IF EXISTS audit_events_immutable ON entitysync.audit_events;
 CREATE TRIGGER audit_events_immutable
     BEFORE UPDATE OR DELETE ON entitysync.audit_events
     FOR EACH ROW EXECUTE FUNCTION entitysync.reject_immutable_row_mutation();
+
+DROP TRIGGER IF EXISTS audit_event_full_values_retention ON entitysync.audit_event_full_values;
+CREATE TRIGGER audit_event_full_values_retention
+    BEFORE UPDATE OR DELETE ON entitysync.audit_event_full_values
+    FOR EACH ROW EXECUTE FUNCTION entitysync.enforce_expired_ciphertext_deletion();
