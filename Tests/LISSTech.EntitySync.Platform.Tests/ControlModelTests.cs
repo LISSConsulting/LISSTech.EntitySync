@@ -141,6 +141,26 @@ public sealed class ControlModelTests
     }
 
     [Fact]
+    public void Durable_manifest_rejects_non_draft_initial_plan_state()
+    {
+        var approved = Plan().TransitionTo(EntitySyncDurablePlanStatus.Approved);
+
+        Assert.Throws<ArgumentException>(() =>
+            EntitySyncDurablePlanManifest.Create(approved, [PlanItem(0)]));
+    }
+
+    [Fact]
+    public void Durable_manifest_rejects_duplicate_item_ids_before_persistence()
+    {
+        var itemId = Guid.NewGuid();
+
+        Assert.Throws<ArgumentException>(() =>
+            EntitySyncDurablePlanManifest.Create(
+                Plan(),
+                [PlanItem(0, itemId: itemId), PlanItem(1, itemId: itemId)]));
+    }
+
+    [Fact]
     public void Durable_plan_allows_only_legal_state_transitions()
     {
         var draft = Plan();
@@ -396,9 +416,10 @@ public sealed class ControlModelTests
         int ordinal,
         EntitySyncMatchEvidence? evidence = null,
         IEnumerable<EntitySyncFieldDiff>? fieldDiffs = null,
-        string tenantId = "tenant") =>
+        string tenantId = "tenant",
+        Guid? itemId = null) =>
         new(
-            tenantId, PlanId, Guid.NewGuid(), ordinal,
+            tenantId, PlanId, itemId ?? Guid.NewGuid(), ordinal,
             "halo", "source-1", "Company", $"key-{ordinal}", $"source-{ordinal}",
             "netsuite", "target-1", "Customer", $"target-{ordinal}", "Update",
             evidence ?? new EntitySyncMatchEvidence(95, "Linked", ["external id"]),

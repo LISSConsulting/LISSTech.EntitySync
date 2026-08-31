@@ -235,7 +235,10 @@ public sealed record EntitySyncDurablePlanManifest
         IEnumerable<EntitySyncDurablePlanItem> items)
     {
         ArgumentNullException.ThrowIfNull(plan);
+        if (plan.Status != EntitySyncDurablePlanStatus.Draft)
+            throw new ArgumentException("A new durable manifest must be in Draft status.", nameof(plan));
         var copiedItems = ControlModelGuard.ReadOnlyCopy(items, nameof(items));
+        var itemIds = new HashSet<Guid>(copiedItems.Count);
         for (var ordinal = 0; ordinal < copiedItems.Count; ordinal++)
         {
             var item = copiedItems[ordinal];
@@ -245,6 +248,8 @@ public sealed record EntitySyncDurablePlanManifest
                 throw new ArgumentException("Every manifest item must belong to the plan tenant and ID.", nameof(items));
             if (item.ItemOrdinal != ordinal)
                 throw new ArgumentException("Manifest item ordinals must be contiguous from zero.", nameof(items));
+            if (!itemIds.Add(item.ItemId))
+                throw new ArgumentException("Manifest item IDs must be unique.", nameof(items));
             if (item.SourceConnectionId != plan.SourceConnectionId
                 || item.TargetConnectionId != plan.TargetConnectionId)
                 throw new ArgumentException("Every manifest item must use the plan connection IDs.", nameof(items));

@@ -150,3 +150,54 @@ Passed! - Failed: 0, Passed: 20, Skipped: 0, Total: 20, Duration: 104 ms
 ### Concerns
 
 None.
+
+## Fix Round 2
+
+### Status
+
+DONE
+
+### Parent Commit
+
+`db1333feba9b3274cff5fa88e8768876f696ded6` — `fix(control): harden durable operation contracts`
+
+The fix commit SHA is returned in the terminal result because a commit cannot embed its own object ID.
+
+### Changed Files
+
+- `src/Core/EntitySyncDurablePlan.cs`
+- `Tests/LISSTech.EntitySync.Platform.Tests/ControlModelTests.cs`
+- `.superpowers/sdd/2026-08-31-entitysync-durable-control-plane/task-2-report.md`
+
+### RED
+
+The exact focused command produced the two intended manifest-boundary failures:
+
+```text
+Durable_manifest_rejects_non_draft_initial_plan_state:
+Assert.Throws() Failure: No exception was thrown
+
+Durable_manifest_rejects_duplicate_item_ids_before_persistence:
+Assert.Throws() Failure: No exception was thrown
+
+Failed: 2, Passed: 20, Skipped: 0, Total: 22
+```
+
+### GREEN
+
+The same exact focused command passed after the minimal guards:
+
+```text
+Passed! - Failed: 0, Passed: 22, Skipped: 0, Total: 22, Duration: 107 ms
+```
+
+### Key Decisions
+
+- New durable manifests require exactly `Draft` status, so initial insertion cannot bypass approval/consumption transitions.
+- Manifest item IDs are checked with a single bounded `HashSet<Guid>` pass while ordinals and ownership are validated. Duplicate IDs fail before reaching the migration-005 tenant/plan/item primary key.
+- No migration or production repository implementation was changed.
+- No formatter, linter, Pester, or broad test suite was run.
+
+### Concerns
+
+None.
