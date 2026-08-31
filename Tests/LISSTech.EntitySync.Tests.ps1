@@ -632,13 +632,16 @@ namespace EntitySyncTests
     $docContent | Should -Match 'LtacSourceInvalid' -Because 'New-EntitySyncPlan.md must advertise LtacSourceInvalid - the code emits one unified MatchType for every LTAC source-validation failure'
     $docContent | Should -Not -Match 'LtacSiteParentMissing' -Because 'LtacSiteParentMissing is an obsolete per-cause variant the code never emitted'
 
-    # Both committed external-help copies must mirror the doc - operators read these via Get-Help.
-    foreach ($relativeHelp in @('en-US/LISSTech.EntitySync.dll-Help.xml', 'Module/en-US/LISSTech.EntitySync.dll-Help.xml')) {
-      $helpPath = Join-Path $repoRoot $relativeHelp
-      Test-Path $helpPath | Should -BeTrue -Because "$relativeHelp must exist alongside the doc so the module renders external help"
+    # Validate the committed source and the help beside the module actually imported by this suite.
+    $helpPaths = @(
+      (Join-Path $repoRoot 'en-US' 'LISSTech.EntitySync.dll-Help.xml')
+      (Join-Path (Split-Path -Parent $script:ModulePath) 'en-US' 'LISSTech.EntitySync.dll-Help.xml')
+    )
+    foreach ($helpPath in $helpPaths) {
+      Test-Path $helpPath | Should -BeTrue -Because "$helpPath must exist in source or beside the module under test"
       $helpContent = Get-Content -LiteralPath $helpPath -Raw
-      $helpContent | Should -Match 'LtacSourceInvalid' -Because "$relativeHelp must mirror the doc and advertise LtacSourceInvalid for the LTAC site-to-customer example"
-      $helpContent | Should -Not -Match 'LtacSiteParentMissing' -Because "$relativeHelp must not advertise the obsolete LtacSiteParentMissing match type"
+      $helpContent | Should -Match 'LtacSourceInvalid' -Because "$helpPath must mirror the doc and advertise LtacSourceInvalid for the LTAC site-to-customer example"
+      $helpContent | Should -Not -Match 'LtacSiteParentMissing' -Because "$helpPath must not advertise the obsolete LtacSiteParentMissing match type"
     }
   }
 
