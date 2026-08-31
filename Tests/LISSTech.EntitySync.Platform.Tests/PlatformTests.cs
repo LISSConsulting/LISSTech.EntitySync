@@ -669,6 +669,55 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task ConnectVendorReturnsSafeErrorsForInvalidVendorAndProfile()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        using var services = new ServiceCollection()
+            .AddSingleton<IEntityConnectionRepository>(connections)
+            .BuildServiceProvider();
+        var factory = new RecordingServerManagedEntityAdapterFactory();
+
+        var invalidVendor = await ConnectionTools.ConnectVendor(
+            services,
+            factory,
+            definitions: null,
+            context: new McpRequestContext("tenant", false),
+            vendor: "not-a-vendor",
+            cancellationToken: default);
+        var invalidProfile = await ConnectionTools.ConnectVendor(
+            services,
+            factory,
+            definitions: null,
+            context: new McpRequestContext("tenant", true),
+            vendor: "HaloPSA",
+            profileName: $"missing-{Guid.NewGuid():N}",
+            cancellationToken: default);
+        var missingRemoteConfiguration = await ConnectionTools.ConnectVendor(
+            services,
+            new ServerManagedEntityAdapterFactory(
+                new Dictionary<string, string?>()),
+            definitions: null,
+            context: new McpRequestContext("tenant", false),
+            vendor: "HaloPSA",
+            cancellationToken: default);
+
+        using var vendorJson = JsonDocument.Parse(invalidVendor);
+        using var profileJson = JsonDocument.Parse(invalidProfile);
+        using var configurationJson = JsonDocument.Parse(missingRemoteConfiguration);
+        Assert.False(vendorJson.RootElement.GetProperty("success").GetBoolean());
+        Assert.False(profileJson.RootElement.GetProperty("success").GetBoolean());
+        Assert.False(configurationJson.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(vendorJson.RootElement.TryGetProperty("error", out _));
+        Assert.True(profileJson.RootElement.TryGetProperty("error", out _));
+        Assert.True(configurationJson.RootElement.TryGetProperty("error", out _));
+        Assert.DoesNotContain("secret", invalidVendor, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "secret",
+            missingRemoteConfiguration,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ConnectVendorDelegatesToSharedFactoryAndPreservesConnectionGenerations()
     {
         using var connections = new InMemoryEntityConnectionRepository();
@@ -1368,7 +1417,7 @@ public sealed class PlatformTests
         InMemoryEntityConnectionRepository connections)
         : IConnectionDefinitionRepository
     {
-        public Task InsertAsync(
+        public Task<EntitySyncConnectionDefinition> InsertAsync(
             string tenantId,
             EntitySyncConnectionDefinition definition,
             CancellationToken cancellationToken) =>
@@ -1399,7 +1448,7 @@ public sealed class PlatformTests
             return Task.FromResult(result);
         }
 
-        public Task<bool> TryReplaceAsync(
+        public Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
             string tenantId,
             string connectionId,
             long expectedGeneration,

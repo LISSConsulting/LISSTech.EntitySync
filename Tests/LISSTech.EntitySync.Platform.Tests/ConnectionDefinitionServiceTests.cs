@@ -123,6 +123,31 @@ public sealed class ConnectionDefinitionServiceTests
     }
 
     [Fact]
+    public async Task Delete_and_recreate_rejects_the_pre_delete_generation()
+    {
+        var repository = new ConnectionRepository();
+        var runtime = new FakeRuntimeFactory(repository);
+        var service = CreateService(repository, new RecordingProtector(), runtime);
+        var first = await service.CreateAsync("tenant", Request(), Actor, default);
+        var deleted = await service.DeleteAsync(
+            "tenant",
+            first.ConnectionId,
+            first.Generation,
+            Actor,
+            default);
+
+        Assert.Equal(ConnectionDeleteOutcome.Deleted, deleted.Outcome);
+        var recreated = await service.CreateAsync("tenant", Request(), Actor, default);
+        Assert.True(recreated.Generation > first.Generation);
+        await Assert.ThrowsAsync<StaleConnectionGenerationException>(
+            () => runtime.AcquireAsync(
+                "tenant",
+                recreated.ConnectionId,
+                first.Generation,
+                default));
+    }
+
+    [Fact]
     public async Task Updating_a_disabled_connection_does_not_reenable_it()
     {
         var repository = new ConnectionRepository();
@@ -244,7 +269,7 @@ public sealed class ConnectionDefinitionServiceTests
                     current.SecretCiphertext,
                     Actor,
                     Instant.AddMinutes(1));
-                Assert.True(await repository.TryReplaceAsync(
+                Assert.NotNull(await repository.TryReplaceAsync(
                     "tenant",
                     current.ConnectionId,
                     current.Generation,
@@ -507,16 +532,26 @@ public sealed class ConnectionDefinitionServiceTests
     {
         private readonly object gate = new();
         private readonly Dictionary<string, EntitySyncConnectionDefinition> values = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> generations =
+            new(StringComparer.OrdinalIgnoreCase);
         public bool Referenced { get; set; }
 
-        public Task InsertAsync(string tenantId, EntitySyncConnectionDefinition definition, CancellationToken cancellationToken)
+        public Task<EntitySyncConnectionDefinition> InsertAsync(
+            string tenantId,
+            EntitySyncConnectionDefinition definition,
+            CancellationToken cancellationToken)
         {
             lock (gate)
             {
-                if (!values.TryAdd(Key(tenantId, definition.ConnectionId), definition))
+                var key = Key(tenantId, definition.ConnectionId);
+                var persisted = WithGeneration(
+                    definition,
+                    generations.GetValueOrDefault(key) + 1);
+                if (!values.TryAdd(key, persisted))
                     throw new InvalidOperationException("Duplicate connection.");
+                generations[key] = persisted.Generation;
+                return Task.FromResult(persisted);
             }
-            return Task.CompletedTask;
         }
 
         public Task<EntitySyncConnectionDefinition?> GetAsync(string tenantId, string connectionId, CancellationToken cancellationToken)
@@ -544,7 +579,7 @@ public sealed class ConnectionDefinitionServiceTests
             }
         }
 
-        public Task<bool> TryReplaceAsync(
+        public Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
             string tenantId,
             string connectionId,
             long expectedGeneration,
@@ -554,10 +589,15 @@ public sealed class ConnectionDefinitionServiceTests
             lock (gate)
             {
                 var key = Key(tenantId, connectionId);
-                if (!values.TryGetValue(key, out var current) || current.Generation != expectedGeneration)
-                    return Task.FromResult(false);
-                values[key] = nextGeneration;
-                return Task.FromResult(true);
+                if (!values.TryGetValue(key, out var current)
+                    || current.Generation != expectedGeneration)
+                    return Task.FromResult<EntitySyncConnectionDefinition?>(null);
+                var persisted = WithGeneration(
+                    nextGeneration,
+                    generations.GetValueOrDefault(key) + 1);
+                values[key] = persisted;
+                generations[key] = persisted.Generation;
+                return Task.FromResult<EntitySyncConnectionDefinition?>(persisted);
             }
         }
 
@@ -580,6 +620,23 @@ public sealed class ConnectionDefinitionServiceTests
                 return Task.FromResult(ConnectionDefinitionDeleteResult.Deleted);
             }
         }
+
+        private static EntitySyncConnectionDefinition WithGeneration(
+            EntitySyncConnectionDefinition definition,
+            long generation) =>
+            new(
+                definition.TenantId,
+                definition.ConnectionId,
+                definition.Vendor,
+                definition.DisplayName,
+                generation,
+                definition.Enabled,
+                definition.PublicConfiguration,
+                definition.SecretCiphertext,
+                definition.CreatedAt,
+                definition.CreatedBy,
+                definition.UpdatedAt,
+                definition.UpdatedBy);
 
         private static string Key(string tenantId, string connectionId) => $"{tenantId}\n{connectionId}";
     }

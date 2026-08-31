@@ -8,13 +8,53 @@ namespace LISSTech.EntitySync.Runtime;
 public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource dataSource)
     : IConnectionDefinitionRepository
 {
-    public async Task InsertAsync(
+    public async Task<EntitySyncConnectionDefinition> InsertAsync(
         string tenantId,
         EntitySyncConnectionDefinition definition,
         CancellationToken cancellationToken)
     {
-        PostgresControlPersistence.RequireTenant(tenantId, definition.TenantId, nameof(definition));
-        const string sql = """
+        PostgresControlPersistence.RequireTenant(
+            tenantId,
+            definition.TenantId,
+            nameof(definition));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string existingSql = """
+            SELECT 1
+            FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+            FOR UPDATE
+            """;
+        await using (var existing =
+            new NpgsqlCommand(existingSql, connection, transaction))
+        {
+            AddKey(existing, tenantId, definition.ConnectionId);
+            if (await existing.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                is not null)
+                throw new InvalidOperationException(
+                    $"Connection '{definition.ConnectionId}' already exists.");
+        }
+        const string generationSql = """
+            INSERT INTO entitysync.connection_generation_counters (
+                tenant_id, connection_id, last_generation)
+            VALUES (@tenant_id, @connection_id, 1)
+            ON CONFLICT (tenant_id, connection_id) DO UPDATE
+            SET last_generation =
+                entitysync.connection_generation_counters.last_generation + 1
+            RETURNING last_generation
+            """;
+        long generation;
+        await using (var generationCommand =
+            new NpgsqlCommand(generationSql, connection, transaction))
+        {
+            AddKey(generationCommand, tenantId, definition.ConnectionId);
+            generation = (long)(await generationCommand
+                .ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+        }
+        var persisted = WithGeneration(definition, generation);
+        const string insertSql = """
             INSERT INTO entitysync.connection_definitions (
                 tenant_id, connection_id, vendor, display_name, generation, enabled,
                 public_configuration, secret_ciphertext, created_at, created_by,
@@ -24,9 +64,14 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
                 @public_configuration, @secret_ciphertext, @created_at, @created_by,
                 @updated_at, @updated_by)
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddDefinition(command, definition);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await using (var insert =
+            new NpgsqlCommand(insertSql, connection, transaction))
+        {
+            AddDefinition(insert, persisted);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return persisted;
     }
 
     public async Task<EntitySyncConnectionDefinition?> GetAsync(
@@ -74,19 +119,63 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         return result;
     }
 
-    public async Task<bool> TryReplaceAsync(
+    public async Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
         string tenantId,
         string connectionId,
         long expectedGeneration,
         EntitySyncConnectionDefinition nextGeneration,
         CancellationToken cancellationToken)
     {
-        PostgresControlPersistence.RequireTenant(tenantId, nextGeneration.TenantId, nameof(nextGeneration));
-        if (!string.Equals(connectionId, nextGeneration.ConnectionId, StringComparison.Ordinal))
-            throw new ArgumentException("The replacement connection ID must match.", nameof(nextGeneration));
-        if (nextGeneration.Generation != checked(expectedGeneration + 1))
-            throw new ArgumentException("The replacement must advance the expected generation exactly once.", nameof(nextGeneration));
-        const string sql = """
+        PostgresControlPersistence.RequireTenant(
+            tenantId,
+            nextGeneration.TenantId,
+            nameof(nextGeneration));
+        if (!string.Equals(
+                connectionId,
+                nextGeneration.ConnectionId,
+                StringComparison.Ordinal))
+            throw new ArgumentException(
+                "The replacement connection ID must match.",
+                nameof(nextGeneration));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string lockSql = """
+            SELECT generation
+            FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+            FOR UPDATE
+            """;
+        await using (var lockCommand = new NpgsqlCommand(lockSql, connection, transaction))
+        {
+            AddKey(lockCommand, tenantId, connectionId);
+            var current = await lockCommand.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (current is null || (long)current != expectedGeneration)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return null;
+            }
+        }
+        const string generationSql = """
+            UPDATE entitysync.connection_generation_counters
+            SET last_generation = last_generation + 1
+            WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+            RETURNING last_generation
+            """;
+        long generation;
+        await using (var generationCommand =
+            new NpgsqlCommand(generationSql, connection, transaction))
+        {
+            AddKey(generationCommand, tenantId, connectionId);
+            generation = (long)(await generationCommand
+                .ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    "The connection generation counter is missing."));
+        }
+        var persisted = WithGeneration(nextGeneration, generation);
+        const string updateSql = """
             UPDATE entitysync.connection_definitions
             SET vendor = @vendor,
                 display_name = @display_name,
@@ -102,10 +191,20 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
               AND connection_id = @connection_id
               AND generation = @expected_generation
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddDefinition(command, nextGeneration);
-        PostgresControlPersistence.Add(command, "expected_generation", NpgsqlDbType.Bigint, expectedGeneration);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        await using (var update = new NpgsqlCommand(updateSql, connection, transaction))
+        {
+            AddDefinition(update, persisted);
+            PostgresControlPersistence.Add(
+                update,
+                "expected_generation",
+                NpgsqlDbType.Bigint,
+                expectedGeneration);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                throw new InvalidOperationException(
+                    "The locked connection generation changed unexpectedly.");
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return persisted;
     }
 
     public async Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
@@ -214,6 +313,23 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         PostgresControlPersistence.Add(command, "updated_at", NpgsqlDbType.TimestampTz, definition.UpdatedAt);
         PostgresControlPersistence.Add(command, "updated_by", NpgsqlDbType.Text, definition.UpdatedBy.ActorId);
     }
+
+    private static EntitySyncConnectionDefinition WithGeneration(
+        EntitySyncConnectionDefinition definition,
+        long generation) =>
+        new(
+            definition.TenantId,
+            definition.ConnectionId,
+            definition.Vendor,
+            definition.DisplayName,
+            generation,
+            definition.Enabled,
+            definition.PublicConfiguration,
+            definition.SecretCiphertext,
+            definition.CreatedAt,
+            definition.CreatedBy,
+            definition.UpdatedAt,
+            definition.UpdatedBy);
 
     private static EntitySyncConnectionDefinition Read(NpgsqlDataReader reader) =>
         new(

@@ -119,6 +119,24 @@ public sealed class SyncPolicyServiceTests
     }
 
     [Fact]
+    public async Task Delete_and_recreate_during_validation_rejects_the_aba_generation()
+    {
+        var fixture = Fixture.Create();
+        fixture.Runtime.AfterCapabilities = () =>
+            fixture.Connections.Recreate("tenant", "halo");
+
+        await Assert.ThrowsAsync<StaleConnectionGenerationException>(() =>
+            fixture.Service.CreateAsync(
+                "tenant",
+                Request(Definition()),
+                Actor,
+                default));
+
+        Assert.Equal(0, fixture.Policies.RowCount);
+        Assert.True(fixture.Runtime.AllAdaptersDisposed);
+    }
+
+    [Fact]
     public async Task Capability_validation_leases_are_generation_pinned_and_disposed()
     {
         var fixture = Fixture.Create();
@@ -258,10 +276,31 @@ public sealed class SyncPolicyServiceTests
             lock (gate) values[Key(definition.TenantId, definition.ConnectionId)] = definition;
         }
 
-        public Task InsertAsync(string tenantId, EntitySyncConnectionDefinition definition, CancellationToken cancellationToken)
+        public void Recreate(string tenantId, string connectionId)
+        {
+            lock (gate)
+            {
+                var key = Key(tenantId, connectionId);
+                var current = values[key];
+                values.Remove(key);
+                values.Add(
+                    key,
+                    Connection(
+                        tenantId,
+                        connectionId,
+                        current.Vendor,
+                        checked(current.Generation + 1),
+                        true));
+            }
+        }
+
+        public Task<EntitySyncConnectionDefinition> InsertAsync(
+            string tenantId,
+            EntitySyncConnectionDefinition definition,
+            CancellationToken cancellationToken)
         {
             Add(definition);
-            return Task.CompletedTask;
+            return Task.FromResult(definition);
         }
 
         public Task<EntitySyncConnectionDefinition?> GetAsync(string tenantId, string connectionId, CancellationToken cancellationToken)
@@ -286,7 +325,7 @@ public sealed class SyncPolicyServiceTests
             }
         }
 
-        public Task<bool> TryReplaceAsync(
+        public Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
             string tenantId,
             string connectionId,
             long expectedGeneration,
@@ -296,10 +335,11 @@ public sealed class SyncPolicyServiceTests
             lock (gate)
             {
                 var key = Key(tenantId, connectionId);
-                if (!values.TryGetValue(key, out var current) || current.Generation != expectedGeneration)
-                    return Task.FromResult(false);
+                if (!values.TryGetValue(key, out var current)
+                    || current.Generation != expectedGeneration)
+                    return Task.FromResult<EntitySyncConnectionDefinition?>(null);
                 values[key] = nextGeneration;
-                return Task.FromResult(true);
+                return Task.FromResult<EntitySyncConnectionDefinition?>(nextGeneration);
             }
         }
 

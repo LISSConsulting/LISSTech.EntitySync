@@ -12,7 +12,7 @@ public enum ConnectionDefinitionDeleteResult
 
 public interface IConnectionDefinitionRepository
 {
-    Task InsertAsync(
+    Task<EntitySyncConnectionDefinition> InsertAsync(
         string tenantId,
         EntitySyncConnectionDefinition definition,
         CancellationToken cancellationToken);
@@ -28,7 +28,7 @@ public interface IConnectionDefinitionRepository
         bool? enabled,
         CancellationToken cancellationToken);
 
-    Task<bool> TryReplaceAsync(
+    Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
         string tenantId,
         string connectionId,
         long expectedGeneration,

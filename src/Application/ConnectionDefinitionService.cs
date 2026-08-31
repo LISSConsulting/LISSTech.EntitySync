@@ -66,9 +66,11 @@ public sealed class ConnectionDefinitionService(
             actor,
             now,
             actor);
-        await repository.InsertAsync(tenantId, definition, cancellationToken)
+        return await repository.InsertAsync(
+                tenantId,
+                definition,
+                cancellationToken)
             .ConfigureAwait(false);
-        return definition;
     }
 
     public async Task<EntitySyncConnectionDefinition> GetAsync(
@@ -146,14 +148,15 @@ public sealed class ConnectionDefinitionService(
             ProtectSecrets(validated.SecretConfiguration),
             actor,
             timeProvider.GetUtcNow());
-        if (!await repository.TryReplaceAsync(
+        return await repository.TryReplaceAsync(
                 tenantId,
                 connectionId,
                 expectedGeneration,
                 next,
-                cancellationToken).ConfigureAwait(false))
-            throw new ConnectionGenerationConflictException(connectionId, expectedGeneration);
-        return next;
+                cancellationToken).ConfigureAwait(false)
+            ?? throw new ConnectionGenerationConflictException(
+                connectionId,
+                expectedGeneration);
     }
 
     public async Task<EntitySyncConnectionDefinition> DisableAsync(
@@ -178,14 +181,15 @@ public sealed class ConnectionDefinitionService(
             current.SecretCiphertext,
             actor,
             timeProvider.GetUtcNow());
-        if (!await repository.TryReplaceAsync(
+        return await repository.TryReplaceAsync(
                 tenantId,
                 connectionId,
                 expectedGeneration,
                 next,
-                cancellationToken).ConfigureAwait(false))
-            throw new ConnectionGenerationConflictException(connectionId, expectedGeneration);
-        return next;
+                cancellationToken).ConfigureAwait(false)
+            ?? throw new ConnectionGenerationConflictException(
+                connectionId,
+                expectedGeneration);
     }
 
     public async Task<ConnectionDeleteResult> DeleteAsync(

@@ -20,13 +20,23 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         AssertSuperset(tables,
         [
             "entity_exclusions", "entity_change_state", "connection_definitions",
-            "sync_policies", "sync_plans", "sync_plan_items", "sync_plan_inspections",
-            "sync_plan_inspection_ranges", "sync_approvals", "sync_operations", "sync_operation_items",
-            "sync_operation_item_snapshots", "sync_schedules", "canonical_change_events",
-            "api_idempotency_records", "audit_events", "audit_event_full_values"
+            "connection_generation_counters", "sync_policies", "sync_plans",
+            "sync_plan_items", "sync_plan_inspections",
+            "sync_plan_inspection_ranges", "sync_approvals", "sync_operations",
+            "sync_operation_items", "sync_operation_item_snapshots", "sync_schedules",
+            "canonical_change_events", "api_idempotency_records", "audit_events",
+            "audit_event_full_values"
         ]);
         Assert.Equal(
-            ["001_entity_exclusions", "002_entity_change_state", "003_harden_entity_change_state_key", "004_control_plane", "005_control_operations", "006_control_audit_scheduler"],
+            [
+                "001_entity_exclusions",
+                "002_entity_change_state",
+                "003_harden_entity_change_state_key",
+                "004_control_plane",
+                "005_control_operations",
+                "006_control_audit_scheduler",
+                "007_connection_generation_ledger"
+            ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
         Assert.Equal(1, await CountAsync("entitysync.entity_change_state"));

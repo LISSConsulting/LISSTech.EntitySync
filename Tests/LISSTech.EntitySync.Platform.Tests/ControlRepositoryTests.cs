@@ -156,9 +156,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             new EntitySyncActor("updater"), now.AddMinutes(1));
         await Assert.ThrowsAsync<ArgumentException>(() => connectionRepository.TryReplaceAsync(
             "tenant-b", "source", 1, replacement, default));
-        Assert.True(await connectionRepository.TryReplaceAsync(
+        Assert.NotNull(await connectionRepository.TryReplaceAsync(
             "tenant-a", "source", 1, replacement, default));
-        Assert.False(await connectionRepository.TryReplaceAsync(
+        Assert.Null(await connectionRepository.TryReplaceAsync(
             "tenant-a", "source", 1, replacement, default));
 
         var policy = Policy("tenant-a", connection.ConnectionId, "target", now);
@@ -176,6 +176,76 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Null(await policyRepository.GetAsync("tenant-b", policy.PolicyId, 1, default));
         Assert.Single(await policyRepository.ListLatestAsync("tenant-a", "route-a", true, default));
     }
+    [Fact]
+    public async Task Deleted_connection_id_recreation_never_reuses_a_generation()
+    {
+        var repository = new PostgresConnectionDefinitionRepository(Database);
+        var tenantId = $"tenant-aba-{Guid.NewGuid():N}";
+        var now = DateTimeOffset.UtcNow;
+        var first = Connection(tenantId, "shared", "NetSuite", 1, "cipher-one", now);
+        await repository.InsertAsync(tenantId, first, default);
+        Assert.Equal(
+            ConnectionDefinitionDeleteResult.Deleted,
+            await repository.TryDeleteAsync(tenantId, first.ConnectionId, 1, default));
+
+        var recreated = Connection(
+            tenantId,
+            first.ConnectionId,
+            first.Vendor,
+            1,
+            "cipher-two",
+            now.AddMinutes(1));
+        await repository.InsertAsync(tenantId, recreated, default);
+        var stored = await repository.GetAsync(tenantId, first.ConnectionId, default);
+
+        Assert.NotNull(stored);
+        Assert.True(stored.Generation > first.Generation);
+    }
+
+    [Fact]
+    public async Task Plan_insert_and_connection_delete_serialize_on_exact_generations()
+    {
+        var context = await SeedControlContextAsync($"plan-delete-{Guid.NewGuid():N}");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var connections = new PostgresConnectionDefinitionRepository(Database);
+        var manifest = Manifest(context, 1);
+        await using var blocker = await Database.OpenConnectionAsync(default);
+        await using var transaction = await blocker.BeginTransactionAsync(default);
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT connection_id
+            FROM entitysync.connection_definitions
+            WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+            FOR UPDATE
+            """,
+            blocker,
+            transaction))
+        {
+            command.Parameters.AddWithValue("tenant_id", context.TenantId);
+            command.Parameters.AddWithValue(
+                "connection_id",
+                context.Source.ConnectionId);
+            await command.ExecuteScalarAsync();
+        }
+
+        var insert = plans.InsertAsync(context.TenantId, manifest, default);
+        await AssertStillRunningAsync(insert);
+        var delete = connections.TryDeleteAsync(
+            context.TenantId,
+            context.Source.ConnectionId,
+            context.Source.Generation,
+            default);
+        await transaction.CommitAsync();
+        await insert;
+
+        Assert.Equal(ConnectionDefinitionDeleteResult.Referenced, await delete);
+        Assert.NotNull(await plans.GetAsync(context.TenantId, manifest.Plan.PlanId, default));
+        Assert.NotNull(await connections.GetAsync(
+            context.TenantId,
+            context.Source.ConnectionId,
+            default));
+    }
+
 
     [Fact]
     public async Task Manifest_round_trips_and_item_failure_rolls_back_plan()
@@ -470,7 +540,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 definition.DisplayName, definition.Enabled, definition.PublicConfiguration,
                 definition.SecretCiphertext, new EntitySyncActor("rotator"),
                 context.Now.AddSeconds(1));
-            Assert.True(await connections.TryReplaceAsync(
+            Assert.NotNull(await connections.TryReplaceAsync(
                 context.TenantId, definition.ConnectionId, 1, next, default));
         }
     }

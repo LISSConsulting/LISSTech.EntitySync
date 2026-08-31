@@ -16,6 +16,17 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             throw new ArgumentException("Every manifest item must belong to the plan.", nameof(manifest));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection,
+                transaction,
+                tenantId,
+                manifest.Plan.SourceConnectionId,
+                manifest.Plan.SourceConnectionGeneration,
+                manifest.Plan.TargetConnectionId,
+                manifest.Plan.TargetConnectionGeneration,
+                cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "The plan connection generations are no longer current.");
         await InsertPlanAsync(connection, transaction, manifest.Plan, cancellationToken).ConfigureAwait(false);
         await CopyItemsAsync(connection, manifest.Items, cancellationToken)
             .ConfigureAwait(false);
@@ -515,6 +526,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             WHERE connection.tenant_id = @tenant_id
               AND connection.connection_id IN (
                   @source_connection_id, @target_connection_id)
+              AND connection.enabled
             ORDER BY connection.connection_id
             FOR SHARE
             """;

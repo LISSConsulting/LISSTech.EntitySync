@@ -25,36 +25,37 @@ public static class ConnectionTools
         [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
         CancellationToken cancellationToken = default)
     {
-        var normalized = EntitySyncVendors.Normalize(vendor);
-        if (context.AllowProfiles)
-        {
-            return await ConnectLocalAsync(
-                services.GetRequiredService<IEntityConnectionRepository>(),
-                adapterFactory,
-                context,
-                normalized,
-                connectionId,
-                profileName,
-                cancellationToken).ConfigureAwait(false);
-        }
-        if (!string.IsNullOrWhiteSpace(profileName))
-            return Error("Profiles are disabled for remote MCP transport.");
-        definitions ??= services.GetRequiredService<ConnectionDefinitionService>();
-
-        var configuration = adapterFactory.GetConnectionConfiguration(
-            normalized,
-            profileSettings: null);
-        var resolvedConnectionId = string.IsNullOrWhiteSpace(connectionId)
-            ? normalized.ToLowerInvariant()
-            : connectionId.Trim();
-        var request = new ConnectionDefinitionRequest(
-            normalized,
-            resolvedConnectionId,
-            normalized,
-            configuration.PublicConfiguration,
-            configuration.SecretConfiguration);
+        IReadOnlyDictionary<string, string>? secretConfiguration = null;
         try
         {
+            var normalized = EntitySyncVendors.Normalize(vendor);
+            if (context.AllowProfiles)
+            {
+                return await ConnectLocalAsync(
+                    services.GetRequiredService<IEntityConnectionRepository>(),
+                    adapterFactory,
+                    context,
+                    normalized,
+                    connectionId,
+                    profileName,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            if (!string.IsNullOrWhiteSpace(profileName))
+                return Error("Profiles are disabled for remote MCP transport.");
+            var configuration = adapterFactory.GetConnectionConfiguration(
+                normalized,
+                profileSettings: null);
+            secretConfiguration = configuration.SecretConfiguration;
+            definitions ??= services.GetRequiredService<ConnectionDefinitionService>();
+            var resolvedConnectionId = string.IsNullOrWhiteSpace(connectionId)
+                ? normalized.ToLowerInvariant()
+                : connectionId.Trim();
+            var request = new ConnectionDefinitionRequest(
+                normalized,
+                resolvedConnectionId,
+                normalized,
+                configuration.PublicConfiguration,
+                configuration.SecretConfiguration);
             EntitySyncConnectionDefinition definition;
             try
             {
@@ -96,11 +97,12 @@ public static class ConnectionTools
         }
         catch
         {
-            return Error("Connection failed. Check server logs for the correlated operation.");
+            return Error(
+                "Connection failed. Check server logs for the correlated operation.");
         }
         finally
         {
-            if (configuration.SecretConfiguration is IDictionary<string, string> secrets)
+            if (secretConfiguration is IDictionary<string, string> secrets)
                 secrets.Clear();
         }
     }
