@@ -91,11 +91,22 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
     }
 
     public async Task<EntitySyncInspectionSession> OpenInspectionAsync(
-        string tenantId, Guid inspectionId, Guid planId, EntitySyncSha256 planDigestSha256,
-        string sourceConnectionId, long sourceConnectionGeneration, string targetConnectionId,
+        string tenantId, Guid inspectionId, Guid planId,
+        EntitySyncSha256 planDigestSha256, string sourceConnectionId,
+        long sourceConnectionGeneration, string targetConnectionId,
         long targetConnectionGeneration, EntitySyncActor actor, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection, transaction, tenantId, sourceConnectionId,
+                sourceConnectionGeneration, targetConnectionId,
+                targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "The plan connection generations are no longer current.");
         const string sql = """
             INSERT INTO entitysync.sync_plan_inspections (
                 tenant_id, inspection_id, plan_id, plan_digest_sha256,
@@ -112,111 +123,139 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.status = 'Draft' AND plan.expires_at > @now
-              AND EXISTS (
-                    SELECT 1 FROM entitysync.connection_definitions source_connection
-                    WHERE source_connection.tenant_id = @tenant_id
-                      AND source_connection.connection_id = plan.source_connection_id
-                      AND source_connection.generation = plan.source_connection_generation)
-              AND EXISTS (
-                    SELECT 1 FROM entitysync.connection_definitions target_connection
-                    WHERE target_connection.tenant_id = @tenant_id
-                      AND target_connection.connection_id = plan.target_connection_id
-                      AND target_connection.generation = plan.target_connection_generation)
             RETURNING inspected_at, inspected_by
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddInspectionIdentity(command, tenantId, inspectionId, planId, planDigestSha256,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId, targetConnectionGeneration);
-        PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
-        PostgresControlPersistence.Add(command, "actor", NpgsqlDbType.Text, actor.ActorId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            throw new InvalidOperationException("The exact draft plan was not available for inspection.");
-        return new EntitySyncInspectionSession(tenantId, inspectionId, planId, planDigestSha256,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId, targetConnectionGeneration,
-            EntitySyncInspectionStatus.Open, reader.GetFieldValue<DateTimeOffset>(0),
-            new EntitySyncActor(reader.GetString(1)), null);
+        DateTimeOffset inspectedAt;
+        string inspectedBy;
+        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        {
+            AddInspectionIdentity(
+                command, tenantId, inspectionId, planId, planDigestSha256,
+                sourceConnectionId, sourceConnectionGeneration,
+                targetConnectionId, targetConnectionGeneration);
+            PostgresControlPersistence.Add(
+                command, "now", NpgsqlDbType.TimestampTz, now);
+            PostgresControlPersistence.Add(
+                command, "actor", NpgsqlDbType.Text, actor.ActorId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "The exact draft plan was not available for inspection.");
+            inspectedAt = reader.GetFieldValue<DateTimeOffset>(0);
+            inspectedBy = reader.GetString(1);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new EntitySyncInspectionSession(
+            tenantId, inspectionId, planId, planDigestSha256,
+            sourceConnectionId, sourceConnectionGeneration,
+            targetConnectionId, targetConnectionGeneration,
+            EntitySyncInspectionStatus.Open, inspectedAt,
+            new EntitySyncActor(inspectedBy), null);
     }
 
     public async Task<EntitySyncInspectionRange> RecordInspectionRangeAsync(
         string tenantId, Guid inspectionId, Guid rangeId, int rangeStart, int rangeEnd,
         DateTimeOffset inspectedAt, CancellationToken cancellationToken)
     {
-        var range = new EntitySyncInspectionRange(tenantId, inspectionId, rangeId, rangeStart, rangeEnd, inspectedAt);
+        var range = new EntitySyncInspectionRange(
+            tenantId, inspectionId, rangeId, rangeStart, rangeEnd, inspectedAt);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockInspectionConnectionGenerationsAsync(
+            connection, transaction, tenantId, inspectionId, cancellationToken)
+            .ConfigureAwait(false);
         const string sql = """
             INSERT INTO entitysync.sync_plan_inspection_ranges (
                 tenant_id, inspection_id, range_id, range_start, range_end, inspected_at)
-            SELECT @tenant_id, @inspection_id, @range_id, @range_start, @range_end,
-                   @inspected_at
-            FROM entitysync.sync_plan_inspections inspection
-            JOIN entitysync.sync_plans plan
-              ON plan.tenant_id = inspection.tenant_id
-             AND plan.plan_id = inspection.plan_id
-            JOIN entitysync.connection_definitions source_connection
-              ON source_connection.tenant_id = plan.tenant_id
-             AND source_connection.connection_id = plan.source_connection_id
-             AND source_connection.generation = plan.source_connection_generation
-            JOIN entitysync.connection_definitions target_connection
-              ON target_connection.tenant_id = plan.tenant_id
-             AND target_connection.connection_id = plan.target_connection_id
-             AND target_connection.generation = plan.target_connection_generation
-            WHERE inspection.tenant_id = @tenant_id
-              AND inspection.inspection_id = @inspection_id
-              AND inspection.status = 'Open'
+            VALUES (
+                @tenant_id, @inspection_id, @range_id, @range_start, @range_end,
+                @inspected_at)
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
-        PostgresControlPersistence.Add(command, "inspection_id", NpgsqlDbType.Uuid, inspectionId);
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "inspection_id", NpgsqlDbType.Uuid, inspectionId);
         PostgresControlPersistence.Add(command, "range_id", NpgsqlDbType.Uuid, rangeId);
-        PostgresControlPersistence.Add(command, "range_start", NpgsqlDbType.Integer, rangeStart);
-        PostgresControlPersistence.Add(command, "range_end", NpgsqlDbType.Integer, rangeEnd);
-        PostgresControlPersistence.Add(command, "inspected_at", NpgsqlDbType.TimestampTz, inspectedAt);
+        PostgresControlPersistence.Add(
+            command, "range_start", NpgsqlDbType.Integer, rangeStart);
+        PostgresControlPersistence.Add(
+            command, "range_end", NpgsqlDbType.Integer, rangeEnd);
+        PostgresControlPersistence.Add(
+            command, "inspected_at", NpgsqlDbType.TimestampTz, inspectedAt);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new InvalidOperationException(
-                "The exact open inspection no longer has current connection generations.");
+                "The exact inspection range could not be recorded.");
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return range;
     }
 
     public async Task<EntitySyncInspectionSession> CompleteInspectionAsync(
-        string tenantId, Guid inspectionId, Guid planId, EntitySyncSha256 planDigestSha256,
-        string sourceConnectionId, long sourceConnectionGeneration, string targetConnectionId,
-        long targetConnectionGeneration, DateTimeOffset completedAt, CancellationToken cancellationToken)
+        string tenantId, Guid inspectionId, Guid planId,
+        EntitySyncSha256 planDigestSha256, string sourceConnectionId,
+        long sourceConnectionGeneration, string targetConnectionId,
+        long targetConnectionGeneration, DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
     {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection, transaction, tenantId, sourceConnectionId,
+                sourceConnectionGeneration, targetConnectionId,
+                targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "The plan connection generations are no longer current.");
         const string sql = """
             UPDATE entitysync.sync_plan_inspections inspection
             SET status = 'Completed', completed_at = @completed_at
             FROM entitysync.sync_plans plan
-            WHERE inspection.tenant_id = @tenant_id AND inspection.inspection_id = @inspection_id
-              AND inspection.plan_id = @plan_id AND inspection.plan_digest_sha256 = @plan_digest_sha256
+            WHERE inspection.tenant_id = @tenant_id
+              AND inspection.inspection_id = @inspection_id
+              AND inspection.plan_id = @plan_id
+              AND inspection.plan_digest_sha256 = @plan_digest_sha256
               AND inspection.source_connection_generation = @source_connection_generation
               AND inspection.target_connection_generation = @target_connection_generation
               AND inspection.status = 'Open'
-              AND plan.tenant_id = inspection.tenant_id AND plan.plan_id = inspection.plan_id
+              AND plan.tenant_id = inspection.tenant_id
+              AND plan.plan_id = inspection.plan_id
               AND plan.source_connection_id = @source_connection_id
-              AND plan.target_connection_id = @target_connection_id AND plan.tenant_id = @tenant_id
-              AND EXISTS (
-                    SELECT 1 FROM entitysync.connection_definitions source_connection
-                    WHERE source_connection.tenant_id = @tenant_id
-                      AND source_connection.connection_id = plan.source_connection_id
-                      AND source_connection.generation = plan.source_connection_generation)
-              AND EXISTS (
-                    SELECT 1 FROM entitysync.connection_definitions target_connection
-                    WHERE target_connection.tenant_id = @tenant_id
-                      AND target_connection.connection_id = plan.target_connection_id
-                      AND target_connection.generation = plan.target_connection_generation)
-            RETURNING inspection.inspected_at, inspection.inspected_by, inspection.completed_at
+              AND plan.target_connection_id = @target_connection_id
+              AND plan.tenant_id = @tenant_id
+            RETURNING inspection.inspected_at, inspection.inspected_by,
+                      inspection.completed_at
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddInspectionIdentity(command, tenantId, inspectionId, planId, planDigestSha256,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId, targetConnectionGeneration);
-        PostgresControlPersistence.Add(command, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            throw new InvalidOperationException("The exact open inspection was not available for completion.");
-        return new EntitySyncInspectionSession(tenantId, inspectionId, planId, planDigestSha256,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId, targetConnectionGeneration,
-            EntitySyncInspectionStatus.Completed, reader.GetFieldValue<DateTimeOffset>(0),
-            new EntitySyncActor(reader.GetString(1)), reader.GetFieldValue<DateTimeOffset>(2));
+        DateTimeOffset inspectedAt;
+        string inspectedBy;
+        DateTimeOffset persistedCompletedAt;
+        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        {
+            AddInspectionIdentity(
+                command, tenantId, inspectionId, planId, planDigestSha256,
+                sourceConnectionId, sourceConnectionGeneration,
+                targetConnectionId, targetConnectionGeneration);
+            PostgresControlPersistence.Add(
+                command, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "The exact open inspection was not available for completion.");
+            inspectedAt = reader.GetFieldValue<DateTimeOffset>(0);
+            inspectedBy = reader.GetString(1);
+            persistedCompletedAt = reader.GetFieldValue<DateTimeOffset>(2);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new EntitySyncInspectionSession(
+            tenantId, inspectionId, planId, planDigestSha256,
+            sourceConnectionId, sourceConnectionGeneration,
+            targetConnectionId, targetConnectionGeneration,
+            EntitySyncInspectionStatus.Completed, inspectedAt,
+            new EntitySyncActor(inspectedBy), persistedCompletedAt);
     }
 
     public async Task<bool> HasCompleteInspectionAsync(
@@ -255,6 +294,12 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             targetConnectionGeneration, approvedAt, actor, expiresAt);
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection, transaction, tenantId, sourceConnectionId,
+                sourceConnectionGeneration, targetConnectionId,
+                targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "The plan connection generations are no longer current.");
         const string advanceSql = """
             UPDATE entitysync.sync_plans plan SET status = 'Approved'
             FROM entitysync.sync_plan_inspections inspection
@@ -325,6 +370,14 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             throw new ArgumentException("Apply operation must bind the exact approval and plan identity.", nameof(applyOperation));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection, transaction, tenantId, sourceConnectionId,
+                sourceConnectionGeneration, targetConnectionId,
+                targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
         const string consumeSql = """
             UPDATE entitysync.sync_plans plan SET status = 'Consumed'
             FROM entitysync.sync_approvals approval
@@ -397,6 +450,99 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         PostgresControlPersistence.Add(command, "expected_status", NpgsqlDbType.Text, expectedStatus.ToString());
         PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    private static async Task LockInspectionConnectionGenerationsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid inspectionId,
+        CancellationToken cancellationToken)
+    {
+        const string identitySql = """
+            SELECT plan.source_connection_id, plan.source_connection_generation,
+                   plan.target_connection_id, plan.target_connection_generation
+            FROM entitysync.sync_plan_inspections inspection
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = inspection.tenant_id
+             AND plan.plan_id = inspection.plan_id
+            WHERE inspection.tenant_id = @tenant_id
+              AND inspection.inspection_id = @inspection_id
+              AND inspection.status = 'Open'
+            """;
+        string sourceConnectionId;
+        long sourceConnectionGeneration;
+        string targetConnectionId;
+        long targetConnectionGeneration;
+        await using (var identity = new NpgsqlCommand(
+            identitySql, connection, transaction))
+        {
+            PostgresControlPersistence.Add(
+                identity, "tenant_id", NpgsqlDbType.Text, tenantId);
+            PostgresControlPersistence.Add(
+                identity, "inspection_id", NpgsqlDbType.Uuid, inspectionId);
+            await using var reader = await identity
+                .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "The exact open inspection was not available.");
+            sourceConnectionId = reader.GetString(0);
+            sourceConnectionGeneration = reader.GetInt64(1);
+            targetConnectionId = reader.GetString(2);
+            targetConnectionGeneration = reader.GetInt64(3);
+        }
+        if (!await LockCurrentConnectionGenerationsAsync(
+                connection, transaction, tenantId, sourceConnectionId,
+                sourceConnectionGeneration, targetConnectionId,
+                targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException(
+                "The plan connection generations are no longer current.");
+    }
+
+    private static async Task<bool> LockCurrentConnectionGenerationsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration,
+        CancellationToken cancellationToken)
+    {
+        const string lockSql = """
+            SELECT connection.connection_id, connection.generation
+            FROM entitysync.connection_definitions connection
+            WHERE connection.tenant_id = @tenant_id
+              AND connection.connection_id IN (
+                  @source_connection_id, @target_connection_id)
+            ORDER BY connection.connection_id
+            FOR SHARE
+            """;
+        var sourceMatches = false;
+        var targetMatches = false;
+        await using var command = new NpgsqlCommand(lockSql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "source_connection_id", NpgsqlDbType.Text, sourceConnectionId);
+        PostgresControlPersistence.Add(
+            command, "target_connection_id", NpgsqlDbType.Text, targetConnectionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var connectionId = reader.GetString(0);
+            var generation = reader.GetInt64(1);
+            sourceMatches |=
+                string.Equals(
+                    connectionId, sourceConnectionId, StringComparison.Ordinal)
+                && generation == sourceConnectionGeneration;
+            targetMatches |=
+                string.Equals(
+                    connectionId, targetConnectionId, StringComparison.Ordinal)
+                && generation == targetConnectionGeneration;
+        }
+        return sourceMatches && targetMatches;
     }
 
     private static async Task InsertPlanAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

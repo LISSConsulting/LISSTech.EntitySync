@@ -235,7 +235,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                             SELECT 1 FROM entitysync.sync_operation_items item
                             WHERE item.tenant_id = @tenant_id
                               AND item.operation_id = @operation_id
-                              AND item.outcome IN ('Pending','Unknown'))))
+                              AND item.outcome IN (
+                                  'Succeeded','Skipped','Pending','Unknown'))))
             """;
         await using var update = new NpgsqlCommand(updateSql, connection, transaction);
         AddOperationKey(update, tenantId, operationId);
@@ -281,6 +282,50 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             || replacement.Outcome == EntitySyncItemOutcome.Pending)
             throw new InvalidOperationException(
                 "Operation items allow only one Pending-to-terminal transition.");
+        if (string.IsNullOrWhiteSpace(leaseOwner))
+            throw new ArgumentException("Lease owner is required.", nameof(leaseOwner));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        const string operationSql = """
+            SELECT operation.attempt, operation.lease_owner, operation.status,
+                   operation.lease_expires_at > now()
+            FROM entitysync.sync_operations operation
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.operation_id = @operation_id
+              AND operation.plan_id = @plan_id
+            FOR UPDATE
+            """;
+        var operationIsMutable = false;
+        await using (var operationCommand = new NpgsqlCommand(
+            operationSql, connection, transaction))
+        {
+            AddOperationKey(operationCommand, tenantId, operationId);
+            PostgresControlPersistence.Add(
+                operationCommand, "plan_id", NpgsqlDbType.Uuid, planId);
+            await using var reader = await operationCommand
+                .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var status = PostgresControlPersistence.ParseEnum<EntitySyncOperationStatus>(
+                    reader.GetString(2));
+                operationIsMutable =
+                    reader.GetInt32(0) == expectedOperationAttempt
+                    && !reader.IsDBNull(1)
+                    && string.Equals(
+                        reader.GetString(1), leaseOwner, StringComparison.Ordinal)
+                    && status is EntitySyncOperationStatus.Leased
+                        or EntitySyncOperationStatus.Running
+                    && reader.GetBoolean(3);
+            }
+        }
+        if (!operationIsMutable)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
         const string sql = """
             UPDATE entitysync.sync_operation_items item
             SET after_payload_sha256 = @after_payload_sha256,
@@ -290,32 +335,24 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 error_message = @error_message,
                 started_at = @started_at,
                 completed_at = @completed_at
-            FROM entitysync.sync_operations operation
             WHERE item.tenant_id = @tenant_id
               AND item.operation_id = @operation_id
               AND item.plan_id = @plan_id
               AND item.item_id = @item_id
               AND item.outcome = @expected_outcome
-              AND operation.tenant_id = item.tenant_id
-              AND operation.operation_id = item.operation_id
-              AND operation.plan_id = item.plan_id
-              AND operation.tenant_id = @tenant_id
-              AND operation.attempt = @expected_attempt
-              AND operation.lease_owner = @lease_owner
-              AND operation.lease_expires_at > @now
-              AND operation.status IN ('Leased','Running')
             """;
-        await using var command = dataSource.CreateCommand(sql);
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
         AddItemMutable(command, replacement);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
         PostgresControlPersistence.Add(command, "operation_id", NpgsqlDbType.Uuid, operationId);
         PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, planId);
         PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
-        PostgresControlPersistence.Add(command, "expected_outcome", NpgsqlDbType.Text, expectedOutcome.ToString());
-        PostgresControlPersistence.Add(command, "expected_attempt", NpgsqlDbType.Integer, expectedOperationAttempt);
-        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
-        PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        PostgresControlPersistence.Add(
+            command, "expected_outcome", NpgsqlDbType.Text, expectedOutcome.ToString());
+        var replaced = await command.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false) == 1;
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return replaced;
     }
 
     public async Task InsertSnapshotAsync(

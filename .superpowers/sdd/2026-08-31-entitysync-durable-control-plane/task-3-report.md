@@ -142,3 +142,40 @@ No broad suite, formatter, linter, or Pester run was performed.
 ### Concerns
 
 None.
+
+## Fix Round 2
+
+### Status
+
+DONE
+
+### RED
+
+The exact focused command failed against the pre-fix behavior:
+
+```text
+Failed: 3, Passed: 13, Skipped: 0, Total: 16
+```
+
+- Concurrent connection rotation did not block inspection/consume mutations.
+- Concurrent reclaim/cancel did not block operation-item mutation.
+- Mixed succeeded/failed items incorrectly allowed a `Failed` operation.
+
+### GREEN
+
+```text
+dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --configuration Release --filter FullyQualifiedName~ControlRepositoryTests
+Passed! - Failed: 0, Passed: 16, Skipped: 0, Total: 16, Duration: 4 s
+```
+
+No broad validation was run.
+
+### Fixes
+
+- Inspection open, range insertion, completion, approval, and approval consumption now run while holding tenant-scoped `FOR SHARE` locks on both current connection-definition rows. The single lock query orders by connection ID, validates both exact generations after lock acquisition, and keeps the locks through mutation commit. Concurrent rotation tests hold an update lock first, prove the stale mutation waits, then prove completion or consumption fails without changing inspection, plan, or operation state.
+- Operation-item CAS now opens a transaction, locks the tenant/operation/plan row `FOR UPDATE`, and re-reads attempt, owner, mutable status, and lease liveness using PostgreSQL `now()`. Only a valid locked operation may update a Pending item before the shared transaction commits. Concurrent reclaim and cancel transactions prove the item mutation waits and then returns false without changing the Pending item.
+- A `Failed` operation now requires at least one failed item and rejects every succeeded, skipped, pending, or unknown item. Mixed successful/skipped and failed outcomes are exclusively `Partial`; focused tests cover accepted all-failed, accepted mixed-partial, and rejected mixed-failed transitions.
+
+### Concerns
+
+None.

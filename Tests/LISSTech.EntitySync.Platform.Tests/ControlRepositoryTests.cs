@@ -476,6 +476,128 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Concurrent_connection_rotation_blocks_then_fences_inspection_and_consumption()
+    {
+        var completionContext = await SeedControlContextAsync("rotation-completion");
+        var completionPlans = new PostgresDurableSyncPlanRepository(Database);
+        var completionManifest = Manifest(completionContext, 1);
+        await completionPlans.InsertAsync(
+            completionContext.TenantId, completionManifest, default);
+        var completionInspectionId = Guid.NewGuid();
+        await completionPlans.OpenInspectionAsync(
+            completionContext.TenantId, completionInspectionId,
+            completionManifest.Plan.PlanId, completionManifest.Plan.PlanDigestSha256,
+            completionContext.Source.ConnectionId, 1,
+            completionContext.Target.ConnectionId, 1,
+            new EntitySyncActor("reviewer"), completionContext.Now.AddMinutes(1), default);
+        await completionPlans.RecordInspectionRangeAsync(
+            completionContext.TenantId, completionInspectionId, Guid.NewGuid(), 0, 0,
+            completionContext.Now.AddMinutes(1), default);
+        await using (var rotationConnection =
+            await Database.OpenConnectionAsync(default))
+        await using (var rotationTransaction =
+            await rotationConnection.BeginTransactionAsync(default))
+        {
+            await RotateAsync(
+                rotationConnection, rotationTransaction, completionContext,
+                completionContext.Source);
+            var completionTask = completionPlans.CompleteInspectionAsync(
+                completionContext.TenantId, completionInspectionId,
+                completionManifest.Plan.PlanId,
+                completionManifest.Plan.PlanDigestSha256,
+                completionContext.Source.ConnectionId, 1,
+                completionContext.Target.ConnectionId, 1,
+                completionContext.Now.AddMinutes(2), default);
+            await AssertStillRunningAsync(completionTask);
+            await rotationTransaction.CommitAsync();
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await completionTask);
+        }
+        Assert.False(await completionPlans.HasCompleteInspectionAsync(
+            completionContext.TenantId, completionInspectionId,
+            completionManifest.Plan.PlanId, completionManifest.Plan.PlanDigestSha256,
+            completionContext.Source.ConnectionId, 1,
+            completionContext.Target.ConnectionId, 1, default));
+
+        var consumeContext = await SeedControlContextAsync("rotation-consume");
+        var consumePlans = new PostgresDurableSyncPlanRepository(Database);
+        var consumeOperations = new PostgresSyncOperationRepository(Database);
+        var consumeManifest = Manifest(consumeContext, 1);
+        await consumePlans.InsertAsync(consumeContext.TenantId, consumeManifest, default);
+        var consumeInspectionId = Guid.NewGuid();
+        await consumePlans.OpenInspectionAsync(
+            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+            consumeManifest.Plan.PlanDigestSha256,
+            consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            consumeContext.Now.AddMinutes(1), default);
+        await consumePlans.RecordInspectionRangeAsync(
+            consumeContext.TenantId, consumeInspectionId, Guid.NewGuid(), 0, 0,
+            consumeContext.Now.AddMinutes(1), default);
+        await consumePlans.CompleteInspectionAsync(
+            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+            consumeManifest.Plan.PlanDigestSha256,
+            consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1,
+            consumeContext.Now.AddMinutes(2), default);
+        var consumeApprovalId = Guid.NewGuid();
+        await consumePlans.ApproveInspectionAsync(
+            consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
+            consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
+            consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("approver"),
+            consumeContext.Now.AddMinutes(3), consumeContext.Now.AddMinutes(20), default);
+        var apply = EntitySyncOperation.QueueApply(
+            consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
+            consumeApprovalId, "rotation-consume", "route-a",
+            consumeContext.Source.ConnectionId, 1,
+            consumeContext.Target.ConnectionId, 1, consumeContext.Now.AddMinutes(4));
+        await using (var rotationConnection =
+            await Database.OpenConnectionAsync(default))
+        await using (var rotationTransaction =
+            await rotationConnection.BeginTransactionAsync(default))
+        {
+            await RotateAsync(
+                rotationConnection, rotationTransaction, consumeContext,
+                consumeContext.Target);
+            var consumeTask = consumePlans.TryConsumeApprovalAsync(
+                consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
+                consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
+                consumeContext.Source.ConnectionId, 1,
+                consumeContext.Target.ConnectionId, 1, apply,
+                OperationItems(
+                    apply, consumeManifest.Items, consumeContext.Now.AddDays(1)),
+                consumeContext.Now.AddMinutes(4), default);
+            await AssertStillRunningAsync(consumeTask);
+            await rotationTransaction.CommitAsync();
+            Assert.False(await consumeTask);
+        }
+        Assert.Equal(
+            EntitySyncDurablePlanStatus.Approved,
+            (await consumePlans.GetAsync(
+                consumeContext.TenantId, consumeManifest.Plan.PlanId, default))!.Status);
+        Assert.Null(await consumeOperations.GetAsync(
+            consumeContext.TenantId, apply.OperationId, default));
+
+        static async Task RotateAsync(
+            NpgsqlConnection connection,
+            NpgsqlTransaction transaction,
+            ControlContext context,
+            EntitySyncConnectionDefinition definition)
+        {
+            const string sql = """
+                UPDATE entitysync.connection_definitions
+                SET generation = generation + 1
+                WHERE tenant_id = @tenant_id AND connection_id = @connection_id
+                """;
+            await using var command = new NpgsqlCommand(sql, connection, transaction);
+            command.Parameters.AddWithValue("tenant_id", context.TenantId);
+            command.Parameters.AddWithValue("connection_id", definition.ConnectionId);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+    }
+
+    [Fact]
     public async Task Lease_reclamation_and_item_compare_and_set_fence_stale_workers()
     {
         var context = await SeedControlContextAsync("lease");
@@ -520,6 +642,114 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             context.TenantId, operation.OperationId, operation.PlanId, items[0].ItemId,
             reclaimed.Attempt, reclaimed.LeaseOwner!, now.AddMinutes(2),
             EntitySyncItemOutcome.Pending, completed, default));
+    }
+
+    [Fact]
+    public async Task Concurrent_reclaim_and_cancel_block_then_fence_item_outcomes()
+    {
+        var reclaim = await CreateRunningAsync("item-reclaim-race");
+        await using (var reclaimConnection = await Database.OpenConnectionAsync(default))
+        await using (var reclaimTransaction =
+            await reclaimConnection.BeginTransactionAsync(default))
+        {
+            const string reclaimSql = """
+                UPDATE entitysync.sync_operations
+                SET status = 'Leased', lease_owner = 'replacement-worker',
+                    lease_expires_at = @lease_expires_at, attempt = attempt + 1,
+                    started_at = NULL, completed_at = NULL
+                WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+                """;
+            await using var command = new NpgsqlCommand(
+                reclaimSql, reclaimConnection, reclaimTransaction);
+            command.Parameters.AddWithValue(
+                "lease_expires_at", reclaim.Context.Now.AddMinutes(30));
+            command.Parameters.AddWithValue("tenant_id", reclaim.Context.TenantId);
+            command.Parameters.AddWithValue("operation_id", reclaim.Running.OperationId);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+            var itemTask = reclaim.Repository.TryReplaceItemAsync(
+                reclaim.Context.TenantId, reclaim.Running.OperationId,
+                reclaim.Running.PlanId, reclaim.Item.ItemId,
+                reclaim.Running.Attempt, reclaim.Running.LeaseOwner!,
+                DateTimeOffset.UtcNow, EntitySyncItemOutcome.Pending,
+                CompleteItem(
+                    reclaim.Item, reclaim.Context.Now.AddMinutes(2),
+                    reclaim.Context.Now.AddMinutes(3)),
+                default);
+            await AssertStillRunningAsync(itemTask);
+            await reclaimTransaction.CommitAsync();
+            Assert.False(await itemTask);
+        }
+        Assert.Equal(
+            EntitySyncItemOutcome.Pending,
+            Assert.Single(await reclaim.Repository.GetItemsAsync(
+                reclaim.Context.TenantId, reclaim.Running.OperationId, default)).Outcome);
+
+        var cancel = await CreateRunningAsync("item-cancel-race");
+        await using (var cancelConnection = await Database.OpenConnectionAsync(default))
+        await using (var cancelTransaction =
+            await cancelConnection.BeginTransactionAsync(default))
+        {
+            const string cancelSql = """
+                UPDATE entitysync.sync_operations
+                SET status = 'Cancelled', lease_owner = NULL,
+                    lease_expires_at = NULL, completed_at = @completed_at
+                WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+                """;
+            await using var command = new NpgsqlCommand(
+                cancelSql, cancelConnection, cancelTransaction);
+            command.Parameters.AddWithValue(
+                "completed_at", cancel.Context.Now.AddMinutes(3));
+            command.Parameters.AddWithValue("tenant_id", cancel.Context.TenantId);
+            command.Parameters.AddWithValue("operation_id", cancel.Running.OperationId);
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+
+            var itemTask = cancel.Repository.TryReplaceItemAsync(
+                cancel.Context.TenantId, cancel.Running.OperationId,
+                cancel.Running.PlanId, cancel.Item.ItemId,
+                cancel.Running.Attempt, cancel.Running.LeaseOwner!,
+                DateTimeOffset.UtcNow, EntitySyncItemOutcome.Pending,
+                CompleteItem(
+                    cancel.Item, cancel.Context.Now.AddMinutes(2),
+                    cancel.Context.Now.AddMinutes(3)),
+                default);
+            await AssertStillRunningAsync(itemTask);
+            await cancelTransaction.CommitAsync();
+            Assert.False(await itemTask);
+        }
+        Assert.Equal(
+            EntitySyncItemOutcome.Pending,
+            Assert.Single(await cancel.Repository.GetItemsAsync(
+                cancel.Context.TenantId, cancel.Running.OperationId, default)).Outcome);
+
+        async Task<(
+            ControlContext Context,
+            PostgresSyncOperationRepository Repository,
+            EntitySyncOperation Running,
+            EntitySyncOperationItem Item)> CreateRunningAsync(string suffix)
+        {
+            var context = await SeedControlContextAsync(suffix);
+            var plans = new PostgresDurableSyncPlanRepository(Database);
+            var repository = new PostgresSyncOperationRepository(Database);
+            var manifest = Manifest(context, 1);
+            await plans.InsertAsync(context.TenantId, manifest, default);
+            var queued = EntitySyncOperation.QueueDryRun(
+                context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId,
+                $"{suffix}-operation", "route-a", context.Source.ConnectionId, 1,
+                context.Target.ConnectionId, 1, context.Now);
+            var item = Assert.Single(
+                OperationItems(queued, manifest.Items, context.Now.AddDays(1)));
+            await repository.InsertAsync(context.TenantId, queued, [item], default);
+            var leased = await repository.TryLeaseNextAsync(
+                context.TenantId, $"{suffix}-worker", context.Now.AddMinutes(1),
+                context.Now.AddMinutes(20), default)
+                ?? throw new InvalidOperationException("Expected operation lease.");
+            var running = leased.Start(context.Now.AddMinutes(2));
+            Assert.True(await repository.TryReplaceAsync(
+                context.TenantId, running.OperationId,
+                EntitySyncOperationStatus.Leased, running, default));
+            return (context, repository, running, item);
+        }
     }
 
     [Fact]
@@ -599,6 +829,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             "terminal-partial",
             EntitySyncOperationStatus.Partial,
             [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Failed]);
+        await RunTerminalAsync(
+            "terminal-mixed-failed",
+            EntitySyncOperationStatus.Failed,
+            [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Failed],
+            expectedSuccess: false);
 
         var cancelContext = await SeedControlContextAsync("terminal-cancelled");
         var cancelPlans = new PostgresDurableSyncPlanRepository(Database);
@@ -621,7 +856,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         async Task RunTerminalAsync(
             string suffix,
             EntitySyncOperationStatus terminalStatus,
-            IReadOnlyList<EntitySyncItemOutcome> outcomes)
+            IReadOnlyList<EntitySyncItemOutcome> outcomes,
+            bool expectedSuccess = true)
         {
             var context = await SeedControlContextAsync(suffix);
             var plans = new PostgresDurableSyncPlanRepository(Database);
@@ -668,10 +904,20 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                     context.Now.AddMinutes(3), EntitySyncItemOutcome.Pending,
                     replacement, default));
             }
-            Assert.True(await operations.TryReplaceAsync(
-                context.TenantId, running.OperationId,
-                EntitySyncOperationStatus.Running,
-                running.Complete(terminalStatus, context.Now.AddMinutes(4)), default));
+            Assert.Equal(
+                expectedSuccess,
+                await operations.TryReplaceAsync(
+                    context.TenantId, running.OperationId,
+                    EntitySyncOperationStatus.Running,
+                    running.Complete(
+                        terminalStatus, context.Now.AddMinutes(4)), default));
+            if (!expectedSuccess)
+            {
+                Assert.Equal(
+                    EntitySyncOperationStatus.Running,
+                    (await operations.GetAsync(
+                        context.TenantId, running.OperationId, default))!.Status);
+            }
         }
     }
 
@@ -964,6 +1210,12 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 [new EntitySyncFieldDiff("name", new EntitySyncJsonValue("\"before\""),
                     new EntitySyncJsonValue("\"desired\""))])).ToArray();
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
+    }
+
+    private static async Task AssertStillRunningAsync(Task task)
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(150));
+        Assert.False(task.IsCompleted, "The mutation did not wait for the conflicting row lock.");
     }
 
     private static EntitySyncOperationItem CompleteItem(
