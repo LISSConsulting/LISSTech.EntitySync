@@ -718,6 +718,40 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task ConnectVendorClearsPartialNetSuiteSecretsWhenConfigurationFails()
+    {
+        var secretBuffer = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+        var factory = new ServerManagedEntityAdapterFactory(
+            new Dictionary<string, string?>
+            {
+                ["NETSUITE_ACCOUNT_ID"] = "account",
+                ["NETSUITE_CONSUMER_KEY"] = "consumer-key",
+                ["NETSUITE_CONSUMER_SECRET"] = "consumer-secret-value",
+                ["NETSUITE_TOKEN_ID"] = "token-id"
+            },
+            () => secretBuffer);
+        using var services = new ServiceCollection().BuildServiceProvider();
+
+        var response = await ConnectionTools.ConnectVendor(
+            services,
+            factory,
+            definitions: null,
+            context: new McpRequestContext("tenant", false),
+            vendor: "NetSuite",
+            cancellationToken: default);
+
+        using var json = JsonDocument.Parse(response);
+        Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(json.RootElement.TryGetProperty("error", out _));
+        Assert.Empty(secretBuffer);
+        Assert.DoesNotContain(
+            "consumer-secret-value",
+            response,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ConnectVendorDelegatesToSharedFactoryAndPreservesConnectionGenerations()
     {
         using var connections = new InMemoryEntityConnectionRepository();

@@ -51,16 +51,32 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
     ];
 
     private readonly IReadOnlyDictionary<string, string?> environment;
+    private readonly Func<Dictionary<string, string>> createSecretConfiguration;
 
     public ServerManagedEntityAdapterFactory()
         : this(ReadCurrentEnvironment())
     {
     }
 
-    public ServerManagedEntityAdapterFactory(IReadOnlyDictionary<string, string?> environment)
+    public ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment)
+        : this(
+            environment,
+            () => new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase))
+    {
+    }
+
+    internal ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment,
+        Func<Dictionary<string, string>> createSecretConfiguration)
     {
         ArgumentNullException.ThrowIfNull(environment);
-        this.environment = new Dictionary<string, string?>(environment, StringComparer.Ordinal);
+        ArgumentNullException.ThrowIfNull(createSecretConfiguration);
+        this.environment = new Dictionary<string, string?>(
+            environment,
+            StringComparer.Ordinal);
+        this.createSecretConfiguration = createSecretConfiguration;
     }
 
     public async Task<IEntityAdapter> CreateAsync(
@@ -213,11 +229,12 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         string vendor,
         IReadOnlyDictionary<string, string>? profileSettings)
     {
-        var normalized = EntitySyncVendors.Normalize(vendor);
         var publicConfiguration = new Dictionary<string, JsonElement>(
             StringComparer.OrdinalIgnoreCase);
-        var secretConfiguration = new Dictionary<string, string>(
-            StringComparer.OrdinalIgnoreCase);
+        var secretConfiguration = createSecretConfiguration();
+        try
+        {
+        var normalized = EntitySyncVendors.Normalize(vendor);
 
         void AddPublic(string key, string value) =>
             publicConfiguration.Add(key, JsonSerializer.SerializeToElement(value));
@@ -360,6 +377,13 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         return new ServerManagedConnectionConfiguration(
             publicConfiguration,
             secretConfiguration);
+        }
+        catch
+        {
+            publicConfiguration.Clear();
+            secretConfiguration.Clear();
+            throw;
+        }
     }
 
     private static string ConfigurationValue(string key, JsonElement value) =>
