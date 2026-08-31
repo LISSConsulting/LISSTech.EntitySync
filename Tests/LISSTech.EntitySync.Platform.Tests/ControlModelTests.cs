@@ -122,6 +122,25 @@ public sealed class ControlModelTests
     }
 
     [Fact]
+    public void Durable_manifest_binds_a_defensive_contiguous_item_copy_to_a_canonical_digest()
+    {
+        var items = new List<EntitySyncDurablePlanItem> { PlanItem(0), PlanItem(1) };
+        var manifest = EntitySyncDurablePlanManifest.Create(Plan(), items);
+        var sameManifest = EntitySyncDurablePlanManifest.Create(Plan(), items);
+
+        items.Clear();
+
+        Assert.Equal(2, manifest.Plan.ItemCount);
+        Assert.Equal(2, manifest.Items.Count);
+        Assert.NotEqual(new EntitySyncSha256(HashA), manifest.Plan.PlanDigestSha256);
+        Assert.Equal(manifest.Plan.PlanDigestSha256, sameManifest.Plan.PlanDigestSha256);
+        Assert.Throws<ArgumentException>(() =>
+            EntitySyncDurablePlanManifest.Create(Plan(), [PlanItem(1)]));
+        Assert.Throws<ArgumentException>(() =>
+            EntitySyncDurablePlanManifest.Create(Plan(), [PlanItem(0, tenantId: "other")]));
+    }
+
+    [Fact]
     public void Durable_plan_allows_only_legal_state_transitions()
     {
         var draft = Plan();
@@ -178,6 +197,77 @@ public sealed class ControlModelTests
     }
 
     [Fact]
+    public void Operation_rehydration_preserves_every_schema_valid_state_without_command_normalization()
+    {
+        var approvalId = Guid.NewGuid();
+        var operation = EntitySyncOperation.Rehydrate(
+            tenantId: "tenant",
+            operationId: Guid.NewGuid(),
+            planId: PlanId,
+            approvalId: approvalId,
+            routeScope: " route ",
+            sourceConnectionId: "source-1",
+            sourceConnectionGeneration: 7,
+            targetConnectionId: "target-1",
+            targetConnectionGeneration: 11,
+            mode: EntitySyncOperationMode.DryRun,
+            status: EntitySyncOperationStatus.Succeeded,
+            idempotencyKey: " key ",
+            leaseOwner: " worker ",
+            leaseExpiresAt: Instant.AddMinutes(1),
+            attempt: 0,
+            createdAt: Instant,
+            queuedAt: Instant.AddMinutes(-1),
+            startedAt: null,
+            completedAt: null);
+
+        Assert.Equal(approvalId, operation.ApprovalId);
+        Assert.Equal(" route ", operation.RouteScope);
+        Assert.Equal(" key ", operation.IdempotencyKey);
+        Assert.Equal(" worker ", operation.LeaseOwner);
+        Assert.Null(operation.CompletedAt);
+    }
+
+    [Fact]
+    public void Operation_item_rehydration_preserves_schema_valid_partial_outcome_state()
+    {
+        var item = EntitySyncOperationItem.Rehydrate(
+            tenantId: "tenant",
+            operationId: Guid.NewGuid(),
+            planId: PlanId,
+            itemId: Guid.NewGuid(),
+            sourceVendor: " halo ",
+            sourceConnectionId: "source-1",
+            sourceEntityType: " Company ",
+            sourceEntityKey: " key ",
+            sourceEntityId: " source ",
+            targetVendor: " netsuite ",
+            targetConnectionId: "target-1",
+            targetEntityType: " Customer ",
+            targetEntityId: null,
+            action: " Update ",
+            redactedBefore: new EntitySyncJsonValue("{}"),
+            redactedDesired: new EntitySyncJsonValue("{}"),
+            beforePayloadSha256: null,
+            desiredPayloadSha256: new EntitySyncSha256(HashB),
+            afterPayloadSha256: null,
+            snapshotsExpireAt: Instant.AddDays(1),
+            vendorRequestId: " request ",
+            outcome: EntitySyncItemOutcome.Failed,
+            errorCode: null,
+            errorMessage: null,
+            startedAt: null,
+            completedAt: null);
+
+        Assert.Equal(" halo ", item.SourceVendor);
+        Assert.Equal(" Company ", item.SourceEntityType);
+        Assert.Equal(" Update ", item.Action);
+        Assert.Equal(" request ", item.VendorRequestId);
+        Assert.Null(item.ErrorCode);
+        Assert.Null(item.CompletedAt);
+    }
+
+    [Fact]
     public void Schedule_next_version_preserves_identity_and_increments_version()
     {
         var schedule = new EntitySyncSchedule(
@@ -218,7 +308,37 @@ public sealed class ControlModelTests
         Assert.Contains(consumeParameters, parameter =>
             parameter.Name == "operationItems"
             && parameter.ParameterType == typeof(IReadOnlyList<EntitySyncOperationItem>));
+        Assert.Contains(consumeParameters, parameter =>
+            parameter.Name == "now" && parameter.ParameterType == typeof(DateTimeOffset));
+
+        var insertParameters = methods[nameof(IDurableSyncPlanRepository.InsertAsync)].GetParameters();
+        Assert.Contains(insertParameters, parameter =>
+            parameter.Name == "manifest"
+            && parameter.ParameterType == typeof(EntitySyncDurablePlanManifest));
+        Assert.DoesNotContain(insertParameters, parameter =>
+            parameter.ParameterType == typeof(IReadOnlyList<EntitySyncDurablePlanItem>));
+
+        var expireParameters = methods[nameof(IDurableSyncPlanRepository.TryExpireAsync)].GetParameters();
+        Assert.Contains(expireParameters, parameter => parameter.Name == "planId");
+        Assert.Contains(expireParameters, parameter => parameter.Name == "planDigestSha256");
+        Assert.Contains(expireParameters, parameter => parameter.Name == "expectedStatus");
+        Assert.Contains(expireParameters, parameter => parameter.Name == "now");
     }
+
+    [Fact]
+    public void Operation_item_update_contract_is_fenced_by_lease_attempt_and_expected_outcome()
+    {
+        var method = typeof(ISyncOperationRepository).GetMethod(
+            nameof(ISyncOperationRepository.TryReplaceItemAsync));
+        Assert.NotNull(method);
+        var parameters = method.GetParameters();
+
+        Assert.Contains(parameters, parameter => parameter.Name == "expectedOperationAttempt");
+        Assert.Contains(parameters, parameter => parameter.Name == "leaseOwner");
+        Assert.Contains(parameters, parameter => parameter.Name == "now");
+        Assert.Contains(parameters, parameter => parameter.Name == "expectedOutcome");
+    }
+
 
     [Fact]
     public void Every_repository_method_is_tenant_first_and_async()
@@ -275,9 +395,10 @@ public sealed class ControlModelTests
     private static EntitySyncDurablePlanItem PlanItem(
         int ordinal,
         EntitySyncMatchEvidence? evidence = null,
-        IEnumerable<EntitySyncFieldDiff>? fieldDiffs = null) =>
+        IEnumerable<EntitySyncFieldDiff>? fieldDiffs = null,
+        string tenantId = "tenant") =>
         new(
-            "tenant", PlanId, Guid.NewGuid(), ordinal,
+            tenantId, PlanId, Guid.NewGuid(), ordinal,
             "halo", "source-1", "Company", $"key-{ordinal}", $"source-{ordinal}",
             "netsuite", "target-1", "Customer", $"target-{ordinal}", "Update",
             evidence ?? new EntitySyncMatchEvidence(95, "Linked", ["external id"]),

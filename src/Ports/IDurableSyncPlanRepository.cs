@@ -6,8 +6,7 @@ public interface IDurableSyncPlanRepository
 {
     Task InsertAsync(
         string tenantId,
-        EntitySyncDurablePlan plan,
-        IReadOnlyList<EntitySyncDurablePlanItem> items,
+        EntitySyncDurablePlanManifest manifest,
         CancellationToken cancellationToken);
 
     Task<EntitySyncDurablePlan?> GetAsync(
@@ -94,5 +93,14 @@ public interface IDurableSyncPlanRepository
         long targetConnectionGeneration,
         EntitySyncOperation applyOperation,
         IReadOnlyList<EntitySyncOperationItem> operationItems,
+        DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    Task<bool> TryExpireAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        EntitySyncDurablePlanStatus expectedStatus,
+        DateTimeOffset now,
         CancellationToken cancellationToken);
 }

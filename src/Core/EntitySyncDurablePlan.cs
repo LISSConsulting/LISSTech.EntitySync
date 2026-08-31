@@ -192,6 +192,12 @@ public sealed record EntitySyncDurablePlan
     public EntitySyncActor CreatedBy { get; }
     public DateTimeOffset ExpiresAt { get; }
 
+    internal EntitySyncDurablePlan BindManifest(EntitySyncSha256 digest, int itemCount) =>
+        new(
+            TenantId, PlanId, PolicyId, PolicyVersion, PolicyDefinitionSha256, RouteScope,
+            SourceConnectionId, SourceConnectionGeneration, TargetConnectionId, TargetConnectionGeneration,
+            digest, Status, SelectionBounds, itemCount, CreatedAt, CreatedBy, ExpiresAt);
+
     public EntitySyncDurablePlan TransitionTo(EntitySyncDurablePlanStatus status)
     {
         ControlModelGuard.Defined(status, nameof(status));
@@ -208,6 +214,109 @@ public sealed record EntitySyncDurablePlan
             TenantId, PlanId, PolicyId, PolicyVersion, PolicyDefinitionSha256, RouteScope,
             SourceConnectionId, SourceConnectionGeneration, TargetConnectionId, TargetConnectionGeneration,
             PlanDigestSha256, status, SelectionBounds, ItemCount, CreatedAt, CreatedBy, ExpiresAt);
+    }
+}
+
+public sealed record EntitySyncDurablePlanManifest
+{
+    private EntitySyncDurablePlanManifest(
+        EntitySyncDurablePlan plan,
+        IReadOnlyList<EntitySyncDurablePlanItem> items)
+    {
+        Plan = plan;
+        Items = items;
+    }
+
+    public EntitySyncDurablePlan Plan { get; }
+    public IReadOnlyList<EntitySyncDurablePlanItem> Items { get; }
+
+    public static EntitySyncDurablePlanManifest Create(
+        EntitySyncDurablePlan plan,
+        IEnumerable<EntitySyncDurablePlanItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var copiedItems = ControlModelGuard.ReadOnlyCopy(items, nameof(items));
+        for (var ordinal = 0; ordinal < copiedItems.Count; ordinal++)
+        {
+            var item = copiedItems[ordinal];
+            if (item is null)
+                throw new ArgumentException("A durable manifest cannot contain null items.", nameof(items));
+            if (item.TenantId != plan.TenantId || item.PlanId != plan.PlanId)
+                throw new ArgumentException("Every manifest item must belong to the plan tenant and ID.", nameof(items));
+            if (item.ItemOrdinal != ordinal)
+                throw new ArgumentException("Manifest item ordinals must be contiguous from zero.", nameof(items));
+            if (item.SourceConnectionId != plan.SourceConnectionId
+                || item.TargetConnectionId != plan.TargetConnectionId)
+                throw new ArgumentException("Every manifest item must use the plan connection IDs.", nameof(items));
+        }
+
+        var digest = ComputeDigest(plan, copiedItems);
+        return new EntitySyncDurablePlanManifest(
+            plan.BindManifest(digest, copiedItems.Count),
+            copiedItems);
+    }
+
+    private static EntitySyncSha256 ComputeDigest(
+        EntitySyncDurablePlan plan,
+        IReadOnlyList<EntitySyncDurablePlanItem> items)
+    {
+        var canonical = new
+        {
+            plan.TenantId,
+            plan.PlanId,
+            plan.PolicyId,
+            plan.PolicyVersion,
+            PolicyDefinitionSha256 = plan.PolicyDefinitionSha256.Value,
+            plan.RouteScope,
+            plan.SourceConnectionId,
+            plan.SourceConnectionGeneration,
+            plan.TargetConnectionId,
+            plan.TargetConnectionGeneration,
+            SelectionBounds = new
+            {
+                plan.SelectionBounds.SourceSearch,
+                plan.SelectionBounds.SourceCount,
+                plan.SelectionBounds.SourceEntityId
+            },
+            ItemCount = items.Count,
+            plan.CreatedAt,
+            CreatedBy = plan.CreatedBy.ActorId,
+            plan.ExpiresAt,
+            Items = items.Select(item => new
+            {
+                item.TenantId,
+                item.PlanId,
+                item.ItemId,
+                item.ItemOrdinal,
+                item.SourceVendor,
+                item.SourceConnectionId,
+                item.SourceEntityType,
+                item.SourceEntityKey,
+                item.SourceEntityId,
+                item.TargetVendor,
+                item.TargetConnectionId,
+                item.TargetEntityType,
+                item.TargetEntityId,
+                item.Action,
+                MatchEvidence = new
+                {
+                    item.MatchEvidence.Score,
+                    item.MatchEvidence.MatchType,
+                    Reasons = item.MatchEvidence.Reasons.ToArray()
+                },
+                RedactedBefore = item.RedactedBefore.Json,
+                RedactedDesired = item.RedactedDesired.Json,
+                BeforePayloadSha256 = item.BeforePayloadSha256?.Value,
+                DesiredPayloadSha256 = item.DesiredPayloadSha256.Value,
+                FieldDiffs = item.FieldDiffs.Select(diff => new
+                {
+                    diff.FieldName,
+                    Before = diff.Before.Json,
+                    Desired = diff.Desired.Json
+                }).ToArray()
+            }).ToArray()
+        };
+        return EntitySyncCanonicalDigest.Compute(canonical);
     }
 }
 

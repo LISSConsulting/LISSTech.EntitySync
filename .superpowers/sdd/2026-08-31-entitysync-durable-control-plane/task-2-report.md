@@ -87,3 +87,66 @@ No formatter, linter, Pester, or project-wide test suite was run.
 ## Concerns
 
 None.
+
+## Fix Round 1
+
+### Status
+
+DONE
+
+### Parent Commit
+
+`d52f46c46f75ee3d7518a53c3ca27a69157ffb1e` — `feat(control): define durable synchronization aggregates`
+
+The fix commit SHA is returned in the terminal result because a commit cannot embed its own object ID.
+
+### Changed Files
+
+- `src/Core/EntitySyncCanonicalDigest.cs`
+- `src/Core/EntitySyncDurablePlan.cs`
+- `src/Core/EntitySyncOperation.cs`
+- `src/Application/EntitySyncPlanDigest.cs`
+- `src/Ports/IDurableSyncPlanRepository.cs`
+- `src/Ports/ISyncOperationRepository.cs`
+- `Tests/LISSTech.EntitySync.Platform.Tests/ControlModelTests.cs`
+- `.superpowers/sdd/2026-08-31-entitysync-durable-control-plane/task-2-report.md`
+
+### RED
+
+Command:
+
+```text
+dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --configuration Release --filter FullyQualifiedName~ControlModelTests
+```
+
+The focused compile failed for the intentionally absent manifest, hydration, and expiration contracts:
+
+```text
+CS0103: The name 'EntitySyncDurablePlanManifest' does not exist in the current context
+CS0117: 'EntitySyncOperation' does not contain a definition for 'Rehydrate'
+CS0117: 'EntitySyncOperationItem' does not contain a definition for 'Rehydrate'
+CS0117: 'IDurableSyncPlanRepository' does not contain a definition for 'TryExpireAsync'
+```
+
+### GREEN
+
+The same focused command passed after the fixes:
+
+```text
+Passed! - Failed: 0, Passed: 20, Skipped: 0, Total: 20, Duration: 104 ms
+```
+
+### Key Decisions
+
+- `EntitySyncDurablePlanManifest.Create` defensively copies items, rejects cross-tenant/cross-plan items and noncontiguous ordinals, derives item count, and computes the digest from immutable plan metadata plus the exact ordered item manifest.
+- Durable plan insertion now accepts only the sealed manifest, removing independently caller-controlled item count, digest, and item-list inputs.
+- The existing `EntitySyncPlanDigest` and the durable manifest both use the shared `EntitySyncCanonicalDigest` serialization/SHA-256 primitive. The legacy plan projection is unchanged, so no parallel hashing convention was introduced.
+- Approval consumption includes transaction time together with the exact approval/inspection/plan/digest/generation identity and full Apply operation/items; Task 3 must check approval expiry in that same transaction.
+- Operation item compare-and-set includes expected operation attempt, lease owner, transaction time, and expected item outcome, allowing stale or expired workers to return `false`.
+- Plan expiration is an exact tenant/plan/digest/expected-status compare-and-set at transaction time. A single-plan method is inherently bounded to one row.
+- `EntitySyncOperation.Rehydrate` and `EntitySyncOperationItem.Rehydrate` preserve every migration-005-valid stored value without trimming vendor, route, request, identity, error, lease, or timestamp state. Queue and transition construction retains the stricter operational invariants.
+- No migration, migration test, repository implementation, service, HTTP/MCP, PowerShell, formatter, linter, Pester, or project-wide suite was changed or run.
+
+### Concerns
+
+None.

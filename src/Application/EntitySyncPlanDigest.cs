@@ -1,6 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Application;
@@ -23,7 +20,6 @@ public static class EntitySyncPlanDigest
             plan.Execution,
             plan.Items
         };
-        var json = JsonSerializer.Serialize(canonical);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+        return EntitySyncCanonicalDigest.Compute(canonical).Value;
     }
 }

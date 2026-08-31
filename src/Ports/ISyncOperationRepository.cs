@@ -39,6 +39,10 @@ public interface ISyncOperationRepository
         Guid operationId,
         Guid planId,
         Guid itemId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        DateTimeOffset now,
+        EntitySyncItemOutcome expectedOutcome,
         EntitySyncOperationItem replacement,
         CancellationToken cancellationToken);
 
