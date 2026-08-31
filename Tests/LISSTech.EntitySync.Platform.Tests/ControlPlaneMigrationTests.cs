@@ -711,11 +711,10 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 'tenant-a', '00000000-0000-0000-0000-000000000103',
                 '00000000-0000-0000-0000-000000000100', 1, 'route-a',
                 'source-1', 'target-1', 7, 11, 5, repeat('3', 64),
-                'Draft', now(), 'tester', now() + interval '1 day');
+                'Draft', now(), 'tester', now() + interval '1 day')
+            RETURNING source_count;
             """);
-        var relationshipError =
-            await Assert.ThrowsAsync<PostgresException>(() => countWithoutSearch.ExecuteNonQueryAsync());
-        Assert.Equal("23514", relationshipError.SqlState);
+        Assert.Equal(5, await countWithoutSearch.ExecuteScalarAsync());
     }
 
     [Fact]
@@ -736,7 +735,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 'company', 'entity-2', 'ENTITY-2', 'target', 'target-1', 'account',
                 'TARGET-2', 'Update', 87, 'Fuzzy',
                 '["name similarity","domain match"]',
-                '[{"field":"name","before":"Acme","desired":"ACME"}]',
+                '[{"fieldName":"name","before":"Acme","desired":"ACME"}]',
                 '{}', '{}', repeat('5', 64));
             """))
         {
@@ -744,7 +743,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         }
 
         await using (var read = Database.CreateCommand("""
-            SELECT match_reasons ->> 0, match_reasons ->> 1, field_diffs -> 0 ->> 'field'
+            SELECT match_reasons ->> 0, match_reasons ->> 1, field_diffs -> 0 ->> 'fieldName'
             FROM entitysync.sync_plan_items
             WHERE tenant_id = 'tenant-a'
               AND plan_id = '00000000-0000-0000-0000-000000000101'
@@ -837,6 +836,35 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.Equal("55000", immutableError.SqlState);
     }
 
+    [Fact]
+    public async Task Plan_item_arrays_reject_blank_malformed_and_duplicate_elements()
+    {
+        await MigrateAsync();
+        await SeedPlansAsync();
+        var invalidShapes = new[]
+        {
+            (Reasons: "[null]", Diffs: "[]"),
+            (Reasons: "[\" \"]", Diffs: "[]"),
+            (Reasons: "[1]", Diffs: "[]"),
+            (Reasons: "[]", Diffs: "[null]"),
+            (Reasons: "[]", Diffs: "[{\"fieldName\":\"name\",\"before\":{}}]"),
+            (Reasons: "[]", Diffs: "[{\"fieldName\":\"name\",\"before\":{},\"desired\":{},\"extra\":1}]"),
+            (Reasons: "[]", Diffs: "[{\"fieldName\":1,\"before\":{},\"desired\":{}}]"),
+            (Reasons: "[]", Diffs: "[{\"fieldName\":\" \",\"before\":{},\"desired\":{}}]"),
+            (Reasons: "[]", Diffs:
+                "[{\"fieldName\":\"Name\",\"before\":{},\"desired\":{}},{\"fieldName\":\"name\",\"before\":{},\"desired\":{}}]")
+        };
+
+        for (var index = 0; index < invalidShapes.Length; index++)
+        {
+            await AssertPlanItemJsonRejectedAsync(
+                Guid.Parse($"00000000-0000-0000-0000-{400 + index:D12}"),
+                index + 10,
+                invalidShapes[index].Reasons,
+                invalidShapes[index].Diffs);
+        }
+    }
+
     public async Task InitializeAsync()
     {
         var adminConnectionString = Environment.GetEnvironmentVariable("DATABASE_URL");
@@ -898,6 +926,42 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
             record.Parameters.AddWithValue("version", version);
             await record.ExecuteNonQueryAsync();
         }
+    }
+
+    private async Task AssertPlanItemJsonRejectedAsync(
+        Guid itemId,
+        int itemOrdinal,
+        string matchReasons,
+        string fieldDiffs)
+    {
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_plan_items (
+                tenant_id, plan_id, item_id, item_ordinal, source_vendor, source_connection_id,
+                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, action, match_score, match_type,
+                match_reasons, field_diffs, redacted_before, redacted_desired,
+                desired_payload_sha256)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                @item_id, @item_ordinal, 'source', 'source-1', 'company',
+                @source_entity_key, @source_entity_id, 'target', 'target-1', 'account',
+                'Create', 50, 'Fuzzy', @match_reasons, @field_diffs,
+                '{}', '{}', repeat('a', 64));
+            """);
+        command.Parameters.AddWithValue("item_id", itemId);
+        command.Parameters.AddWithValue("item_ordinal", itemOrdinal);
+        command.Parameters.AddWithValue("source_entity_key", $"entity-{itemOrdinal}");
+        command.Parameters.AddWithValue("source_entity_id", $"ENTITY-{itemOrdinal}");
+        command.Parameters.AddWithValue(
+            "match_reasons",
+            NpgsqlTypes.NpgsqlDbType.Jsonb,
+            matchReasons);
+        command.Parameters.AddWithValue(
+            "field_diffs",
+            NpgsqlTypes.NpgsqlDbType.Jsonb,
+            fieldDiffs);
+        var error = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal("23514", error.SqlState);
     }
 
     private async Task SeedConnectionPolicyAsync()

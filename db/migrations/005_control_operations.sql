@@ -1,3 +1,69 @@
+CREATE OR REPLACE FUNCTION entitysync.valid_match_reasons(value jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+DECLARE
+    element jsonb;
+BEGIN
+    IF jsonb_typeof(value) <> 'array' THEN
+        RETURN false;
+    END IF;
+
+    FOR element IN SELECT entry FROM jsonb_array_elements(value) AS entries(entry)
+    LOOP
+        IF jsonb_typeof(element) <> 'string' OR btrim(element #>> '{}') = '' THEN
+            RETURN false;
+        END IF;
+    END LOOP;
+
+    RETURN true;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION entitysync.valid_field_diffs(value jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+DECLARE
+    element jsonb;
+    field_name text;
+    key_count integer;
+    seen_fields text[] := ARRAY[]::text[];
+BEGIN
+    IF jsonb_typeof(value) <> 'array' THEN
+        RETURN false;
+    END IF;
+
+    FOR element IN SELECT entry FROM jsonb_array_elements(value) AS entries(entry)
+    LOOP
+        IF jsonb_typeof(element) <> 'object' THEN
+            RETURN false;
+        END IF;
+
+        SELECT count(*)::integer
+          INTO key_count
+          FROM jsonb_object_keys(element);
+        IF key_count <> 3
+            OR NOT element ?& ARRAY['fieldName', 'before', 'desired']
+            OR jsonb_typeof(element -> 'fieldName') <> 'string' THEN
+            RETURN false;
+        END IF;
+
+        field_name := lower(btrim(element ->> 'fieldName'));
+        IF field_name = '' OR field_name = ANY(seen_fields) THEN
+            RETURN false;
+        END IF;
+        seen_fields := array_append(seen_fields, field_name);
+    END LOOP;
+
+    RETURN true;
+END;
+$$;
+
 CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
     tenant_id text NOT NULL,
     plan_id uuid NOT NULL,
@@ -28,8 +94,6 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plans (
         CHECK (plan_digest_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT sync_plans_source_count_check
         CHECK (source_count IS NULL OR source_count > 0),
-    CONSTRAINT sync_plans_source_count_search_check
-        CHECK (source_count IS NULL OR source_search IS NOT NULL),
     CONSTRAINT sync_plans_connection_ids_check
         CHECK (btrim(source_connection_id) <> '' AND btrim(target_connection_id) <> ''),
     CONSTRAINT sync_plans_source_search_check
@@ -77,9 +141,9 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_plan_items (
     CONSTRAINT sync_plan_items_match_type_check
         CHECK (btrim(match_type) <> ''),
     CONSTRAINT sync_plan_items_match_reasons_check
-        CHECK (jsonb_typeof(match_reasons) = 'array'),
+        CHECK (entitysync.valid_match_reasons(match_reasons)),
     CONSTRAINT sync_plan_items_field_diffs_check
-        CHECK (jsonb_typeof(field_diffs) = 'array'),
+        CHECK (entitysync.valid_field_diffs(field_diffs)),
     CONSTRAINT sync_plan_items_before_payload_sha256_check
         CHECK (before_payload_sha256 IS NULL OR before_payload_sha256 ~ '^[0-9a-f]{64}$'),
     CONSTRAINT sync_plan_items_desired_payload_sha256_check
