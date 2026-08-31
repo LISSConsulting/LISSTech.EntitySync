@@ -13,6 +13,6 @@
     <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="..\..\db\migrations\*.sql" Link="Database\Migrations\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\db\migrations\*.sql" Link="Migrations\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

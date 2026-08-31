@@ -139,7 +139,7 @@ public static class EntitySyncDatabaseMigrator
             await bootstrap.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             foreach (var resourceName in typeof(EntitySyncDatabaseMigrator).Assembly.GetManifestResourceNames()
-                         .Where(name => name.Contains(".Database.Migrations.", StringComparison.Ordinal) && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+                         .Where(name => name.Contains(".Migrations.", StringComparison.Ordinal) && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
                          .OrderBy(name => name, StringComparer.Ordinal))
             {
                 var version = Path.GetFileNameWithoutExtension(resourceName[(resourceName.LastIndexOf(".Migrations.", StringComparison.Ordinal) + 12)..]);
