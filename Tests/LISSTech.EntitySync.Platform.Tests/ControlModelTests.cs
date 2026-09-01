@@ -192,6 +192,8 @@ public sealed class ControlModelTests
             tenantId: "tenant",
             operationId: Guid.NewGuid(),
             planId: PlanId,
+            runId: Guid.NewGuid(),
+            correlationId: Guid.NewGuid(),
             approvalId: null,
             idempotencyKey: "apply-1",
             routeScope: "om-to-halo",
@@ -206,7 +208,8 @@ public sealed class ControlModelTests
     public void Operation_allows_only_legal_state_transitions()
     {
         var queued = EntitySyncOperation.QueueDryRun(
-            "tenant", Guid.NewGuid(), PlanId, "dry-1", "route", "source-1", 7, "target-1", 11, Instant);
+            "tenant", Guid.NewGuid(), PlanId, Guid.NewGuid(), Guid.NewGuid(),
+            "dry-1", "route", "source-1", 7, "target-1", 11, Instant);
         var leased = queued.Lease("worker-1", Instant.AddMinutes(1));
         var running = leased.Start(Instant.AddSeconds(1));
         var succeeded = running.Complete(EntitySyncOperationStatus.Succeeded, Instant.AddSeconds(2));
@@ -225,6 +228,8 @@ public sealed class ControlModelTests
             tenantId: "tenant",
             operationId: Guid.NewGuid(),
             planId: PlanId,
+            runId: Guid.NewGuid(),
+            correlationId: Guid.NewGuid(),
             approvalId: approvalId,
             routeScope: " route ",
             sourceConnectionId: "source-1",

@@ -76,6 +76,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                             PlanId,
                             ApprovalId.Value,
                             IdempotencyKey,
+                            Guid.NewGuid(),
                             control.Actor,
                             CancellationToken.None)
                         .GetAwaiter().GetResult();
@@ -86,6 +87,7 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                             control.TenantId,
                             PlanId,
                             IdempotencyKey,
+                            Guid.NewGuid(),
                             control.Actor,
                             CancellationToken.None)
                         .GetAwaiter().GetResult();

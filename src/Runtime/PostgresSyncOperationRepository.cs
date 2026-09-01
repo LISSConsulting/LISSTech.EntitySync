@@ -45,6 +45,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         const string sql = """
             SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.run_id, operation.correlation_id,
                    operation.approval_id, operation.route_scope,
                    plan.source_connection_id, operation.source_connection_generation,
                    plan.target_connection_id, operation.target_connection_generation,
@@ -80,6 +81,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         const string sql = """
             SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.run_id, operation.correlation_id,
                    operation.approval_id, operation.route_scope,
                    plan.source_connection_id, operation.source_connection_generation,
                    plan.target_connection_id, operation.target_connection_generation,
@@ -109,6 +111,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         ValidatePage(offset, maximumRows);
         const string sql = """
             SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.run_id, operation.correlation_id,
                    operation.approval_id, operation.route_scope,
                    plan.source_connection_id, operation.source_connection_generation,
                    plan.target_connection_id, operation.target_connection_generation,
@@ -142,7 +145,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT tenant_id, operation_id, plan_id, item_id, source_vendor,
+            SELECT tenant_id, operation_id, plan_id, item_id, item_index,
+                   source_vendor,
                    source_connection_id, source_entity_type, source_entity_key,
                    source_entity_id, target_vendor, target_connection_id,
                    target_entity_type, target_entity_id, action, redacted_before::text,
@@ -172,7 +176,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         ValidatePage(offset, maximumRows);
         const string sql = """
-            SELECT tenant_id, operation_id, plan_id, item_id, source_vendor,
+            SELECT tenant_id, operation_id, plan_id, item_id, item_index,
+                   source_vendor,
                    source_connection_id, source_entity_type, source_entity_key,
                    source_entity_id, target_vendor, target_connection_id,
                    target_entity_type, target_entity_id, action, redacted_before::text,
@@ -205,7 +210,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT tenant_id, operation_id, plan_id, item_id, source_vendor,
+            SELECT tenant_id, operation_id, plan_id, item_id, item_index,
+                   source_vendor,
                    source_connection_id, source_entity_type, source_entity_key,
                    source_entity_id, target_vendor, target_connection_id,
                    target_entity_type, target_entity_id, action, redacted_before::text,
@@ -267,6 +273,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 RETURNING operation.*
             )
             SELECT leased.tenant_id, leased.operation_id, leased.plan_id,
+                   leased.run_id, leased.correlation_id,
                    leased.approval_id, leased.route_scope,
                    plan.source_connection_id, leased.source_connection_generation,
                    plan.target_connection_id, leased.target_connection_generation,
@@ -347,6 +354,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         const string currentSql = """
             SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.run_id, operation.correlation_id,
                    operation.approval_id, operation.route_scope,
                    plan.source_connection_id, operation.source_connection_generation,
                    plan.target_connection_id, operation.target_connection_generation,
@@ -823,7 +831,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
               AND (item.reconcile_lease_owner IS NULL
                    OR item.reconcile_lease_expires_at <= clock_timestamp())
             RETURNING item.tenant_id, item.operation_id, item.plan_id, item.item_id,
-                      item.source_vendor, item.source_connection_id,
+                      item.item_index, item.source_vendor, item.source_connection_id,
                       item.source_entity_type, item.source_entity_key,
                       item.source_entity_id, item.target_vendor,
                       item.target_connection_id, item.target_entity_type,
@@ -848,8 +856,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             return null;
         return new UnknownItemLease(
-            ReadItem(reader), reader.GetInt32(30), leaseOwner,
-            reader.GetFieldValue<DateTimeOffset>(31));
+            ReadItem(reader), reader.GetInt32(31), leaseOwner,
+            reader.GetFieldValue<DateTimeOffset>(32));
     }
 
     public async Task<bool> TryRenewUnknownItemLeaseAsync(
@@ -1601,15 +1609,17 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         const string operationSql = """
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope,
-                source_connection_generation, target_connection_generation, mode, status,
-                idempotency_key, lease_owner, lease_expires_at, attempt, created_at,
-                queued_at, started_at, completed_at, request_sha256, total_count,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, source_connection_generation,
+                target_connection_generation, mode, status, idempotency_key,
+                lease_owner, lease_expires_at, attempt, created_at, queued_at,
+                started_at, completed_at, request_sha256, total_count,
                 succeeded_count, failed_count, skipped_count, unknown_count)
-            SELECT @tenant_id, @operation_id, @plan_id, @approval_id, @route_scope,
-                   @source_connection_generation, @target_connection_generation, @mode, @status,
-                   @idempotency_key, @lease_owner, @lease_expires_at, @attempt, @created_at,
-                   @queued_at, @started_at, @completed_at, @request_sha256, @total_count,
+            SELECT @tenant_id, @operation_id, @plan_id, @run_id, @correlation_id,
+                   @approval_id, @route_scope, @source_connection_generation,
+                   @target_connection_generation, @mode, @status, @idempotency_key,
+                   @lease_owner, @lease_expires_at, @attempt, @created_at, @queued_at,
+                   @started_at, @completed_at, @request_sha256, @total_count,
                    @succeeded_count, @failed_count, @skipped_count, @unknown_count
             FROM entitysync.sync_plans plan
             WHERE plan.tenant_id = @tenant_id
@@ -1621,16 +1631,19 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
               AND plan.expires_at > clock_timestamp()
               AND plan.status <> 'Expired'
             """;
-        await using (var command = new NpgsqlCommand(operationSql, connection, transaction))
+        await using (var command = new NpgsqlCommand(
+                         operationSql, connection, transaction))
         {
             AddOperation(command, operation);
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-                throw new InvalidOperationException("The operation does not bind the exact plan connection identity.");
+            if (await command.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false) != 1)
+                throw new InvalidOperationException(
+                    "The operation does not bind the exact plan connection identity.");
         }
 
         const string itemSql = """
             INSERT INTO entitysync.sync_operation_items (
-                tenant_id, operation_id, plan_id, item_id, source_vendor,
+                tenant_id, operation_id, plan_id, item_id, item_index, source_vendor,
                 source_connection_id, source_entity_type, source_entity_key, source_entity_id,
                 target_vendor, target_connection_id, target_entity_type, target_entity_id, action,
                 redacted_before, redacted_desired, before_payload_sha256,
@@ -1639,7 +1652,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 completed_at, dispatch_started_at, vendor_target_entity_id,
                 safe_write_code, resolved_target_parent)
             VALUES (
-                @tenant_id, @operation_id, @plan_id, @item_id, @source_vendor,
+                @tenant_id, @operation_id, @plan_id, @item_id, @item_index, @source_vendor,
                 @source_connection_id, @source_entity_type, @source_entity_key, @source_entity_id,
                 @target_vendor, @target_connection_id, @target_entity_type, @target_entity_id, @action,
                 @redacted_before, @redacted_desired, @before_payload_sha256,
@@ -1650,9 +1663,11 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             """;
         foreach (var item in items)
         {
-            await using var command = new NpgsqlCommand(itemSql, connection, transaction);
+            await using var command = new NpgsqlCommand(
+                itemSql, connection, transaction);
             AddItem(command, item);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await command.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
@@ -1664,6 +1679,18 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(items);
         PostgresControlPersistence.RequireTenant(tenantId, operation.TenantId, nameof(operation));
+        if (operation.RunId is null
+            || operation.CorrelationId is null
+            || new[]
+            {
+                operation.OperationId,
+                operation.PlanId,
+                operation.RunId.Value,
+                operation.CorrelationId.Value
+            }.Distinct().Count() != 4)
+            throw new ArgumentException(
+                "New operation graphs require distinct operation, plan, run, and correlation IDs.",
+                nameof(operation));
         if (operation.Status != EntitySyncOperationStatus.Queued
             || operation.Attempt != 0
             || operation.LeaseOwner is not null
@@ -1690,6 +1717,11 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         }
         if (items.Select(item => item.ItemId).Distinct().Count() != items.Count)
             throw new ArgumentException("Operation item IDs must be unique.", nameof(items));
+        if (items.Any(item => item.ItemIndex < 0)
+            || items.Select(item => item.ItemIndex).Distinct().Count() != items.Count)
+            throw new ArgumentException(
+                "Operation item indexes must be unique and nonnegative.",
+                nameof(items));
     }
 
     private static void ValidateImmutableIdentity(
@@ -1699,6 +1731,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         if (replacement.TenantId != current.TenantId
             || replacement.OperationId != current.OperationId
             || replacement.PlanId != current.PlanId
+            || replacement.RunId != current.RunId
+            || replacement.CorrelationId != current.CorrelationId
             || replacement.ApprovalId != current.ApprovalId
             || replacement.RouteScope != current.RouteScope
             || replacement.SourceConnectionId != current.SourceConnectionId
@@ -1767,6 +1801,11 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         AddOperationKey(command, operation.TenantId, operation.OperationId);
         PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, operation.PlanId);
+        PostgresControlPersistence.Add(
+            command, "run_id", NpgsqlDbType.Uuid, operation.RunId);
+        PostgresControlPersistence.Add(
+            command, "correlation_id", NpgsqlDbType.Uuid,
+            operation.CorrelationId);
         PostgresControlPersistence.Add(command, "approval_id", NpgsqlDbType.Uuid, operation.ApprovalId);
         PostgresControlPersistence.Add(command, "route_scope", NpgsqlDbType.Text, operation.RouteScope);
         PostgresControlPersistence.Add(command, "source_connection_id", NpgsqlDbType.Text, operation.SourceConnectionId);
@@ -1796,6 +1835,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "operation_id", NpgsqlDbType.Uuid, item.OperationId);
         PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, item.PlanId);
         PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, item.ItemId);
+        PostgresControlPersistence.Add(
+            command, "item_index", NpgsqlDbType.Integer, item.ItemIndex);
         PostgresControlPersistence.Add(command, "source_vendor", NpgsqlDbType.Text, item.SourceVendor);
         PostgresControlPersistence.Add(command, "source_connection_id", NpgsqlDbType.Text, item.SourceConnectionId);
         PostgresControlPersistence.Add(command, "source_entity_type", NpgsqlDbType.Text, item.SourceEntityType);
@@ -1864,60 +1905,75 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         int offset,
         int maximumRows)
     {
-        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, tenantId);
         PostgresControlPersistence.Add(
             command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
-        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+        PostgresControlPersistence.Add(
+            command, "offset", NpgsqlDbType.Integer, offset);
     }
-
 
     private static EntitySyncOperation ReadOperation(NpgsqlDataReader reader)
     {
         var operation = EntitySyncOperation.Rehydrate(
             reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2),
-            PostgresControlPersistence.NullableGuid(reader, 3), reader.GetString(4),
-            reader.GetString(5), reader.GetInt64(6), reader.GetString(7), reader.GetInt64(8),
-            PostgresControlPersistence.ParseEnum<EntitySyncOperationMode>(reader.GetString(9)),
-            PostgresControlPersistence.ParseEnum<EntitySyncOperationStatus>(reader.GetString(10)),
-            reader.GetString(11), PostgresControlPersistence.NullableString(reader, 12),
-            PostgresControlPersistence.NullableTime(reader, 13), reader.GetInt32(14),
-            reader.GetFieldValue<DateTimeOffset>(15), reader.GetFieldValue<DateTimeOffset>(16),
-            PostgresControlPersistence.NullableTime(reader, 17),
-            PostgresControlPersistence.NullableTime(reader, 18));
+            PostgresControlPersistence.NullableGuid(reader, 3),
+            PostgresControlPersistence.NullableGuid(reader, 4),
+            PostgresControlPersistence.NullableGuid(reader, 5),
+            reader.GetString(6), reader.GetString(7), reader.GetInt64(8),
+            reader.GetString(9), reader.GetInt64(10),
+            PostgresControlPersistence.ParseEnum<EntitySyncOperationMode>(
+                reader.GetString(11)),
+            PostgresControlPersistence.ParseEnum<EntitySyncOperationStatus>(
+                reader.GetString(12)),
+            reader.GetString(13),
+            PostgresControlPersistence.NullableString(reader, 14),
+            PostgresControlPersistence.NullableTime(reader, 15),
+            reader.GetInt32(16), reader.GetFieldValue<DateTimeOffset>(17),
+            reader.GetFieldValue<DateTimeOffset>(18),
+            PostgresControlPersistence.NullableTime(reader, 19),
+            PostgresControlPersistence.NullableTime(reader, 20));
         return operation with
         {
-            RequestSha256 = PostgresControlPersistence.NullableHash(reader, 19),
-            TotalCount = reader.GetInt32(20),
-            SucceededCount = reader.GetInt32(21),
-            FailedCount = reader.GetInt32(22),
-            SkippedCount = reader.GetInt32(23),
-            UnknownCount = reader.GetInt32(24)
+            RequestSha256 = PostgresControlPersistence.NullableHash(reader, 21),
+            TotalCount = reader.GetInt32(22),
+            SucceededCount = reader.GetInt32(23),
+            FailedCount = reader.GetInt32(24),
+            SkippedCount = reader.GetInt32(25),
+            UnknownCount = reader.GetInt32(26)
         };
     }
 
     private static EntitySyncOperationItem ReadItem(NpgsqlDataReader reader)
     {
         var item = EntitySyncOperationItem.Rehydrate(
-            reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetGuid(3),
-            reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
-            reader.GetString(8), reader.GetString(9), reader.GetString(10), reader.GetString(11),
-            PostgresControlPersistence.NullableString(reader, 12), reader.GetString(13),
-            new EntitySyncJsonValue(reader.GetString(14)), new EntitySyncJsonValue(reader.GetString(15)),
-            PostgresControlPersistence.NullableHash(reader, 16), new EntitySyncSha256(reader.GetString(17)),
-            PostgresControlPersistence.NullableHash(reader, 18), reader.GetFieldValue<DateTimeOffset>(19),
-            PostgresControlPersistence.NullableString(reader, 20),
-            PostgresControlPersistence.ParseEnum<EntitySyncItemOutcome>(reader.GetString(21)),
-            PostgresControlPersistence.NullableString(reader, 22),
+            reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2),
+            reader.GetGuid(3), reader.GetString(5), reader.GetString(6),
+            reader.GetString(7), reader.GetString(8), reader.GetString(9),
+            reader.GetString(10), reader.GetString(11), reader.GetString(12),
+            PostgresControlPersistence.NullableString(reader, 13),
+            reader.GetString(14), new EntitySyncJsonValue(reader.GetString(15)),
+            new EntitySyncJsonValue(reader.GetString(16)),
+            PostgresControlPersistence.NullableHash(reader, 17),
+            new EntitySyncSha256(reader.GetString(18)),
+            PostgresControlPersistence.NullableHash(reader, 19),
+            reader.GetFieldValue<DateTimeOffset>(20),
+            PostgresControlPersistence.NullableString(reader, 21),
+            PostgresControlPersistence.ParseEnum<EntitySyncItemOutcome>(
+                reader.GetString(22)),
             PostgresControlPersistence.NullableString(reader, 23),
-            PostgresControlPersistence.NullableTime(reader, 24),
+            PostgresControlPersistence.NullableString(reader, 24),
             PostgresControlPersistence.NullableTime(reader, 25),
+            PostgresControlPersistence.NullableTime(reader, 26),
             PostgresControlPersistence.DeserializeWriteParent(
-                PostgresControlPersistence.NullableString(reader, 29)));
+                PostgresControlPersistence.NullableString(reader, 30)));
         return item with
         {
-            DispatchStartedAt = PostgresControlPersistence.NullableTime(reader, 26),
-            VendorTargetEntityId = PostgresControlPersistence.NullableString(reader, 27),
-            SafeWriteCode = PostgresControlPersistence.NullableString(reader, 28)
+            ItemIndex = reader.GetInt32(4),
+            DispatchStartedAt = PostgresControlPersistence.NullableTime(reader, 27),
+            VendorTargetEntityId =
+                PostgresControlPersistence.NullableString(reader, 28),
+            SafeWriteCode = PostgresControlPersistence.NullableString(reader, 29)
         };
     }
 }

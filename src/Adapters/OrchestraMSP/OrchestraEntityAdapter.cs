@@ -176,6 +176,10 @@ public sealed class OrchestraEntityAdapter :
         if (!EntitySyncVendors.IsOrchestraMSP(request.Vendor)) throw new ArgumentException("Write request vendor must be OrchestraMSP.", nameof(request));
         var entityType = Require(request.EntityType, nameof(request.EntityType));
         var idempotencyKey = Require(request.IdempotencyKey ?? request.VendorRequestId, nameof(request.IdempotencyKey));
+        var correlation = request.Correlation
+            ?? throw new ArgumentException(
+                "Canonical audit correlation is required for OrchestraMSP writes.",
+                nameof(request));
         if (!create && request.ExpectedVersion is null)
             throw new ArgumentException(
                 "An expected canonical version is required for updates.",
@@ -186,6 +190,7 @@ public sealed class OrchestraEntityAdapter :
             route.Path,
             BuildCommand(request, route.Parents, create),
             idempotencyKey,
+            correlation.CorrelationId,
             create ? null : request.ExpectedVersion,
             cancellationToken).ConfigureAwait(false);
         var resultElement = UnwrapResult(response);
@@ -423,8 +428,11 @@ public sealed class OrchestraEntityAdapter :
         bool create)
     {
         var fields = BuildCustomFields(request);
-        var correlation = new CommandCorrelation(
-            request.VendorRequestId ?? request.IdempotencyKey);
+        var correlation = ToCommandCorrelation(
+            request.Correlation
+            ?? throw new ArgumentException(
+                "Canonical audit correlation is required for OrchestraMSP writes.",
+                nameof(request)));
         var type = request.EntityType.Trim();
         if (type.Equals("Client", StringComparison.OrdinalIgnoreCase))
             return create
@@ -478,6 +486,15 @@ public sealed class OrchestraEntityAdapter :
         throw new NotSupportedException(
             "OrchestraMSP supports Client, Site, and Address entities.");
     }
+
+    private static CommandCorrelation ToCommandCorrelation(
+        EntityWriteCorrelation correlation) =>
+        new(
+            correlation.OperationId,
+            correlation.PlanId,
+            correlation.RunId,
+            correlation.ItemIndex,
+            correlation.CorrelationId);
 
     private static WriteRoute ResolveWriteRoute(
         EntityWriteRequest request,
@@ -682,7 +699,12 @@ public sealed class OrchestraEntityAdapter :
         string Path,
         ParentIdentities Parents);
 
-    private sealed record CommandCorrelation(string? RequestId);
+    private sealed record CommandCorrelation(
+        Guid OperationId,
+        Guid PlanId,
+        Guid RunId,
+        int ItemIndex,
+        Guid CorrelationId);
     private sealed record ClientCreateCommand(
         string Name,
         string LifecycleStatus,

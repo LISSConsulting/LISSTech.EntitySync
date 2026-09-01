@@ -45,6 +45,10 @@ public sealed class VendorOutcomeReconciler(
             return await ReleaseUnknownAsync(
                 tenantId, claim, "CONTROL_STATE_UNAVAILABLE", cancellationToken)
                 .ConfigureAwait(false);
+        if (operation.RunId is null || operation.CorrelationId is null)
+            return await ReleaseUnknownAsync(
+                tenantId, claim, "AUDIT_CORRELATION_UNAVAILABLE",
+                cancellationToken).ConfigureAwait(false);
 
         var snapshot = await operations.GetSnapshotAsync(
             tenantId, operationId, itemId, cancellationToken).ConfigureAwait(false);
@@ -92,7 +96,13 @@ public sealed class VendorOutcomeReconciler(
                 Vendor = claim.Item.TargetVendor,
                 EntityType = claim.Item.TargetEntityType,
                 Id = claim.Item.VendorTargetEntityId ?? claim.Item.TargetEntityId,
-                VendorRequestId = claim.Item.VendorRequestId
+                VendorRequestId = claim.Item.VendorRequestId,
+                Correlation = new EntityWriteCorrelation(
+                    operation.OperationId,
+                    operation.PlanId,
+                    operation.RunId.Value,
+                    claim.Item.ItemIndex,
+                    operation.CorrelationId.Value),
             };
             var requestLookup = claim.Item.VendorRequestId is null
                 ? null

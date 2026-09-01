@@ -430,8 +430,8 @@ public sealed class EntitySyncControlWorker : BackgroundService
 
             var queuedOperation = await operationService.QueueApplyAsync(
                 work.TenantId, plan.PlanId, approvalId,
-                $"control-work:{work.WorkId:N}:apply", actor, cancellationToken)
-                .ConfigureAwait(false);
+                $"control-work:{work.WorkId:N}:apply", work.WorkId, actor,
+                cancellationToken).ConfigureAwait(false);
             if (!await queue.TryCheckpointOperationAsync(
                     work, queuedOperation.OperationId, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException(
@@ -509,6 +509,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
                 plan.PlanId,
                 approval.ApprovalId,
                 $"control-work:{work.WorkId:N}:apply",
+                work.WorkId,
                 actor,
                 cancellationToken).ConfigureAwait(false);
             if (work.OperationId is not null

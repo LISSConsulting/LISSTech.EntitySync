@@ -18,20 +18,24 @@ public sealed class EntitySyncService(
         string tenantId,
         Guid planId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         RequireOperationService().QueueDryRunAsync(
-            tenantId, planId, idempotencyKey, actor, cancellationToken);
+            tenantId, planId, idempotencyKey, correlationId, actor,
+            cancellationToken);
 
     public Task<EntitySyncOperation> QueueApplyAsync(
         string tenantId,
         Guid planId,
         Guid approvalId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         RequireOperationService().QueueApplyAsync(
-            tenantId, planId, approvalId, idempotencyKey, actor, cancellationToken);
+            tenantId, planId, approvalId, idempotencyKey, correlationId, actor,
+            cancellationToken);
 
 
     public EntitySyncPlanPage GetPlan(string tenantId, string planId, int page = 1, int pageSize = 25)

@@ -160,10 +160,7 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         const string tenant = "operation-lost-response";
         var workId = Guid.NewGuid();
         var setup = await CreateApprovedControlPlanAsync(tenant, workId);
-        var operation = await setup.OperationService.QueueApplyAsync(
-            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
-            $"control-work:{workId:N}:apply",
-            new EntitySyncActor("entitysync-control-worker"), default);
+        var operation = await setup.OperationService.QueueApplyAsync(tenant, setup.Plan.PlanId, setup.Approval.ApprovalId, $"control-work:{workId:N}:apply", Guid.NewGuid(), new EntitySyncActor("entitysync-control-worker"), default);
         var disabled = setup.Policy.NextVersion(
             new EntitySyncActor("disable"),
             setup.Policy.Definition,
@@ -195,10 +192,7 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         const string tenant = "operation-checkpoint";
         var workId = Guid.NewGuid();
         var setup = await CreateApprovedControlPlanAsync(tenant, workId);
-        var operation = await setup.OperationService.QueueApplyAsync(
-            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
-            $"control-work:{workId:N}:apply",
-            new EntitySyncActor("entitysync-control-worker"), default);
+        var operation = await setup.OperationService.QueueApplyAsync(tenant, setup.Plan.PlanId, setup.Approval.ApprovalId, $"control-work:{workId:N}:apply", Guid.NewGuid(), new EntitySyncActor("entitysync-control-worker"), default);
         await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
         await SetWorkCheckpointAsync(
             tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
@@ -239,10 +233,7 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         const string tenant = "missing-consumed-operation";
         var workId = Guid.NewGuid();
         var setup = await CreateApprovedControlPlanAsync(tenant, workId);
-        var operation = await setup.OperationService.QueueApplyAsync(
-            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
-            $"control-work:{workId:N}:apply",
-            new EntitySyncActor("entitysync-control-worker"), default);
+        var operation = await setup.OperationService.QueueApplyAsync(tenant, setup.Plan.PlanId, setup.Approval.ApprovalId, $"control-work:{workId:N}:apply", Guid.NewGuid(), new EntitySyncActor("entitysync-control-worker"), default);
         await DeleteOperationGraphAsync(tenant, operation.OperationId);
         await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
         await SetWorkCheckpointAsync(
@@ -353,9 +344,7 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     [Fact]
     public async Task Operation_route_gate_fences_contenders_and_renews_with_database_clock()
     {
-        var operation = EntitySyncOperation.QueueDryRun(
-            "operation-route", Guid.NewGuid(), Guid.NewGuid(), "key", "shared-route",
-            "source", 1, "target", 1, DateTimeOffset.UtcNow);
+        var operation = EntitySyncOperation.QueueDryRun("operation-route", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "key", "shared-route", "source", 1, "target", 1, DateTimeOffset.UtcNow);
         var routeLock = new PostgresRouteLock(Database);
         var gate = (IEntitySyncOperationRouteLock)routeLock;
         await using var first = await gate.TryAcquireAsync(

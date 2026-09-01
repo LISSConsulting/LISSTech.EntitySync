@@ -1,0 +1,4 @@
+# SDD ledger — plan: /Users/mwisniowski/Projects/LISSConsulting/python/OrchestraMSP/.worktrees/entitysync-client-control/docs/superpowers/plans/2026-08-31-entitysync-durable-control-plane.md
+Baseline: `just build` and `just test-load` pass on macOS; `just test` has 190 pass / 2 pre-existing OS-only DPAPI failures at Tests/LISSTech.EntitySync.Tests.ps1:415,493 (`PlatformNotSupportedException`).
+Tasks 1-10 complete with approved final reviews. Task 11 complete at `048c68c05238b0293a022a14094a6409144c9f35` after 1/5 fix rounds; final review spec compliant and task quality approved with no findings. EntitySync control-plane plan complete.
+Cross-repository Task 7 audit-correlation fix complete: EntitySync now durably persists and propagates the exact distinct operation/plan/run/item/correlation tuple to OrchestraMSP; focused adapter 43/43, durable/restart 14/14, and migration application/idempotency 1/1 passed.

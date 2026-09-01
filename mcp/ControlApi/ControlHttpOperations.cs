@@ -70,11 +70,13 @@ public static class ControlHttpOperations
         ControlRequestContext control,
         Guid planId,
         string idempotencyKey,
+        Guid correlationId,
         CancellationToken cancellationToken) =>
         commands.QueueDryRunAsync(
             control.TenantId,
             planId,
             idempotencyKey,
+            correlationId,
             control.Actor,
             cancellationToken);
 
@@ -84,12 +86,14 @@ public static class ControlHttpOperations
         Guid planId,
         Guid approvalId,
         string idempotencyKey,
+        Guid correlationId,
         CancellationToken cancellationToken) =>
         commands.QueueApplyAsync(
             control.TenantId,
             planId,
             approvalId,
             idempotencyKey,
+            correlationId,
             control.Actor,
             cancellationToken);
 

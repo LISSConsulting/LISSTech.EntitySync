@@ -14,6 +14,7 @@ namespace LISSTech.EntitySync.Mcp.ControlApi;
 public static class ControlEndpoints
 {
     private const string Prefix = "/api/v1/control";
+    private const string CorrelationHeaderName = "X-Correlation-ID";
 
     public static WebApplication UseControlApiErrors(this WebApplication app)
     {
@@ -520,13 +521,17 @@ public static class ControlEndpoints
             control,
             planId,
             IdempotencyEndpointFilter.GetCallerKey(http),
+            RequireCorrelationId(http),
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,
             planId,
             operation.Mode.ToString(),
             operation.Status.ToString(),
-            http.TraceIdentifier), statusCode: StatusCodes.Status202Accepted);
+            operation.CorrelationId?.ToString("D")
+            ?? throw new InvalidOperationException(
+                "Queued operation has no correlation identity.")),
+            statusCode: StatusCodes.Status202Accepted);
     }
 
     private static async Task<IResult> QueueApplyAsync(
@@ -543,13 +548,17 @@ public static class ControlEndpoints
             planId,
             request.ApprovalId,
             IdempotencyEndpointFilter.GetCallerKey(http),
+            RequireCorrelationId(http),
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,
             planId,
             operation.Mode.ToString(),
             operation.Status.ToString(),
-            http.TraceIdentifier), statusCode: StatusCodes.Status202Accepted);
+            operation.CorrelationId?.ToString("D")
+            ?? throw new InvalidOperationException(
+                "Queued operation has no correlation identity.")),
+            statusCode: StatusCodes.Status202Accepted);
     }
 
     private static async Task<IResult> ListRunsAsync(
@@ -938,6 +947,19 @@ public static class ControlEndpoints
     private static void ValidatePageSize(int pageSize)
     {
         if (pageSize is < 1 or > 100) throw new ControlPageSizeException();
+    }
+
+    private static Guid RequireCorrelationId(HttpContext http)
+    {
+        if (!http.Request.Headers.TryGetValue(
+                CorrelationHeaderName, out var values)
+            || values.Count != 1
+            || !Guid.TryParseExact(values[0], "D", out var correlationId)
+            || correlationId == Guid.Empty)
+            throw new BadHttpRequestException(
+                $"A single UUID {CorrelationHeaderName} header is required.");
+        http.TraceIdentifier = correlationId.ToString("D");
+        return correlationId;
     }
 
     private static Guid StableGuid(string value)

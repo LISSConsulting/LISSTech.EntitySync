@@ -19,10 +19,11 @@ public sealed class SyncOperationService(
         string tenantId,
         Guid planId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         QueueAsync(
-            tenantId, planId, null, idempotencyKey, actor,
+            tenantId, planId, null, idempotencyKey, correlationId, actor,
             EntitySyncOperationMode.DryRun, cancellationToken);
 
     public Task<EntitySyncOperation> QueueApplyAsync(
@@ -30,10 +31,11 @@ public sealed class SyncOperationService(
         Guid planId,
         Guid approvalId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         QueueAsync(
-            tenantId, planId, approvalId, idempotencyKey, actor,
+            tenantId, planId, approvalId, idempotencyKey, correlationId, actor,
             EntitySyncOperationMode.Apply, cancellationToken);
 
 
@@ -59,6 +61,7 @@ public sealed class SyncOperationService(
         Guid planId,
         Guid? approvalId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         EntitySyncOperationMode mode,
         CancellationToken cancellationToken)
@@ -67,6 +70,9 @@ public sealed class SyncOperationService(
         idempotencyKey = Require(idempotencyKey, nameof(idempotencyKey));
         ArgumentNullException.ThrowIfNull(actor);
         if (planId == Guid.Empty) throw new ArgumentException("Plan ID is required.", nameof(planId));
+        if (correlationId == Guid.Empty)
+            throw new ArgumentException(
+                "Correlation ID is required.", nameof(correlationId));
         if (mode == EntitySyncOperationMode.Apply
             && (approvalId is null || approvalId == Guid.Empty))
             throw new ArgumentException("Approval ID is required for apply.", nameof(approvalId));
@@ -99,6 +105,11 @@ public sealed class SyncOperationService(
             return replay;
         if (replay is not null)
             throw new SyncOperationIdempotencyConflictException(idempotencyKey);
+        if (correlationId == operationId || correlationId == plan.PlanId)
+            throw new ArgumentException(
+                "Correlation ID must be distinct from operation and plan IDs.",
+                nameof(correlationId));
+        var runId = CreateDistinctRunId(operationId, plan.PlanId, correlationId);
         var now = clock.GetUtcNow();
         if (mode == EntitySyncOperationMode.Apply
             && plan.Status != EntitySyncDurablePlanStatus.Approved)
@@ -126,13 +137,15 @@ public sealed class SyncOperationService(
 
         var operation = (mode == EntitySyncOperationMode.Apply
             ? EntitySyncOperation.QueueApply(
-                tenantId, operationId, plan.PlanId, approvalId, idempotencyKey,
-                plan.RouteScope, plan.SourceConnectionId, plan.SourceConnectionGeneration,
+                tenantId, operationId, plan.PlanId, runId, correlationId,
+                approvalId, idempotencyKey, plan.RouteScope,
+                plan.SourceConnectionId, plan.SourceConnectionGeneration,
                 plan.TargetConnectionId, plan.TargetConnectionGeneration, now)
             : EntitySyncOperation.QueueDryRun(
-                tenantId, operationId, plan.PlanId, idempotencyKey, plan.RouteScope,
-                plan.SourceConnectionId, plan.SourceConnectionGeneration,
-                plan.TargetConnectionId, plan.TargetConnectionGeneration, now)) with
+                tenantId, operationId, plan.PlanId, runId, correlationId,
+                idempotencyKey, plan.RouteScope, plan.SourceConnectionId,
+                plan.SourceConnectionGeneration, plan.TargetConnectionId,
+                plan.TargetConnectionGeneration, now)) with
         {
             RequestSha256 = requestSha256,
             TotalCount = plan.ItemCount
@@ -228,12 +241,30 @@ public sealed class SyncOperationService(
                     item.Action, item.RedactedBefore, item.RedactedDesired,
                     item.BeforePayloadSha256, item.DesiredPayloadSha256, null,
                     snapshotsExpireAt, null, EntitySyncItemOutcome.Pending,
-                    null, null, null, null, item.ResolvedTargetParent));
+                    null, null, null, null, item.ResolvedTargetParent)
+                {
+                    ItemIndex = item.ItemOrdinal
+                });
             }
         }
         if (result.Count != plan.ItemCount)
             throw new InvalidOperationException("The durable plan item graph changed while queueing.");
         return result;
+    }
+
+    private static Guid CreateDistinctRunId(
+        Guid operationId,
+        Guid planId,
+        Guid correlationId)
+    {
+        Guid runId;
+        do
+        {
+            runId = Guid.NewGuid();
+        } while (runId == operationId
+                 || runId == planId
+                 || runId == correlationId);
+        return runId;
     }
 
     private static Guid StableGuid(EntitySyncSha256 digest)

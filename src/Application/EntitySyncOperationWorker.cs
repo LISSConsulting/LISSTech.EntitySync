@@ -148,6 +148,14 @@ public sealed class EntitySyncOperationWorker(
                 .ConfigureAwait(false);
             var writeRequest = CreateWriteRequest(
                 item, source, targetBefore, policy, resolvedParent);
+            writeRequest.Correlation = new EntityWriteCorrelation(
+                running.OperationId,
+                running.PlanId,
+                running.RunId ?? throw new InvalidOperationException(
+                    "Replayable operation has no durable run ID."),
+                item.ItemIndex,
+                running.CorrelationId ?? throw new InvalidOperationException(
+                    "Replayable operation has no durable correlation ID."));
             var desired = PlanManifestBuilder.CreateAllowedDesiredPayload(
                 writeRequest, policy.Definition);
             if (PlanManifestBuilder.HashPayload(desired) != item.DesiredPayloadSha256)

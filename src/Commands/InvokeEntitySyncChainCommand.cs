@@ -122,6 +122,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
                         PlanId[index],
                         ApprovalId[index],
                         operationKey,
+                        Guid.NewGuid(),
                         control.Actor,
                         CancellationToken.None)
                     .GetAwaiter().GetResult();
@@ -132,6 +133,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
                         control.TenantId,
                         PlanId[index],
                         operationKey,
+                        Guid.NewGuid(),
                         control.Actor,
                         CancellationToken.None)
                     .GetAwaiter().GetResult();

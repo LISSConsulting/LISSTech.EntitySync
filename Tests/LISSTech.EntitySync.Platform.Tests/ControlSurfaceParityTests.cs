@@ -177,12 +177,12 @@ public sealed class ControlSurfaceParityTests
                 break;
             case "runs.dry-run":
                 await ControlHttpOperations.QueueDryRunAsync(
-                    commands, context, PlanId, "dry-key", default);
+                    commands, context, PlanId, "dry-key", Guid.NewGuid(), default);
                 break;
             case "runs.apply":
                 await ControlHttpOperations.QueueApplyAsync(
                     commands, context, PlanId, ApprovalId,
-                    "apply-key", default);
+                    "apply-key", Guid.NewGuid(), default);
                 break;
             case "exclusions.list":
                 await ControlHttpOperations.ListExclusionsAsync(
@@ -276,6 +276,7 @@ public sealed class ControlSurfaceParityTests
             string tenantId,
             Guid planId,
             string idempotencyKey,
+            Guid correlationId,
             EntitySyncActor actor,
             CancellationToken cancellationToken)
         {
@@ -290,6 +291,7 @@ public sealed class ControlSurfaceParityTests
             Guid planId,
             Guid approvalId,
             string idempotencyKey,
+            Guid correlationId,
             EntitySyncActor actor,
             CancellationToken cancellationToken)
         {

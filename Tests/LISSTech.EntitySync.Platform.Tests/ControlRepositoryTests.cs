@@ -1277,15 +1277,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Equal(manifest.Plan.PlanId, approvedEvent.PlanId);
 
 
-        var operation = EntitySyncOperation.QueueApply(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, approvalId,
-            "apply-once", "route-a", context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, now.AddMinutes(3));
+        var operation = EntitySyncOperation.QueueApply(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), approvalId, "apply-once", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now.AddMinutes(3));
         var operationItems = OperationItems(operation, manifest.Items, now.AddDays(1));
-        var operationTwo = EntitySyncOperation.QueueApply(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, approvalId,
-            "apply-twice", "route-a", context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, now.AddMinutes(3));
+        var operationTwo = EntitySyncOperation.QueueApply(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), approvalId, "apply-twice", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now.AddMinutes(3));
         var attempts = await Task.WhenAll(
             plans.TryConsumeApprovalAsync(
                 context.TenantId, approvalId, inspectionId, manifest.Plan.PlanId,
@@ -1390,10 +1384,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             now.AddMinutes(2), now.AddMinutes(3),
             ApprovalAudit(context.TenantId, manifest.Plan.PlanId, approvalId, "reviewer", now.AddMinutes(2)),
             default);
-        var operation = EntitySyncOperation.QueueApply(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, approvalId,
-            "expired-apply", "route-a", context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, now.AddMinutes(4));
+        var operation = EntitySyncOperation.QueueApply(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), approvalId, "expired-apply", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now.AddMinutes(4));
 
         Assert.False(await plans.TryConsumeApprovalAsync(
             context.TenantId, approvalId, inspectionId, manifest.Plan.PlanId,
@@ -1527,11 +1518,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 consumeNow.AddMinutes(2)),
             default);
         await BumpAsync(consumeContext, consumeContext.Target);
-        var apply = EntitySyncOperation.QueueApply(
-            consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
-            consumeApprovalId, "generation-apply", "route-a",
-            consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1,
-            consumeNow.AddMinutes(3));
+        var apply = EntitySyncOperation.QueueApply(consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), consumeApprovalId, "generation-apply", "route-a", consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1, consumeNow.AddMinutes(3));
         Assert.False(await consumePlans.TryConsumeApprovalAsync(
             consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
             consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
@@ -1629,11 +1616,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 "reviewer",
                 consumeContext.Now.AddMinutes(3)),
             default);
-        var apply = EntitySyncOperation.QueueApply(
-            consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
-            consumeApprovalId, "rotation-consume", "route-a",
-            consumeContext.Source.ConnectionId, 1,
-            consumeContext.Target.ConnectionId, 1, consumeContext.Now.AddMinutes(4));
+        var apply = EntitySyncOperation.QueueApply(consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), consumeApprovalId, "rotation-consume", "route-a", consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1, consumeContext.Now.AddMinutes(4));
         await using (var rotationConnection =
             await Database.OpenConnectionAsync(default))
         await using (var rotationTransaction =
@@ -1687,10 +1670,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var operations = new PostgresSyncOperationRepository(Database);
         var manifest = Manifest(context, itemCount: 1);
         await plans.InsertAsync(context.TenantId, manifest, default);
-        var operation = EntitySyncOperation.QueueDryRun(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, "dry-run",
-            "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
-            context.Now.AddMinutes(1));
+        var operation = EntitySyncOperation.QueueDryRun(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), "dry-run", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, context.Now.AddMinutes(1));
         var items = OperationItems(operation, manifest.Items, context.Now.AddDays(1));
         await operations.InsertAsync(context.TenantId, operation, items, default);
 
@@ -1833,10 +1813,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             var repository = new PostgresSyncOperationRepository(Database);
             var manifest = Manifest(context, 1);
             await plans.InsertAsync(context.TenantId, manifest, default);
-            var queued = EntitySyncOperation.QueueDryRun(
-                context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId,
-                $"{suffix}-operation", "route-a", context.Source.ConnectionId, 1,
-                context.Target.ConnectionId, 1, context.Now);
+            var queued = EntitySyncOperation.QueueDryRun(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), $"{suffix}-operation", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, context.Now);
             var item = Assert.Single(
                 OperationItems(queued, manifest.Items, context.Now.AddDays(1)));
             await repository.InsertAsync(context.TenantId, queued, [item], default);
@@ -1861,9 +1838,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var manifest = Manifest(context, 1, withResolvedParent: true);
         await plans.InsertAsync(context.TenantId, manifest, default);
         var now = context.Now.AddMinutes(1);
-        var queued = EntitySyncOperation.QueueDryRun(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, "transition-op",
-            "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now);
+        var queued = EntitySyncOperation.QueueDryRun(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), "transition-op", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, now);
         var items = OperationItems(queued, manifest.Items, now.AddDays(1));
         var preLeased = queued.Lease("invalid-worker", now.AddMinutes(5));
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -1876,8 +1851,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 context.TenantId, queued.OperationId, items[0].ItemId, default))!
                 .ResolvedTargetParent);
         var illegalTerminal = EntitySyncOperation.Rehydrate(
-            queued.TenantId, queued.OperationId, queued.PlanId, queued.ApprovalId,
-            queued.RouteScope, queued.SourceConnectionId, queued.SourceConnectionGeneration,
+            queued.TenantId, queued.OperationId, queued.PlanId, queued.RunId,
+            queued.CorrelationId, queued.ApprovalId, queued.RouteScope,
+            queued.SourceConnectionId, queued.SourceConnectionGeneration,
             queued.TargetConnectionId, queued.TargetConnectionGeneration, queued.Mode,
             EntitySyncOperationStatus.Succeeded, queued.IdempotencyKey, null, null, 0,
             queued.CreatedAt, queued.QueuedAt, null, now.AddMinutes(1));
@@ -1914,8 +1890,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             succeeded, default));
 
         var changedIdentity = EntitySyncOperation.Rehydrate(
-            succeeded.TenantId, succeeded.OperationId, succeeded.PlanId, succeeded.ApprovalId,
-            "changed-route", succeeded.SourceConnectionId,
+            succeeded.TenantId, succeeded.OperationId, succeeded.PlanId, succeeded.RunId,
+            succeeded.CorrelationId, succeeded.ApprovalId, "changed-route",
+            succeeded.SourceConnectionId,
             succeeded.SourceConnectionGeneration, succeeded.TargetConnectionId,
             succeeded.TargetConnectionGeneration, succeeded.Mode, succeeded.Status,
             succeeded.IdempotencyKey, succeeded.LeaseOwner, succeeded.LeaseExpiresAt,
@@ -1947,10 +1924,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var cancelOperations = new PostgresSyncOperationRepository(Database);
         var cancelManifest = Manifest(cancelContext, 1);
         await cancelPlans.InsertAsync(cancelContext.TenantId, cancelManifest, default);
-        var cancelQueued = EntitySyncOperation.QueueDryRun(
-            cancelContext.TenantId, Guid.NewGuid(), cancelManifest.Plan.PlanId,
-            "cancel-op", "route-a", cancelContext.Source.ConnectionId, 1,
-            cancelContext.Target.ConnectionId, 1, cancelContext.Now);
+        var cancelQueued = EntitySyncOperation.QueueDryRun(cancelContext.TenantId, Guid.NewGuid(), cancelManifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), "cancel-op", "route-a", cancelContext.Source.ConnectionId, 1, cancelContext.Target.ConnectionId, 1, cancelContext.Now);
         await cancelOperations.InsertAsync(
             cancelContext.TenantId, cancelQueued,
             OperationItems(cancelQueued, cancelManifest.Items, cancelContext.Now.AddDays(1)),
@@ -1971,10 +1945,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             var operations = new PostgresSyncOperationRepository(Database);
             var manifest = Manifest(context, outcomes.Count);
             await plans.InsertAsync(context.TenantId, manifest, default);
-            var queued = EntitySyncOperation.QueueDryRun(
-                context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, $"{suffix}-op",
-                "route-a", context.Source.ConnectionId, 1,
-                context.Target.ConnectionId, 1, context.Now);
+            var queued = EntitySyncOperation.QueueDryRun(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), $"{suffix}-op", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, context.Now);
             var items = OperationItems(queued, manifest.Items, context.Now.AddDays(1));
             await operations.InsertAsync(context.TenantId, queued, items, default);
             var leased = await operations.TryLeaseNextAsync(
@@ -2036,10 +2007,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var operations = new PostgresSyncOperationRepository(Database);
         var manifest = Manifest(context, 1);
         await plans.InsertAsync(context.TenantId, manifest, default);
-        var operation = EntitySyncOperation.QueueDryRun(
-            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, "snapshot-op",
-            "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
-            context.Now);
+        var operation = EntitySyncOperation.QueueDryRun(context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, Guid.NewGuid(), Guid.NewGuid(), "snapshot-op", "route-a", context.Source.ConnectionId, 1, context.Target.ConnectionId, 1, context.Now);
         var expiredAt = context.Now.AddMinutes(-1);
         var items = OperationItems(operation, manifest.Items, expiredAt);
         await operations.InsertAsync(context.TenantId, operation, items, default);

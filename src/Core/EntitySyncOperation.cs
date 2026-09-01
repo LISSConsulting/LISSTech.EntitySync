@@ -32,6 +32,8 @@ public sealed record EntitySyncOperation
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid runId,
+        Guid correlationId,
         Guid? approvalId,
         string routeScope,
         string sourceConnectionId,
@@ -49,11 +51,11 @@ public sealed record EntitySyncOperation
         DateTimeOffset? startedAt,
         DateTimeOffset? completedAt)
         : this(
-            tenantId, operationId, planId, approvalId, routeScope,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
-            targetConnectionGeneration, mode, status, idempotencyKey, leaseOwner,
-            leaseExpiresAt, attempt, createdAt, queuedAt, startedAt, completedAt,
-            validateCommand: true)
+            tenantId, operationId, planId, runId, correlationId, approvalId,
+            routeScope, sourceConnectionId, sourceConnectionGeneration,
+            targetConnectionId, targetConnectionGeneration, mode, status,
+            idempotencyKey, leaseOwner, leaseExpiresAt, attempt, createdAt,
+            queuedAt, startedAt, completedAt, validateCommand: true)
     {
     }
 
@@ -61,6 +63,8 @@ public sealed record EntitySyncOperation
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid? runId,
+        Guid? correlationId,
         Guid? approvalId,
         string routeScope,
         string sourceConnectionId,
@@ -88,6 +92,18 @@ public sealed record EntitySyncOperation
         PlanId = validateCommand
             ? ControlModelGuard.NonEmpty(planId, nameof(planId))
             : planId;
+        RunId = validateCommand
+            ? ControlModelGuard.NonEmpty(runId ?? Guid.Empty, nameof(runId))
+            : runId;
+        CorrelationId = validateCommand
+            ? ControlModelGuard.NonEmpty(
+                correlationId ?? Guid.Empty, nameof(correlationId))
+            : correlationId;
+        if (validateCommand
+            && new[] { OperationId, PlanId, RunId.Value, CorrelationId.Value }
+                .Distinct().Count() != 4)
+            throw new ArgumentException(
+                "Operation, plan, run, and correlation IDs must be distinct.");
         if (validateCommand && approvalId == Guid.Empty)
             throw new ArgumentException("Approval ID cannot be empty.", nameof(approvalId));
         ApprovalId = approvalId;
@@ -143,6 +159,8 @@ public sealed record EntitySyncOperation
     public string TenantId { get; }
     public Guid OperationId { get; }
     public Guid PlanId { get; }
+    public Guid? RunId { get; }
+    public Guid? CorrelationId { get; }
     public Guid? ApprovalId { get; }
     public string RouteScope { get; }
     public string SourceConnectionId { get; }
@@ -170,6 +188,8 @@ public sealed record EntitySyncOperation
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid? runId,
+        Guid? correlationId,
         Guid? approvalId,
         string routeScope,
         string sourceConnectionId,
@@ -187,16 +207,18 @@ public sealed record EntitySyncOperation
         DateTimeOffset? startedAt,
         DateTimeOffset? completedAt) =>
         new(
-            tenantId, operationId, planId, approvalId, routeScope,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
-            targetConnectionGeneration, mode, status, idempotencyKey, leaseOwner,
-            leaseExpiresAt, attempt, createdAt, queuedAt, startedAt, completedAt,
-            validateCommand: false);
+            tenantId, operationId, planId, runId, correlationId, approvalId,
+            routeScope, sourceConnectionId, sourceConnectionGeneration,
+            targetConnectionId, targetConnectionGeneration, mode, status,
+            idempotencyKey, leaseOwner, leaseExpiresAt, attempt, createdAt,
+            queuedAt, startedAt, completedAt, validateCommand: false);
 
     public static EntitySyncOperation QueueDryRun(
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid runId,
+        Guid correlationId,
         string idempotencyKey,
         string routeScope,
         string sourceConnectionId,
@@ -205,14 +227,17 @@ public sealed record EntitySyncOperation
         long targetConnectionGeneration,
         DateTimeOffset now) =>
         Queue(
-            tenantId, operationId, planId, null, idempotencyKey, routeScope,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
+            tenantId, operationId, planId, runId, correlationId, null,
+            idempotencyKey, routeScope, sourceConnectionId,
+            sourceConnectionGeneration, targetConnectionId,
             targetConnectionGeneration, EntitySyncOperationMode.DryRun, now);
 
     public static EntitySyncOperation QueueApply(
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid runId,
+        Guid correlationId,
         Guid? approvalId,
         string idempotencyKey,
         string routeScope,
@@ -222,8 +247,9 @@ public sealed record EntitySyncOperation
         long targetConnectionGeneration,
         DateTimeOffset now) =>
         Queue(
-            tenantId, operationId, planId, approvalId, idempotencyKey, routeScope,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
+            tenantId, operationId, planId, runId, correlationId, approvalId,
+            idempotencyKey, routeScope, sourceConnectionId,
+            sourceConnectionGeneration, targetConnectionId,
             targetConnectionGeneration, EntitySyncOperationMode.Apply, now);
 
     public EntitySyncOperation Lease(string leaseOwner, DateTimeOffset leaseExpiresAt)
@@ -263,6 +289,8 @@ public sealed record EntitySyncOperation
         string tenantId,
         Guid operationId,
         Guid planId,
+        Guid runId,
+        Guid correlationId,
         Guid? approvalId,
         string idempotencyKey,
         string routeScope,
@@ -273,10 +301,11 @@ public sealed record EntitySyncOperation
         EntitySyncOperationMode mode,
         DateTimeOffset now) =>
         new(
-            tenantId, operationId, planId, approvalId, routeScope,
-            sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
-            targetConnectionGeneration, mode, EntitySyncOperationStatus.Queued,
-            idempotencyKey, null, null, 0, now, now, null, null);
+            tenantId, operationId, planId, runId, correlationId, approvalId,
+            routeScope, sourceConnectionId, sourceConnectionGeneration,
+            targetConnectionId, targetConnectionGeneration, mode,
+            EntitySyncOperationStatus.Queued, idempotencyKey, null, null, 0,
+            now, now, null, null);
 
     private EntitySyncOperation Copy(
         EntitySyncOperationStatus status,
@@ -286,10 +315,16 @@ public sealed record EntitySyncOperation
         DateTimeOffset? startedAt,
         DateTimeOffset? completedAt) =>
         new(
-            TenantId, OperationId, PlanId, ApprovalId, RouteScope,
-            SourceConnectionId, SourceConnectionGeneration, TargetConnectionId,
+            TenantId, OperationId, PlanId,
+            RunId ?? throw new InvalidOperationException(
+                "Legacy operations without a run ID cannot transition."),
+            CorrelationId ?? throw new InvalidOperationException(
+                "Legacy operations without a correlation ID cannot transition."),
+            ApprovalId, RouteScope, SourceConnectionId,
+            SourceConnectionGeneration, TargetConnectionId,
             TargetConnectionGeneration, Mode, status, IdempotencyKey,
-            leaseOwner, leaseExpiresAt, attempt, CreatedAt, QueuedAt, startedAt, completedAt);
+            leaseOwner, leaseExpiresAt, attempt, CreatedAt, QueuedAt,
+            startedAt, completedAt);
 
     private static string Preserve(string value, string parameterName) =>
         value ?? throw new ArgumentNullException(parameterName);
@@ -439,6 +474,7 @@ public sealed record EntitySyncOperationItem
     public Guid OperationId { get; }
     public Guid PlanId { get; }
     public Guid ItemId { get; }
+    public int ItemIndex { get; init; }
     public string SourceVendor { get; }
     public string SourceConnectionId { get; }
     public string SourceEntityType { get; }

@@ -160,6 +160,7 @@ public static class SyncTools
         {
             var parsedPlanId = Guid.Parse(planId);
             var actor = new EntitySyncActor(context.Actor);
+            var correlationId = Guid.NewGuid();
             var operation = apply
                 ? await commands.QueueApplyAsync(
                     context.TenantId,
@@ -167,12 +168,14 @@ public static class SyncTools
                     Guid.Parse(approvalId ?? throw new ArgumentException(
                         "Approval ID is required for apply.", nameof(approvalId))),
                     idempotencyKey,
+                    correlationId,
                     actor,
                     cancellationToken).ConfigureAwait(false)
                 : await commands.QueueDryRunAsync(
                     context.TenantId,
                     parsedPlanId,
                     idempotencyKey,
+                    correlationId,
                     actor,
                     cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Serialize(new

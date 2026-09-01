@@ -47,6 +47,7 @@ public interface IEntitySyncControlCommands
         string tenantId,
         Guid planId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken);
 
@@ -55,6 +56,7 @@ public interface IEntitySyncControlCommands
         Guid planId,
         Guid approvalId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken);
 
@@ -129,20 +131,24 @@ public sealed class EntitySyncControlCommands(
         string tenantId,
         Guid planId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         operations.QueueDryRunAsync(
-            tenantId, planId, idempotencyKey, actor, cancellationToken);
+            tenantId, planId, idempotencyKey, correlationId, actor,
+            cancellationToken);
 
     public Task<EntitySyncOperation> QueueApplyAsync(
         string tenantId,
         Guid planId,
         Guid approvalId,
         string idempotencyKey,
+        Guid correlationId,
         EntitySyncActor actor,
         CancellationToken cancellationToken) =>
         operations.QueueApplyAsync(
-            tenantId, planId, approvalId, idempotencyKey, actor, cancellationToken);
+            tenantId, planId, approvalId, idempotencyKey, correlationId, actor,
+            cancellationToken);
 
     public Task<IReadOnlyList<EntityExclusion>> ListExclusionsAsync(
         EntityExclusionRouteRequest request,

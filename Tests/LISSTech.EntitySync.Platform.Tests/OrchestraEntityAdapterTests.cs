@@ -27,6 +27,12 @@ public sealed class OrchestraEntityAdapterTests
         Guid.Parse("33333333-3333-3333-3333-333333333333");
     private static readonly Guid PlatformInstanceId =
         Guid.Parse("44444444-4444-4444-4444-444444444444");
+    private static readonly EntityWriteCorrelation Correlation = new(
+        Guid.Parse("55555555-5555-5555-5555-555555555555"),
+        Guid.Parse("66666666-6666-6666-6666-666666666666"),
+        Guid.Parse("77777777-7777-7777-7777-777777777777"),
+        9,
+        Guid.Parse("88888888-8888-8888-8888-888888888888"));
 
     [Fact]
     public async Task Token_uses_client_credentials_default_scope_and_refreshes_at_five_minute_skew()
@@ -331,6 +337,7 @@ public sealed class OrchestraEntityAdapterTests
             if (request.Method == HttpMethod.Put)
             {
                 Assert.Equal("link-upsert-1", request.Headers.GetValues("Idempotency-Key").Single());
+                AssertCorrelation(request);
                 Assert.Contains("\"platform_instance_id\":\"halo-prod\"", request.Body,
                     StringComparison.Ordinal);
                 return Json(HttpStatusCode.OK,
@@ -346,7 +353,8 @@ public sealed class OrchestraEntityAdapterTests
         Assert.Equal(ClientId.ToString("D"), found!.EntityId);
         var upserted = await adapter.UpsertPlatformLinkAsync(
             new OrchestraPlatformLinkCommand(
-                "halo-prod", "HaloPSA", "42", "active", "Client", ClientId),
+                "halo-prod", "HaloPSA", "42", "active", "Client", ClientId,
+                Correlation),
             "link-upsert-1", default);
         Assert.Equal("42", upserted.ExternalId);
         Assert.Equal(3, handler.Requests.Count);
@@ -371,7 +379,8 @@ public sealed class OrchestraEntityAdapterTests
             Name = "Acme Updated",
             ExpectedVersion = 7,
             IdempotencyKey = "stable-command-1",
-            VendorRequestId = "request-1"
+            VendorRequestId = "request-1",
+            Correlation = Correlation,
         };
 
         var result = await adapter.UpdateEntityAsync(request, default);
@@ -398,7 +407,8 @@ public sealed class OrchestraEntityAdapterTests
             EntityType = "Client",
             Name = "Created",
             IdempotencyKey = "create-command-1",
-            VendorRequestId = "create-request-1"
+            VendorRequestId = "create-request-1",
+            Correlation = Correlation,
         }, default);
 
         Assert.True(result.Success);
@@ -1206,6 +1216,7 @@ public sealed class OrchestraEntityAdapterTests
             : $"/api/v1/internal/client-directory/clients/{ClientId:D}/sites/{SiteId:D}";
         Assert.Equal(expectedPath, request.RequestUri!.AbsolutePath);
         Assert.Equal(key, request.Headers.GetValues("Idempotency-Key").Single());
+        AssertCorrelation(request);
         AssertVersionHeader(request, expectedVersion);
         using var document = JsonDocument.Parse(request.Body);
         var body = document.RootElement;
@@ -1228,6 +1239,7 @@ public sealed class OrchestraEntityAdapterTests
             : $"/api/v1/internal/client-directory/addresses/{AddressId:D}";
         Assert.Equal(expectedPath, request.RequestUri!.AbsolutePath);
         Assert.Equal(key, request.Headers.GetValues("Idempotency-Key").Single());
+        AssertCorrelation(request);
         AssertVersionHeader(request, expectedVersion);
         using var document = JsonDocument.Parse(request.Body);
         var body = document.RootElement;
@@ -1265,6 +1277,7 @@ public sealed class OrchestraEntityAdapterTests
     {
         request.IdempotencyKey = key;
         request.VendorRequestId = key + "-request";
+        request.Correlation = Correlation;
         return request;
     }
 
@@ -1343,6 +1356,7 @@ public sealed class OrchestraEntityAdapterTests
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Equal("create-command-1",
             request.Headers.GetValues("Idempotency-Key").Single());
+        AssertCorrelation(request);
         Assert.False(request.Headers.Contains("If-Match"));
         Assert.Contains("\"name\":\"Created\"", request.Body, StringComparison.Ordinal);
         return Json(HttpStatusCode.Created, ClientJson(ClientId, 1, "Created"));
@@ -1353,9 +1367,33 @@ public sealed class OrchestraEntityAdapterTests
         Assert.Equal(HttpMethod.Patch, request.Method);
         Assert.Equal("7", request.Headers.GetValues("If-Match").Single());
         Assert.Equal("stable-command-1", request.Headers.GetValues("Idempotency-Key").Single());
+        AssertCorrelation(request);
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
         Assert.Equal("workload-token", request.Headers.Authorization.Parameter);
         return Json(HttpStatusCode.OK, ClientJson(ClientId, 8, "Acme Updated"));
+    }
+
+    private static void AssertCorrelation(RecordedRequest request)
+    {
+        Assert.Equal(
+            Correlation.CorrelationId.ToString("D"),
+            request.Headers.GetValues("X-Correlation-ID").Single());
+        using var document = JsonDocument.Parse(request.Body);
+        var body = document.RootElement;
+        var correlation = body.GetProperty("correlation");
+        Assert.Equal(Correlation.OperationId, correlation.GetProperty("operation_id").GetGuid());
+        Assert.Equal(Correlation.PlanId, correlation.GetProperty("plan_id").GetGuid());
+        Assert.Equal(Correlation.RunId, correlation.GetProperty("run_id").GetGuid());
+        Assert.Equal(Correlation.ItemIndex, correlation.GetProperty("item_index").GetInt32());
+        Assert.Equal(Correlation.CorrelationId,
+            correlation.GetProperty("correlation_id").GetGuid());
+        Assert.False(correlation.TryGetProperty("request_id", out _));
+        Assert.NotEqual(Correlation.OperationId, Correlation.PlanId);
+        Assert.NotEqual(Correlation.OperationId, Correlation.RunId);
+        Assert.NotEqual(Correlation.OperationId, Correlation.CorrelationId);
+        Assert.NotEqual(Correlation.PlanId, Correlation.RunId);
+        Assert.NotEqual(Correlation.PlanId, Correlation.CorrelationId);
+        Assert.NotEqual(Correlation.RunId, Correlation.CorrelationId);
     }
 
     private static HttpResponseMessage AssertReplay(RecordedRequest request)
@@ -1372,7 +1410,8 @@ public sealed class OrchestraEntityAdapterTests
         Name = "Acme Updated",
         ExpectedVersion = 7,
         IdempotencyKey = "stable-command-1",
-        VendorRequestId = "request-1"
+        VendorRequestId = "request-1",
+        Correlation = Correlation
     };
 
     private static OrchestraEntityAdapter Adapter(

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Adapters.OrchestraMSP;
 
@@ -13,7 +14,8 @@ public sealed record OrchestraPlatformLinkCommand(
     string ExternalId,
     string Status,
     string EntityType,
-    Guid EntityId);
+    Guid EntityId,
+    EntityWriteCorrelation Correlation);
 
 public sealed class OrchestraClientDirectoryClient : IDisposable
 {
@@ -93,6 +95,7 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
         string relativePath,
         object payload,
         string idempotencyKey,
+        Guid correlationId,
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
@@ -110,8 +113,8 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
         try
         {
             return await SendWriteOnceAsync(
-                method, uri, body, idempotencyKey, expectedVersion, cancellationToken)
-                .ConfigureAwait(false);
+                method, uri, body, idempotencyKey, correlationId, expectedVersion,
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -126,8 +129,8 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
             try
             {
                 return await SendWriteOnceAsync(
-                    method, uri, body, idempotencyKey, expectedVersion, cancellationToken)
-                    .ConfigureAwait(false);
+                    method, uri, body, idempotencyKey, correlationId, expectedVersion,
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -157,6 +160,7 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
             "platform-links",
             command,
             idempotencyKey,
+            command.Correlation.CorrelationId,
             expectedVersion: null,
             cancellationToken).ConfigureAwait(false);
         try
@@ -176,12 +180,15 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
         Uri uri,
         byte[] body,
         string idempotencyKey,
+        Guid correlationId,
         long? expectedVersion,
         CancellationToken cancellationToken)
     {
         using var request = await CreateAuthorizedRequestAsync(
             method, uri, cancellationToken).ConfigureAwait(false);
         request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        request.Headers.TryAddWithoutValidation(
+            "X-Correlation-ID", correlationId.ToString("D"));
         if (expectedVersion.HasValue)
             request.Headers.TryAddWithoutValidation(
                 "If-Match", expectedVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -333,6 +340,7 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
         _ = Require(command.EntityType, nameof(command.EntityType));
         if (command.EntityId == Guid.Empty)
             throw new ArgumentException("Platform link entity ID is required.", nameof(command));
+        ArgumentNullException.ThrowIfNull(command.Correlation);
     }
 
     public void Dispose()

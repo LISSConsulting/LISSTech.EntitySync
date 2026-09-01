@@ -182,8 +182,7 @@ public sealed class ControlPlaneEndToEndTests
                     Actor,
                     default);
                 approvalId = approval.ApprovalId;
-                var dryRun = await commands.QueueDryRunAsync(
-                    Tenant, planId, "e2e-dry-run", Actor, default);
+                var dryRun = await commands.QueueDryRunAsync(Tenant, planId, "e2e-dry-run", Guid.NewGuid(), Actor, default);
                 dryRunId = dryRun.OperationId;
             }
 
@@ -207,14 +206,7 @@ public sealed class ControlPlaneEndToEndTests
                 Assert.NotNull(persistedPlan);
                 Assert.Equal(EntitySyncDurablePlanStatus.Approved, persistedPlan!.Status);
                 var queued = await scope.ServiceProvider
-                    .GetRequiredService<IEntitySyncControlCommands>()
-                    .QueueApplyAsync(
-                        Tenant,
-                        planId,
-                        approvalId,
-                        "e2e-apply-once",
-                        Actor,
-                        default);
+                    .GetRequiredService<IEntitySyncControlCommands>().QueueApplyAsync(Tenant, planId, approvalId, "e2e-apply-once", Guid.NewGuid(), Actor, default);
                 applyRunId = queued.OperationId;
             }
 

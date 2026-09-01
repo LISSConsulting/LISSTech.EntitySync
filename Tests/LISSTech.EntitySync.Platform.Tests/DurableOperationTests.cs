@@ -96,20 +96,72 @@ public sealed class DurableOperationTests : IAsyncLifetime
         Assert.NotEqual(first, EntitySyncOperationWorker.CreateVendorRequestId(operationId, secondItem));
         Assert.DoesNotContain(operationId.ToString(), first, StringComparison.OrdinalIgnoreCase);
     }
+    [Fact]
+    public async Task Apply_persists_distinct_audit_tuple_and_reconstructs_it_exactly()
+    {
+        var correlationId =
+            Guid.Parse("90000000-0000-0000-0000-000000000001");
+        var retryCorrelationId =
+            Guid.Parse("90000000-0000-0000-0000-000000000002");
+        var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
+        var queued = await Fixture.Service.QueueApplyAsync(
+            Fixture.Tenant,
+            plan.Plan.PlanId,
+            plan.Approval!.ApprovalId,
+            "audit-correlation",
+            correlationId,
+            Fixture.Actor,
+            default);
+        var replay = await Fixture.Service.QueueApplyAsync(
+            Fixture.Tenant,
+            plan.Plan.PlanId,
+            plan.Approval.ApprovalId,
+            "audit-correlation",
+            retryCorrelationId,
+            Fixture.Actor,
+            default);
+        var rehydrated = await new PostgresSyncOperationRepository(Database).GetAsync(
+            Fixture.Tenant, queued.OperationId, default);
+        var item = Assert.Single(
+            await new PostgresSyncOperationRepository(Database).GetItemsAsync(
+                Fixture.Tenant, queued.OperationId, default));
+
+        Assert.Equal(queued.OperationId, replay.OperationId);
+        Assert.Equal(queued.RunId, replay.RunId);
+        Assert.Equal(correlationId, replay.CorrelationId);
+        Assert.Equal(queued.RunId, rehydrated!.RunId);
+        Assert.Equal(correlationId, rehydrated.CorrelationId);
+        Assert.Equal(0, item.ItemIndex);
+        Assert.Equal(4, new[]
+        {
+            queued.OperationId,
+            queued.PlanId,
+            queued.RunId!.Value,
+            queued.CorrelationId!.Value
+        }.Distinct().Count());
+
+        await Fixture.Worker.ExecuteOneAsync(
+            Fixture.Tenant, "audit-correlation-worker", default);
+        Assert.Equal(
+            new EntityWriteCorrelation(
+                queued.OperationId,
+                queued.PlanId,
+                queued.RunId.Value,
+                item.ItemIndex,
+                queued.CorrelationId.Value),
+            Fixture.Target.LastWriteRequest!.Correlation);
+    }
+
 
     [Fact]
     public async Task Dry_run_is_idempotent_never_consumes_approval_and_retains_encrypted_evidence()
     {
         var plan = await Fixture.CreatePlanAsync(approved: false, action: "Update");
-        var first = await Fixture.Service.QueueDryRunAsync(
-            Fixture.Tenant, plan.Plan.PlanId, "dry-key", Fixture.Actor, default);
-        var replay = await Fixture.Service.QueueDryRunAsync(
-            Fixture.Tenant, plan.Plan.PlanId, "dry-key", Fixture.Actor, default);
+        var first = await Fixture.Service.QueueDryRunAsync(Fixture.Tenant, plan.Plan.PlanId, "dry-key", Guid.NewGuid(), Fixture.Actor, default);
+        var replay = await Fixture.Service.QueueDryRunAsync(Fixture.Tenant, plan.Plan.PlanId, "dry-key", Guid.NewGuid(), Fixture.Actor, default);
         Assert.Equal(first.OperationId, replay.OperationId);
         await Assert.ThrowsAsync<SyncOperationIdempotencyConflictException>(() =>
-            Fixture.Service.QueueDryRunAsync(
-                Fixture.Tenant, plan.Plan.PlanId, "dry-key",
-                new EntitySyncActor("other-actor"), default));
+            Fixture.Service.QueueDryRunAsync(Fixture.Tenant, plan.Plan.PlanId, "dry-key", Guid.NewGuid(), new EntitySyncActor("other-actor"), default));
 
         var completed = await Fixture.Worker.ExecuteOneAsync(
             Fixture.Tenant, "dry-worker", default);
@@ -135,9 +187,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Concurrent_apply_consumes_exact_approval_once_and_duplicate_request_replays()
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        var calls = Enumerable.Range(0, 8).Select(_ => Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "apply-key", Fixture.Actor, default));
+        var calls = Enumerable.Range(0, 8).Select(_ => Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "apply-key", Guid.NewGuid(), Fixture.Actor, default));
         var results = await Task.WhenAll(calls);
         Assert.Single(results.Select(result => result.OperationId).Distinct());
         var stored = await Fixture.Operations.GetItemsAsync(
@@ -147,12 +197,8 @@ public sealed class DurableOperationTests : IAsyncLifetime
         var other = await Fixture.CreatePlanAsync(approved: true, action: "Update");
         var races = new[]
         {
-            Fixture.Service.QueueApplyAsync(
-                Fixture.Tenant, other.Plan.PlanId, other.Approval!.ApprovalId,
-                "race-a", Fixture.Actor, default),
-            Fixture.Service.QueueApplyAsync(
-                Fixture.Tenant, other.Plan.PlanId, other.Approval.ApprovalId,
-                "race-b", Fixture.Actor, default)
+            Fixture.Service.QueueApplyAsync(Fixture.Tenant, other.Plan.PlanId, other.Approval!.ApprovalId, "race-a", Guid.NewGuid(), Fixture.Actor, default),
+            Fixture.Service.QueueApplyAsync(Fixture.Tenant, other.Plan.PlanId, other.Approval.ApprovalId, "race-b", Guid.NewGuid(), Fixture.Actor, default)
         };
         var outcomes = await Task.WhenAll(races.Select(async task =>
         {
@@ -166,9 +212,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Apply_persists_before_and_after_snapshots_checkpoint_audit_and_terminal_counts()
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        var queued = await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "normal-apply", Fixture.Actor, default);
+        var queued = await Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "normal-apply", Guid.NewGuid(), Fixture.Actor, default);
         var completed = await Fixture.Worker.ExecuteOneAsync(
             Fixture.Tenant, "worker-normal", default);
         var diagnosticItem = Assert.Single(await Fixture.Operations.GetItemsAsync(
@@ -198,9 +242,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Changed_exclusion_and_generation_rotation_block_dispatch_without_vendor_write()
     {
         var createPlan = await Fixture.CreatePlanAsync(approved: true, action: "Create");
-        var createRun = await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, createPlan.Plan.PlanId, createPlan.Approval!.ApprovalId,
-            "excluded-create", Fixture.Actor, default);
+        var createRun = await Fixture.Service.QueueApplyAsync(Fixture.Tenant, createPlan.Plan.PlanId, createPlan.Approval!.ApprovalId, "excluded-create", Guid.NewGuid(), Fixture.Actor, default);
         await Fixture.Exclusions.AddAsync(
             EntityExclusionRoute.Create(
                 Fixture.Tenant, "NetSuite", Fixture.SourceConnectionId, "Customer",
@@ -222,9 +264,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
             Fixture.SourceEntity.Id, "tester", default);
         await Fixture.ResetTargetAsync();
         var rotatedPlan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, rotatedPlan.Plan.PlanId, rotatedPlan.Approval!.ApprovalId,
-            "rotated", Fixture.Actor, default);
+        await Fixture.Service.QueueApplyAsync(Fixture.Tenant, rotatedPlan.Plan.PlanId, rotatedPlan.Approval!.ApprovalId, "rotated", Guid.NewGuid(), Fixture.Actor, default);
         var current = (await Fixture.ConnectionDefinitions.GetAsync(
             Fixture.Tenant, Fixture.TargetConnectionId, default))!;
         await Fixture.ConnectionDefinitions.TryReplaceAsync(
@@ -243,9 +283,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update",
             updatePolicy: EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly);
-        var run = await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "lost-response", Fixture.Actor, default);
+        var run = await Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "lost-response", Guid.NewGuid(), Fixture.Actor, default);
         Fixture.Target.ThrowAfterWrite = true;
         Fixture.Target.HideReads = true;
         var first = await Fixture.Worker.ExecuteOneAsync(
@@ -303,9 +341,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Immutable_target_id_prevents_fallback_to_a_different_desired_match()
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        var run = await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "immutable-target", Fixture.Actor, default);
+        var run = await Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "immutable-target", Guid.NewGuid(), Fixture.Actor, default);
         Fixture.Target.ThrowAfterWrite = true;
         Fixture.Target.HideReads = true;
         var unknown = await Fixture.Worker.ExecuteOneAsync(
@@ -331,9 +367,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Cancellation_before_dispatch_cancels_but_after_dispatch_is_unknown_and_not_retried()
     {
         var beforePlan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, beforePlan.Plan.PlanId, beforePlan.Approval!.ApprovalId,
-            "cancel-before", Fixture.Actor, default);
+        await Fixture.Service.QueueApplyAsync(Fixture.Tenant, beforePlan.Plan.PlanId, beforePlan.Approval!.ApprovalId, "cancel-before", Guid.NewGuid(), Fixture.Actor, default);
         Fixture.Source.BlockReads = true;
         using var beforeCancellation = new CancellationTokenSource();
         var beforeTask = Fixture.Worker.ExecuteOneAsync(
@@ -347,9 +381,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         Fixture.Source.ReleaseReads();
         await Fixture.ResetTargetAsync();
         var afterPlan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, afterPlan.Plan.PlanId, afterPlan.Approval!.ApprovalId,
-            "cancel-after", Fixture.Actor, default);
+        await Fixture.Service.QueueApplyAsync(Fixture.Tenant, afterPlan.Plan.PlanId, afterPlan.Approval!.ApprovalId, "cancel-after", Guid.NewGuid(), Fixture.Actor, default);
         Fixture.Target.BlockWrites = true;
         Fixture.Target.HideReads = true;
         using var afterCancellation = new CancellationTokenSource();
@@ -369,9 +401,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task ControlSchedulerTests_delayed_vendor_io_renews_operation_and_forced_loss_cancels_once()
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        var queued = await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "operation-renewal-worker", Fixture.Actor, default);
+        var queued = await Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "operation-renewal-worker", Guid.NewGuid(), Fixture.Actor, default);
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
         var worker = Fixture.CreateWorker(time, TimeSpan.FromSeconds(3));
         Fixture.Target.BlockWrites = true;
@@ -411,9 +441,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task ControlSchedulerTests_renewal_exception_cancels_inflight_vendor_io()
     {
         var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
-        await Fixture.Service.QueueApplyAsync(
-            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
-            "operation-renewal-exception", Fixture.Actor, default);
+        await Fixture.Service.QueueApplyAsync(Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId, "operation-renewal-exception", Guid.NewGuid(), Fixture.Actor, default);
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
         var routeLock = new ThrowingOperationRouteLock();
         var worker = Fixture.CreateWorker(time, TimeSpan.FromSeconds(3), routeLock);
@@ -450,8 +478,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     public async Task Repository_fences_stale_lease_owner_and_reconciliation_attempt()
     {
         var plan = await Fixture.CreatePlanAsync(approved: false, action: "Update");
-        var queued = await Fixture.Service.QueueDryRunAsync(
-            Fixture.Tenant, plan.Plan.PlanId, "fence", Fixture.Actor, default);
+        var queued = await Fixture.Service.QueueDryRunAsync(Fixture.Tenant, plan.Plan.PlanId, "fence", Guid.NewGuid(), Fixture.Actor, default);
         var leased = await Fixture.Operations.TryLeaseNextAsync(
             Fixture.Tenant, "owner-a", DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow.AddMinutes(2), default);
@@ -833,6 +860,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         internal TaskCompletionSource WriteStarted { get; private set; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int WriteCalls { get; private set; }
+        internal EntityWriteRequest? LastWriteRequest { get; private set; }
         internal bool ThrowAfterWrite { get; set; }
         internal bool HideReads { get; set; }
         internal bool BlockReads { get; set; }
@@ -878,6 +906,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         internal void Reset()
         {
             WriteCalls = 0;
+            LastWriteRequest = null;
             ThrowAfterWrite = false;
             HideReads = false;
             BlockReads = false;
@@ -891,6 +920,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         private async Task<EntityWriteResult> WriteAsync(
             EntityWriteRequest request, string action, CancellationToken cancellationToken)
         {
+            LastWriteRequest = request;
             WriteCalls++;
             WriteStarted.TrySetResult();
             if (BlockWrites) await releaseWrites.Task.WaitAsync(cancellationToken);
