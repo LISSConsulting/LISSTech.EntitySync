@@ -1,4 +1,3 @@
-using System.Text.Json;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 using Npgsql;
@@ -246,31 +245,40 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 manifest.Plan.PlanId,
                 manifest.Plan.PlanDigestSha256.Value,
                 actor.ActorId));
-        var receiptKey = $"plan.import:{callerKey}";
         await using var connection = await dataSource
             .OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection
             .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
+        await LockPlanIdentityAsync(
+            connection,
+            transaction,
+            tenantId,
+            manifest.Plan.PlanId,
+            cancellationToken).ConfigureAwait(false);
+        var databaseNow = await ReadDatabaseClockAsync(
+            connection, transaction, cancellationToken).ConfigureAwait(false);
         await LockImportReceiptAsync(
-            connection, transaction, tenantId, receiptKey, cancellationToken)
+            connection, transaction, tenantId, callerKey, cancellationToken)
             .ConfigureAwait(false);
-        var receiptState = await ReadImportReceiptAsync(
+        var receiptResult = await ReadImportReceiptAsync(
                 connection,
                 transaction,
                 tenantId,
-                receiptKey,
+                callerKey,
                 requestSha256,
-                manifest.Plan,
+                actor,
                 cancellationToken)
             .ConfigureAwait(false);
-        if (receiptState is not null)
+        if (receiptResult is not null)
         {
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new(receiptState.Value,
-                receiptState == DurablePlanImportPersistenceState.Replayed
-                    ? manifest.Plan
-                    : null);
+            return receiptResult;
+        }
+        if (manifest.Plan.ExpiresAt <= databaseNow)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return new(DurablePlanImportPersistenceState.Expired, null);
         }
 
         await LockPolicyIdentityAsync(
@@ -320,17 +328,27 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 connection,
                 transaction,
                 tenantId,
-                receiptKey,
+                callerKey,
                 requestSha256,
+                actor,
                 manifest.Plan,
                 cancellationToken)
             .ConfigureAwait(false);
+        var persisted = await ReadPersistedPlanAsync(
+                connection,
+                transaction,
+                tenantId,
+                manifest.Plan.PlanId,
+                cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "The imported durable plan is unavailable after persistence.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new(
             existing is null
                 ? DurablePlanImportPersistenceState.Inserted
                 : DurablePlanImportPersistenceState.Replayed,
-            manifest.Plan);
+            persisted);
     }
 
     private async Task InsertCoreAsync(
@@ -355,19 +373,12 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 requestSha256,
                 ownerToken!.Value,
                 cancellationToken).ConfigureAwait(false);
-        const string identityLockSql = """
-            SELECT pg_advisory_xact_lock(hashtextextended(@plan_identity, 0))
-            """;
-        await using (var identityLock = new NpgsqlCommand(
-                         identityLockSql, connection, transaction))
-        {
-            PostgresControlPersistence.Add(
-                identityLock,
-                "plan_identity",
-                NpgsqlDbType.Text,
-                $"{tenantId}:{manifest.Plan.PlanId:N}");
-            await identityLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
+        await LockPlanIdentityAsync(
+            connection,
+            transaction,
+            tenantId,
+            manifest.Plan.PlanId,
+            cancellationToken).ConfigureAwait(false);
         const string existingSql = """
             SELECT plan_digest_sha256,
                    (SELECT count(*)::integer
@@ -1139,11 +1150,44 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
     }
 
+    private static async Task LockPlanIdentityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid planId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT pg_advisory_xact_lock(
+                hashtextextended(@plan_identity, 0))
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command,
+            "plan_identity",
+            NpgsqlDbType.Text,
+            $"{tenantId}:{planId:N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<DateTimeOffset> ReadDatabaseClockAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT clock_timestamp()", connection, transaction);
+        return ToDateTimeOffset(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "The database clock was unavailable."));
+    }
+
     private static async Task LockImportReceiptAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         string tenantId,
-        string receiptKey,
+        string callerKey,
         CancellationToken cancellationToken)
     {
         const string sql = """
@@ -1155,52 +1199,65 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             command,
             "receipt_identity",
             NpgsqlDbType.Text,
-            $"{tenantId}:{receiptKey}");
+            $"{tenantId}:{callerKey}");
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<DurablePlanImportPersistenceState?>
+    private static async Task<DurablePlanImportPersistenceResult?>
         ReadImportReceiptAsync(
             NpgsqlConnection connection,
             NpgsqlTransaction transaction,
             string tenantId,
-            string receiptKey,
+            string callerKey,
             EntitySyncSha256 requestSha256,
-            EntitySyncDurablePlan plan,
+            EntitySyncActor actor,
             CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT request_sha256, response_status_code,
-                   response_body::jsonb->>'planId',
-                   response_body::jsonb->>'planDigestSha256'
-            FROM entitysync.api_idempotency_records
+            SELECT request_sha256, actor_id, plan_id, plan_digest_sha256
+            FROM entitysync.plan_import_receipts
             WHERE tenant_id = @tenant_id
-              AND idempotency_key = @idempotency_key
+              AND caller_key = @caller_key
             FOR UPDATE
             """;
-        await using var command = new NpgsqlCommand(sql, connection, transaction);
-        PostgresControlPersistence.Add(
-            command, "tenant_id", NpgsqlDbType.Text, tenantId);
-        PostgresControlPersistence.Add(
-            command, "idempotency_key", NpgsqlDbType.Text, receiptKey);
-        await using var reader = await command
-            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            return null;
-        if (!reader.GetString(0).Trim().Equals(
+        string storedRequestSha256;
+        string storedActorId;
+        Guid storedPlanId;
+        EntitySyncSha256 storedPlanDigestSha256;
+        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        {
+            PostgresControlPersistence.Add(
+                command, "tenant_id", NpgsqlDbType.Text, tenantId);
+            PostgresControlPersistence.Add(
+                command, "caller_key", NpgsqlDbType.Text, callerKey);
+            await using var reader = await command
+                .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return null;
+            storedRequestSha256 = reader.GetString(0).Trim();
+            storedActorId = reader.GetString(1);
+            storedPlanId = reader.GetGuid(2);
+            storedPlanDigestSha256 =
+                new EntitySyncSha256(reader.GetString(3));
+        }
+        if (!storedRequestSha256.Equals(
                 requestSha256.Value, StringComparison.Ordinal))
-            return DurablePlanImportPersistenceState.Conflict;
-        if (reader.IsDBNull(1)
-            || reader.GetInt32(1) != 200
-            || reader.IsDBNull(2)
-            || reader.IsDBNull(3)
-            || !Guid.TryParse(reader.GetString(2), out var resultPlanId)
-            || resultPlanId != plan.PlanId
-            || !reader.GetString(3).Equals(
-                plan.PlanDigestSha256.Value, StringComparison.Ordinal))
+            return new(DurablePlanImportPersistenceState.Conflict, null);
+        if (!storedActorId.Equals(actor.ActorId, StringComparison.Ordinal))
             throw new InvalidOperationException(
-                "The durable plan import receipt is incomplete or invalid.");
-        return DurablePlanImportPersistenceState.Replayed;
+                "The durable plan import receipt actor binding is invalid.");
+        var persisted = await ReadPersistedPlanAsync(
+                connection,
+                transaction,
+                tenantId,
+                storedPlanId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (persisted is null
+            || persisted.PlanDigestSha256 != storedPlanDigestSha256)
+            throw new InvalidOperationException(
+                "The durable plan import receipt references a missing or mismatched plan.");
+        return new(DurablePlanImportPersistenceState.Replayed, persisted);
     }
 
     private static async Task<bool> MatchesCurrentPolicyAsync(
@@ -1269,46 +1326,79 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             && reader.GetInt32(1) == manifest.Items.Count;
     }
 
+    private static async Task<EntitySyncDurablePlan?> ReadPersistedPlanAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid planId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT plan.tenant_id, plan.plan_id, plan.policy_id, plan.policy_version,
+                   policy.definition_sha256, plan.route_scope,
+                   plan.source_connection_id, plan.source_connection_generation,
+                   plan.target_connection_id, plan.target_connection_generation,
+                   plan.plan_digest_sha256, plan.status,
+                   plan.source_search, plan.source_count, plan.source_entity_id,
+                   (SELECT count(*)::integer
+                    FROM entitysync.sync_plan_items item
+                    WHERE item.tenant_id = plan.tenant_id
+                      AND item.plan_id = plan.plan_id),
+                   plan.created_at, plan.created_by, plan.expires_at
+            FROM entitysync.sync_plans plan
+            JOIN entitysync.sync_policies policy
+              ON policy.tenant_id = plan.tenant_id
+             AND policy.policy_id = plan.policy_id
+             AND policy.version = plan.policy_version
+            WHERE plan.tenant_id = @tenant_id AND plan.plan_id = @plan_id
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddPlanKey(command, tenantId, planId);
+        await using var reader = await command
+            .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadPlan(reader)
+            : null;
+    }
+
     private static async Task InsertImportReceiptAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         string tenantId,
-        string receiptKey,
+        string callerKey,
         EntitySyncSha256 requestSha256,
+        EntitySyncActor actor,
         EntitySyncDurablePlan plan,
         CancellationToken cancellationToken)
     {
         const string sql = """
-            INSERT INTO entitysync.api_idempotency_records (
-                tenant_id, idempotency_key, request_sha256,
-                response_status_code, response_body,
-                created_at, completed_at, expires_at)
+            INSERT INTO entitysync.plan_import_receipts (
+                tenant_id, caller_key, request_sha256, actor_id,
+                plan_id, plan_digest_sha256, created_at, expires_at)
             VALUES (
-                @tenant_id, @idempotency_key, @request_sha256,
-                200, @response_body,
-                clock_timestamp(), clock_timestamp(), @expires_at)
+                @tenant_id, @caller_key, @request_sha256, @actor_id,
+                @plan_id, @plan_digest_sha256,
+                clock_timestamp(), 'infinity'::timestamptz)
             """;
         await using var command = new NpgsqlCommand(sql, connection, transaction);
         PostgresControlPersistence.Add(
             command, "tenant_id", NpgsqlDbType.Text, tenantId);
         PostgresControlPersistence.Add(
-            command, "idempotency_key", NpgsqlDbType.Text, receiptKey);
+            command, "caller_key", NpgsqlDbType.Text, callerKey);
         PostgresControlPersistence.Add(
             command,
             "request_sha256",
             NpgsqlDbType.Char,
             requestSha256.Value);
         PostgresControlPersistence.Add(
-            command,
-            "response_body",
-            NpgsqlDbType.Text,
-            JsonSerializer.Serialize(new
-            {
-                planId = plan.PlanId,
-                planDigestSha256 = plan.PlanDigestSha256.Value
-            }));
+            command, "actor_id", NpgsqlDbType.Text, actor.ActorId);
         PostgresControlPersistence.Add(
-            command, "expires_at", NpgsqlDbType.TimestampTz, plan.ExpiresAt);
+            command, "plan_id", NpgsqlDbType.Uuid, plan.PlanId);
+        PostgresControlPersistence.Add(
+            command,
+            "plan_digest_sha256",
+            NpgsqlDbType.Char,
+            plan.PlanDigestSha256.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 

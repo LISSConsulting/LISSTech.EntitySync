@@ -61,11 +61,24 @@ instead of producing a typed policy-change rejection. These failures proved
 that validation plus a later ordinary insert was not an atomic security
 boundary.
 
+### Fix-round 3 durable receipt/locking RED
+
+The final reviewer-requested live-PostgreSQL adversarial suite failed **7/7**
+before the repository hardening (`artifact://2114`): import did not share the
+ordinary plan-identity lock; replay returned the workbook's stale Draft
+snapshot after the persisted plan moved through Approved, Consumed, or
+Expired; the import receipt occupied the public HTTP idempotency namespace;
+database-clock expiry was not enforced; and no dedicated receipt migration
+existed. The blocking-lock test's `TimeoutException` is the expected RED
+proof that import completed while an ordinary plan identity lock remained
+held.
+
+
 ## GREEN evidence
 
-- Final focused C# command: **17 passed, 0 failed** (`artifact://2101`). Its **11 parity cases** include all seven MCP/direct-HTTP translations plus authenticated `WebApplicationFactory` requests for create/approve/dry-run/apply through authorization, `IdempotencyEndpointFilter`, and the real endpoint. The pass-through executor supplies a deliberately different internal execution token, so comparison proves the exact caller key—not the receipt token—reaches the shared Application command. The remaining cases cover authenticated workbook rehydration, Application import guards, and three live-PostgreSQL atomic import/reconstruction cases.
+- Final focused C# command: **24 passed, 0 failed** (`artifact://2128`). Its **11 parity cases** include all seven MCP/direct-HTTP translations plus authenticated `WebApplicationFactory` requests for create/approve/dry-run/apply through authorization, `IdempotencyEndpointFilter`, and the real endpoint. The pass-through executor supplies a deliberately different internal execution token, so comparison proves the exact caller key—not the receipt token—reaches the shared Application command. The remaining cases cover authenticated workbook rehydration, Application import guards, and live-PostgreSQL atomic import/reconstruction/locking/replay checks.
 - Exact named Pester filter: **5 passed, 0 failed, 192 not run**. Cases prove exactly 16 exports/zero aliases, generation-pinned IDs/durable parameter sets, DPAPI profile locality, fail-closed durable workbook handling, and durable-only parameter rejection before local fallback.
-- Minimal builds: `dotnet build src/LISSTech.EntitySync.csproj --no-restore` and `dotnet build mcp/LISSTech.EntitySync.Mcp.csproj --no-restore`: **0 errors** (`artifact://2104`). Existing version-conflict and nullable warnings remain.
+- Minimal builds: `dotnet build src/LISSTech.EntitySync.csproj --no-restore` and `dotnet build mcp/LISSTech.EntitySync.Mcp.csproj --no-restore`: **0 errors** (`artifact://2131`). Existing version-conflict and nullable warnings remain.
 
 ## PostgreSQL restart/provider reconstruction
 
@@ -84,6 +97,17 @@ different plan or actor conflicted. Two deterministic races paused after the
 Application reads, then respectively disabled the policy and rotated a
 connection generation. Persistence rejected both with the typed result and
 left neither a plan nor an idempotency receipt.
+
+The fix-round 3 live-PostgreSQL suite passed **11/11**
+(`artifact://2126`). It proves import blocks behind the exact ordinary
+plan-identity advisory lock, durable receipts cannot collide with either raw
+or `plan.import:`-prefixed HTTP idempotency keys, replay reloads the current
+persisted Approved/Consumed/Expired plan status, database-clock-expired
+artifacts insert neither plan nor receipt, policy and connection mutations
+cannot race the transaction, and the new migration is idempotent. A separate
+focused check passed **2/2** (`artifact://2124`) for fail-closed receipt/plan
+digest mismatch and the receipt foreign key's `ON DELETE CASCADE` retention
+contract.
 
 The existing `Lost_response_crash_restart_and_checkpoint_failure_never_redispatch` test was run twice and failed at the same checkpoint-delay assertion (`artifact://2012`, `artifact://2023`). Task 10 did not change `VendorOutcomeReconciler`, `EntitySyncOperationWorker`, or this test method; `git diff` confirms the only fixture changes replace removed MCP coordinator wiring with the shared facade, and the failing test never invokes that facade (`artifact://2025`). This is therefore an independently exposed existing worker/reconciler issue, not hidden or claimed GREEN.
 
@@ -105,13 +129,21 @@ The existing `Lost_response_crash_restart_and_checkpoint_failure_never_redispatc
 `PowerShellDurablePlanWorkbook` stores a versioned, authenticated durable-manifest payload in the workbook package. Protection goes through `IEntitySyncDataProtector` with a purpose isolated from connection secrets and audit values; the protected payload contains the tenant and plan identity, and import verifies those authenticated values against the envelope and active control tenant. Import also checks container, entry, complete manifest digest/item count, Draft status, latest enabled policy version/hash/route/connection binding, and both connection generations before insertion. Exact same-plan replay returns the existing plan; same-ID/different-plan conflicts. Export reconstructs the full manifest and persisted status from bounded durable pages. File transport is absent from MCP/HTTP.
 
 Import idempotency is now repository-owned and atomic with plan/item
-persistence. The canonical request hash binds tenant, plan ID, plan digest,
-and actor beneath the exact caller key. One transaction serializes the receipt
-identity, replays or conflicts an existing receipt, acquires the policy
-identity advisory lock, rechecks the latest enabled policy
-version/hash/route/source/target bindings, locks both enabled connection
-generations `FOR SHARE`, and writes the immutable plan/items plus completed
-receipt. Failure rolls back both plan state and receipt.
+persistence. A dedicated `entitysync.plan_import_receipts` table isolates
+import caller keys from the public HTTP endpoint namespace and retains
+completed receipts independently of plan expiry; its plan foreign key uses
+`ON DELETE CASCADE` so eventual physical plan retention cleanup cannot be
+blocked. The canonical request hash binds tenant, plan ID, plan digest, and
+actor beneath the exact caller key. One transaction acquires the same plan
+identity advisory lock used by ordinary creation, reads the database clock,
+then serializes the import caller-key receipt. A replay reloads the current
+persisted plan and verifies its stored digest rather than trusting the
+workbook snapshot. A new import acquires the policy identity advisory lock,
+rechecks the latest enabled policy version/hash/route/source/target bindings,
+locks both enabled connection generations `FOR SHARE`, and writes the
+immutable plan/items plus permanent receipt. Failure rolls back both plan
+state and receipt; database-expired artifacts return the typed Expired result
+before either is inserted.
 
 ## Authority removal and changed areas
 
@@ -129,6 +161,7 @@ Changed areas: Application facade/planner/hosting; MCP connection/sync/exclusion
 - DPAPI profiles are absent from server DI and explicit profiles bypass durable mutation.
 - Workbook authentication, tenant/plan identity, domain digest, Draft status, policy route/hash/version, and connection generations are verified before insertion; file transport remains PowerShell-only.
 - Workbook import cannot bind a caller key to a different plan or actor, and policy/connection mutations cannot commit between the repository recheck and immutable plan insertion.
+- Import receipts are durable and non-expiring while their immutable plan exists, isolated from HTTP receipt cleanup, actor/request bound, and fail closed if their referenced plan is missing or digest-mismatched.
 - No synchronous I/O was added to MCP/HTTP/Application. PowerShell waits only at the synchronous cmdlet boundary over async services.
 
 ## Concerns

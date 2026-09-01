@@ -24,8 +24,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
             "sync_plan_creation_claims", "sync_plan_items", "sync_plan_inspections",
             "sync_plan_inspection_ranges", "sync_approvals", "sync_operations",
             "sync_operation_items", "sync_operation_item_snapshots", "sync_schedules",
-            "canonical_change_events", "api_idempotency_records", "audit_events",
-            "audit_event_full_values"
+            "canonical_change_events", "api_idempotency_records",
+            "plan_import_receipts", "audit_events", "audit_event_full_values"
         ]);
         Assert.Equal(
             [
@@ -44,7 +44,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "013_control_api_readiness",
                 "014_idempotency_execution_leases",
                 "015_persist_resolved_target_parent",
-                "016_connection_platform_instance_id"
+                "016_connection_platform_instance_id",
+                "017_plan_import_receipts"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
@@ -60,8 +61,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                      "sync_plan_creation_claims", "sync_plan_items", "sync_plan_inspections",
                      "sync_plan_inspection_ranges", "sync_approvals", "sync_operations",
                      "sync_operation_items", "sync_operation_item_snapshots", "sync_schedules",
-                     "canonical_change_events", "api_idempotency_records", "audit_events",
-                     "audit_event_full_values"
+                     "canonical_change_events", "api_idempotency_records",
+                     "plan_import_receipts", "audit_events", "audit_event_full_values"
                  })
         {
             Assert.True(await PrimaryKeyContainsColumnAsync("entitysync", table, "tenant_id"),

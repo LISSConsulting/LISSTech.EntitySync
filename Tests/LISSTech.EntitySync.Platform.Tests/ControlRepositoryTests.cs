@@ -285,6 +285,238 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
 
     [Fact]
+    public async Task Durable_import_serializes_with_ordinary_create_on_plan_identity()
+    {
+        var context = await SeedControlContextAsync("import-plan-lock");
+        var manifest = Manifest(context, 1);
+        await using var blocker = await Database.OpenConnectionAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var command = blocker.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(@plan_identity, 0))
+                """;
+            command.Parameters.AddWithValue(
+                "plan_identity",
+                $"{context.TenantId}:{manifest.Plan.PlanId:N}");
+            await command.ExecuteNonQueryAsync();
+        }
+
+        IDurableSyncPlanRepository importing =
+            new PostgresDurableSyncPlanRepository(Database);
+        var import = importing.ImportAsync(
+            context.TenantId,
+            manifest,
+            "plan-lock-key",
+            new EntitySyncActor("importer"),
+            default);
+        await Assert.ThrowsAsync<TimeoutException>(
+            async () => await import.WaitAsync(TimeSpan.FromMilliseconds(250)));
+        var ordinary = new PostgresDurableSyncPlanRepository(Database)
+            .InsertAsync(context.TenantId, manifest, default);
+        await transaction.CommitAsync();
+
+        await ordinary;
+        var result = await import;
+        Assert.True(
+            result.State is DurablePlanImportPersistenceState.Inserted
+                or DurablePlanImportPersistenceState.Replayed);
+    }
+
+    [Theory]
+    [InlineData(EntitySyncDurablePlanStatus.Approved)]
+    [InlineData(EntitySyncDurablePlanStatus.Consumed)]
+    [InlineData(EntitySyncDurablePlanStatus.Expired)]
+    public async Task Durable_import_replay_returns_current_persisted_status(
+        EntitySyncDurablePlanStatus currentStatus)
+    {
+        var context = await SeedControlContextAsync($"import-status-{currentStatus}");
+        var manifest = Manifest(context, 1);
+        const string key = "status-replay-key";
+        IDurableSyncPlanRepository firstRepository =
+            new PostgresDurableSyncPlanRepository(Database);
+        Assert.Equal(
+            DurablePlanImportPersistenceState.Inserted,
+            (await firstRepository.ImportAsync(
+                context.TenantId,
+                manifest,
+                key,
+                new EntitySyncActor("importer"),
+                default)).State);
+        await using (var update = Database.CreateCommand(
+                         """
+                         UPDATE entitysync.sync_plans
+                         SET status = @status
+                         WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+                         """))
+        {
+            update.Parameters.AddWithValue("status", currentStatus.ToString());
+            update.Parameters.AddWithValue("tenant_id", context.TenantId);
+            update.Parameters.AddWithValue("plan_id", manifest.Plan.PlanId);
+            Assert.Equal(1, await update.ExecuteNonQueryAsync());
+        }
+
+        IDurableSyncPlanRepository reconstructed =
+            new PostgresDurableSyncPlanRepository(Database);
+        var replay = await reconstructed.ImportAsync(
+            context.TenantId,
+            manifest,
+            key,
+            new EntitySyncActor("importer"),
+            default);
+
+        Assert.Equal(DurablePlanImportPersistenceState.Replayed, replay.State);
+        Assert.Equal(currentStatus, replay.Plan?.Status);
+        Assert.Equal(manifest.Plan.PlanId, replay.Plan?.PlanId);
+        Assert.Equal(
+            manifest.Plan.PlanDigestSha256,
+            replay.Plan?.PlanDigestSha256);
+    }
+
+    [Fact]
+    public async Task Durable_import_receipts_are_isolated_from_http_idempotency_keys()
+    {
+        var context = await SeedControlContextAsync("import-receipt-isolation");
+        var idempotency = new PostgresIdempotencyRepository(Database);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var key in new[] { "x", "plan.import:x" })
+        {
+            Assert.True(await idempotency.TryInsertAsync(
+                context.TenantId,
+                new EntitySyncIdempotencyReceipt(
+                    context.TenantId,
+                    key,
+                    new EntitySyncSha256(new string('a', 64)),
+                    null,
+                    null,
+                    now,
+                    null,
+                    now.AddHours(1)),
+                default));
+        }
+        var manifest = Manifest(context, 1);
+        IDurableSyncPlanRepository plans =
+            new PostgresDurableSyncPlanRepository(Database);
+
+        var imported = await plans.ImportAsync(
+            context.TenantId,
+            manifest,
+            "x",
+            new EntitySyncActor("importer"),
+            default);
+
+        Assert.Equal(DurablePlanImportPersistenceState.Inserted, imported.State);
+        Assert.NotNull(await idempotency.GetAsync(context.TenantId, "x", default));
+        Assert.NotNull(await idempotency.GetAsync(
+            context.TenantId, "plan.import:x", default));
+        await using var count = Database.CreateCommand(
+            """
+            SELECT count(*)
+            FROM entitysync.plan_import_receipts
+            WHERE tenant_id = @tenant_id AND caller_key = 'x'
+            """);
+        count.Parameters.AddWithValue("tenant_id", context.TenantId);
+        Assert.Equal(1L, await count.ExecuteScalarAsync());
+        await using var cascade = Database.CreateCommand(
+            """
+            SELECT pg_get_constraintdef(constraint_row.oid)
+            FROM pg_constraint constraint_row
+            JOIN pg_class table_row
+              ON table_row.oid = constraint_row.conrelid
+            JOIN pg_namespace schema_row
+              ON schema_row.oid = table_row.relnamespace
+            WHERE schema_row.nspname = 'entitysync'
+              AND table_row.relname = 'plan_import_receipts'
+              AND constraint_row.conname =
+                  'plan_import_receipts_plan_fk'
+            """);
+        Assert.Contains(
+            "ON DELETE CASCADE",
+            Assert.IsType<string>(await cascade.ExecuteScalarAsync()),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Durable_import_replay_fails_closed_on_mismatched_receipt_plan()
+    {
+        var context = await SeedControlContextAsync("import-receipt-corruption");
+        var manifest = Manifest(context, 1);
+        const string key = "corrupt-receipt-key";
+        IDurableSyncPlanRepository plans =
+            new PostgresDurableSyncPlanRepository(Database);
+        await plans.ImportAsync(
+            context.TenantId,
+            manifest,
+            key,
+            new EntitySyncActor("importer"),
+            default);
+        await using (var corrupt = Database.CreateCommand(
+                         """
+                         UPDATE entitysync.plan_import_receipts
+                         SET plan_digest_sha256 = @digest
+                         WHERE tenant_id = @tenant_id AND caller_key = @caller_key
+                         """))
+        {
+            corrupt.Parameters.AddWithValue("digest", new string('f', 64));
+            corrupt.Parameters.AddWithValue("tenant_id", context.TenantId);
+            corrupt.Parameters.AddWithValue("caller_key", key);
+            Assert.Equal(1, await corrupt.ExecuteNonQueryAsync());
+        }
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new PostgresDurableSyncPlanRepository(Database).ImportAsync(
+                context.TenantId,
+                manifest,
+                key,
+                new EntitySyncActor("importer"),
+                default));
+        Assert.Contains("missing or mismatched plan", exception.Message);
+    }
+
+    [Fact]
+    public async Task Durable_import_rejects_database_expired_plan_without_mutation()
+    {
+        var context = await SeedControlContextAsync("import-expired-boundary");
+        await using var clock = Database.CreateCommand(
+            "SELECT clock_timestamp()");
+        var databaseClock = await clock.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("Database clock unavailable.");
+        var databaseNow = databaseClock switch
+        {
+            DateTimeOffset value => value,
+            DateTime value => new DateTimeOffset(
+                DateTime.SpecifyKind(value, DateTimeKind.Utc)),
+            _ => throw new InvalidOperationException("Database clock type unavailable.")
+        };
+        var expired = ManifestWithExpiration(context, databaseNow);
+        IDurableSyncPlanRepository plans =
+            new PostgresDurableSyncPlanRepository(Database);
+
+        var rejected = await plans.ImportAsync(
+            context.TenantId,
+            expired,
+            "expired-key",
+            new EntitySyncActor("importer"),
+            default);
+
+        Assert.Equal("Expired", rejected.State.ToString());
+        Assert.Null(await plans.GetAsync(
+            context.TenantId, expired.Plan.PlanId, default));
+        var future = ManifestWithExpiration(
+            context, databaseNow.AddHours(1));
+        Assert.Equal(
+            DurablePlanImportPersistenceState.Inserted,
+            (await plans.ImportAsync(
+                context.TenantId,
+                future,
+                "future-key",
+                new EntitySyncActor("importer"),
+                default)).State);
+    }
+
+    [Fact]
     public async Task Durable_import_receipt_replays_and_conflicts_after_repository_reconstruction()
     {
         var context = await SeedControlContextAsync("import-receipt");
@@ -2408,6 +2640,34 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                         7)
                     : null)).ToArray();
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
+    }
+
+    private static EntitySyncDurablePlanManifest ManifestWithExpiration(
+        ControlContext context,
+        DateTimeOffset expiresAt)
+    {
+        var manifest = Manifest(context, 1);
+        var plan = manifest.Plan;
+        return EntitySyncDurablePlanManifest.Create(
+            new EntitySyncDurablePlan(
+                plan.TenantId,
+                plan.PlanId,
+                plan.PolicyId,
+                plan.PolicyVersion,
+                plan.PolicyDefinitionSha256,
+                plan.RouteScope,
+                plan.SourceConnectionId,
+                plan.SourceConnectionGeneration,
+                plan.TargetConnectionId,
+                plan.TargetConnectionGeneration,
+                plan.PlanDigestSha256,
+                EntitySyncDurablePlanStatus.Draft,
+                plan.SelectionBounds,
+                plan.ItemCount,
+                plan.CreatedAt,
+                plan.CreatedBy,
+                expiresAt),
+            manifest.Items);
     }
 
     private static EntityExclusionRoute Route(ControlContext context) =>

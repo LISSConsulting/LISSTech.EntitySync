@@ -191,7 +191,8 @@ public enum DurablePlanImportPersistenceState
     Replayed,
     Conflict,
     PolicyChanged,
-    ConnectionChanged
+    ConnectionChanged,
+    Expired
 }
 
 public sealed record DurablePlanImportPersistenceResult(

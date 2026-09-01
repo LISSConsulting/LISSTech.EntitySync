@@ -176,6 +176,8 @@ public sealed class DurablePlanService(
             DurablePlanImportPersistenceState.ConnectionChanged =>
                 throw new DurablePlanConnectionChangedException(
                     plan.SourceConnectionId),
+            DurablePlanImportPersistenceState.Expired =>
+                throw new DurablePlanExpiredException(plan.PlanId),
             _ => throw new InvalidOperationException(
                 "The durable plan import result is invalid.")
         };
