@@ -46,7 +46,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
     {
         var context = new McpRequestContext(Fixture.Tenant, false);
         var createdJson = await SyncTools.CreateSyncPlan(
-            Fixture.DurablePlanning, context, Fixture.PolicyId.ToString(),
+            Fixture.ControlCommands, context, Fixture.PolicyId.ToString(),
             "mcp-durable-plan", sourceEntityId: Fixture.SourceEntity.Id);
         using var created = JsonDocument.Parse(createdJson);
         Assert.True(created.RootElement.GetProperty("success").GetBoolean());
@@ -54,32 +54,32 @@ public sealed class DurableOperationTests : IAsyncLifetime
         var digest = created.RootElement.GetProperty("digest").GetString()!;
 
         var inspectedJson = await SyncTools.GetSyncPlan(
-            Fixture.DurablePlanning, context, planId, 1, 25);
+            Fixture.ControlCommands, context, planId, 1, 25);
         using var inspected = JsonDocument.Parse(inspectedJson);
         Assert.True(inspected.RootElement.GetProperty("success").GetBoolean());
         Assert.True(inspected.RootElement.GetProperty("result")
             .GetProperty("inspectionComplete").GetBoolean());
 
         var approvedJson = await SyncTools.ApproveSyncPlan(
-            Fixture.DurablePlanning, context, planId, digest);
+            Fixture.ControlCommands, context, planId, digest, "mcp-approve");
         using var approved = JsonDocument.Parse(approvedJson);
         Assert.True(approved.RootElement.GetProperty("success").GetBoolean());
         var approvalId = approved.RootElement.GetProperty("approvalId").GetString()!;
 
         var dryRunJson = await SyncTools.ApplySyncPlan(
-            Fixture.Coordinator, context, planId, "mcp-dry-run");
+            Fixture.ControlCommands, context, planId, "mcp-dry-run");
         using var dryRun = JsonDocument.Parse(dryRunJson);
         Assert.True(dryRun.RootElement.GetProperty("success").GetBoolean());
         Assert.NotEqual(Guid.Empty,
             dryRun.RootElement.GetProperty("operationId").GetGuid());
 
         var applyJson = await SyncTools.ApplySyncPlan(
-            Fixture.Coordinator, context, planId, "mcp-apply", true, approvalId);
+            Fixture.ControlCommands, context, planId, "mcp-apply", true, approvalId);
         using var apply = JsonDocument.Parse(applyJson);
         Assert.True(apply.RootElement.GetProperty("success").GetBoolean());
         var operationId = apply.RootElement.GetProperty("operationId").GetString()!;
         var statusJson = await SyncTools.GetSyncPlanApply(
-            Fixture.Coordinator, context, operationId, default);
+            Fixture.Operations, context, operationId, default);
         using var status = JsonDocument.Parse(statusJson);
         Assert.True(status.RootElement.GetProperty("success").GetBoolean());
     }
@@ -557,7 +557,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
             Target = new FakeAdapter("HaloPSA", () => [TargetEntity]);
             runtime = new FakeRuntime(Source, Target);
             ChangeStates = new TestChangeStates();
-            var legacyPlans = new InMemoryEntitySyncPlanRepository();
+            var legacyPlans = new TestEntitySyncPlanRepository();
             var planner = new EntitySyncPlanner(
                 runtime, legacyPlans, Exclusions, new WeightedEntityMatcher(),
                 mapper, ChangeStates);
@@ -576,12 +576,13 @@ public sealed class DurableOperationTests : IAsyncLifetime
                 planner, new PlanManifestBuilder(mapper), Policies,
                 ConnectionDefinitions, runtime, Exclusions, Plans,
                 TimeProvider.System);
-            var legacyService = new EntitySyncService(
-                planner, runtime, legacyPlans, Exclusions, mapper, ChangeStates,
-                operationService: Service);
-            Coordinator = new EntitySyncApplyCoordinator(
-                legacyService, legacyPlans, new TestLifetime(),
-                operationRepository: Operations);
+            ControlCommands = new EntitySyncControlCommands(
+                new ConnectionDefinitionService(
+                    ConnectionDefinitions, protector, runtime, TimeProvider.System),
+                DurablePlanning,
+                Plans,
+                Service,
+                new EntityExclusionService(runtime, Exclusions));
             var auditService = new SyncAuditService(AuditRepository, protector);
             Reconciler = new VendorOutcomeReconciler(
                 Operations, Plans, Policies, runtime, protector, auditService,
@@ -639,7 +640,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         internal TestChangeStates ChangeStates { get; }
         internal Guid PolicyId => policy.PolicyId;
         internal DurablePlanService DurablePlanning { get; }
-        internal EntitySyncApplyCoordinator Coordinator { get; }
+        internal IEntitySyncControlCommands ControlCommands { get; }
         internal SyncOperationService Service { get; }
         internal EntitySyncOperationWorker Worker { get; }
         internal VendorOutcomeReconciler Reconciler { get; }

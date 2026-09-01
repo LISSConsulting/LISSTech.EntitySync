@@ -12,6 +12,9 @@ Builds a safe, reviewable synchronization plan between two vendors.
 
 ## DESCRIPTION
 Retrieves target entities, performs explainable fuzzy matching, and emits an EntitySync plan. This command does not write to any vendor.
+When durable control is configured, `-PolicyId` and `-IdempotencyKey` create an
+immutable tenant-scoped plan. Its `PlanId` remains stable across host restarts.
+
 
 When HaloPSA is the target, planning reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Pass `-FullTargetObjects` only when every HaloPSA client must also be enriched with site details for address/postal matching; this can be slower on large tenants.
 

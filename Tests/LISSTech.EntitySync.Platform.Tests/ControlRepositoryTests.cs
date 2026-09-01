@@ -294,7 +294,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await repository.InsertAsync(context.TenantId, manifest, default);
         await repository.InsertAsync(context.TenantId, manifest, default);
 
-        Assert.Equal(manifest.Plan, await repository.GetAsync(context.TenantId, manifest.Plan.PlanId, default));
+        Assert.Equal(
+            manifest.Plan,
+            await new PostgresDurableSyncPlanRepository(Database).GetAsync(
+                context.TenantId, manifest.Plan.PlanId, default));
         Assert.Null(await repository.GetAsync("other-tenant", manifest.Plan.PlanId, default));
         var page = await repository.GetPageAsync(context.TenantId, manifest.Plan.PlanId, 1, 10, default);
         Assert.Equal(
@@ -412,7 +415,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var plans = new PostgresDurableSyncPlanRepository(tinyPool);
         var planner = new EntitySyncPlanner(
             runtime,
-            new InMemoryEntitySyncPlanRepository(),
+            new TestEntitySyncPlanRepository(),
             exclusions,
             new WeightedEntityMatcher(),
             mapper,
@@ -1395,7 +1398,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await operations.InsertAsync(context.TenantId, queued, items, default);
         Assert.Equal(
             items[0].ResolvedTargetParent,
-            (await operations.GetItemAsync(
+            (await new PostgresSyncOperationRepository(Database).GetItemAsync(
                 context.TenantId, queued.OperationId, items[0].ItemId, default))!
                 .ResolvedTargetParent);
         var illegalTerminal = EntitySyncOperation.Rehydrate(
@@ -1407,8 +1410,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await Assert.ThrowsAsync<InvalidOperationException>(() => operations.TryReplaceAsync(
             context.TenantId, queued.OperationId, EntitySyncOperationStatus.Queued,
             illegalTerminal, default));
-        Assert.Equal(EntitySyncOperationStatus.Queued,
-            (await operations.GetAsync(context.TenantId, queued.OperationId, default))!.Status);
+        Assert.Equal(
+            EntitySyncOperationStatus.Queued,
+            (await new PostgresSyncOperationRepository(Database).GetAsync(
+                context.TenantId, queued.OperationId, default))!.Status);
 
         var leased = await operations.TryLeaseNextAsync(
             context.TenantId, "transition-worker", now.AddMinutes(1),
@@ -2181,7 +2186,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         return new DurablePlanService(
             new EntitySyncPlanner(
                 runtime,
-                new InMemoryEntitySyncPlanRepository(),
+                new TestEntitySyncPlanRepository(),
                 exclusions,
                 new WeightedEntityMatcher(),
                 mapper,

@@ -46,7 +46,6 @@ static async Task RunStdioAsync(string[] args)
     builder.Services.AddEntitySyncPlatform(
         Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
         EntitySyncHostMode.LocalStdio);
-    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
 
     builder.Services
         .AddMcpServer()
@@ -162,7 +161,6 @@ static async Task RunHttpAsync(string[] args)
     builder.Services.AddEntitySyncPlatform(
         Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
         EntitySyncHostMode.Http);
-    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
     builder.Services.AddSingleton<ControlCanonicalChangeRepository>();
     builder.Services.AddSingleton<ICanonicalChangeRepository>(provider =>
         provider.GetRequiredService<ControlCanonicalChangeRepository>());

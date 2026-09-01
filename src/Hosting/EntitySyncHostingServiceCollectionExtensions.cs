@@ -52,7 +52,6 @@ public static class EntitySyncHostingServiceCollectionExtensions
         {
             services.AddSingleton<IConnectionRuntimeFactory, ConnectionRuntimeFactory>();
         }
-        services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
         services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
         services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
         services.AddSingleton<IConnectionDefinitionRepository, PostgresConnectionDefinitionRepository>();
@@ -75,7 +74,6 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<EntitySyncPlanner>();
         services.AddSingleton<PlanManifestBuilder>();
         services.AddSingleton<DurablePlanService>();
-        services.AddSingleton<EntitySyncService>();
         services.AddSingleton<SyncAuditService>();
         services.AddSingleton<SyncOperationService>();
         services.AddSingleton<VendorOutcomeReconciler>();
@@ -84,6 +82,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<EntityExclusionService>();
         services.AddSingleton<ExpertOperationService>();
         services.AddScoped<ConnectionDefinitionService>();
+        services.AddScoped<IEntitySyncControlCommands, EntitySyncControlCommands>();
         services.AddScoped<SyncPolicyService>();
         services.AddHostedService<EntitySyncDatabaseMigrationHostedService>();
         return services;

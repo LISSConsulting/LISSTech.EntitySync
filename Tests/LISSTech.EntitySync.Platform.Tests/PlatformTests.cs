@@ -287,8 +287,7 @@ public sealed class PlatformTests
         Assert.NotNull(provider.GetRequiredService<IServerManagedEntityAdapterFactory>());
         Assert.IsType<InMemoryEntityConnectionRepository>(
             provider.GetRequiredService<IEntityConnectionRepository>());
-        Assert.IsType<InMemoryEntitySyncPlanRepository>(
-            provider.GetRequiredService<IEntitySyncPlanRepository>());
+        Assert.Null(provider.GetService<IEntitySyncPlanRepository>());
         Assert.IsType<PostgresEntityExclusionRepository>(
             provider.GetRequiredService<IEntityExclusionRepository>());
         Assert.IsType<PostgresEntitySyncChangeStateRepository>(
@@ -296,7 +295,7 @@ public sealed class PlatformTests
         Assert.IsType<WeightedEntityMatcher>(provider.GetRequiredService<IEntityMatcher>());
         Assert.IsType<DefaultEntityMapper>(provider.GetRequiredService<IEntityMapper>());
         Assert.NotNull(provider.GetRequiredService<EntitySyncPlanner>());
-        Assert.NotNull(provider.GetRequiredService<EntitySyncService>());
+        Assert.NotNull(provider.GetRequiredService<IEntitySyncControlCommands>());
         Assert.NotNull(provider.GetRequiredService<EntityExclusionService>());
         Assert.Same(TimeProvider.System, provider.GetRequiredService<TimeProvider>());
         Assert.Contains(
@@ -362,7 +361,7 @@ public sealed class PlatformTests
     public async Task ThrowingProgressCallbackDoesNotDuplicateProcessedItem()
     {
         using var connections = new InMemoryEntityConnectionRepository();
-        var plans = new InMemoryEntitySyncPlanRepository();
+        var plans = new TestEntitySyncPlanRepository();
         var target = new FakeAdapter("HaloPSA");
         connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
         connections.Register("tenant", "halo", target);
@@ -437,7 +436,7 @@ public sealed class PlatformTests
     public async Task CancelledApplyMovesPlanToFailedTerminalState()
     {
         using var connections = new InMemoryEntityConnectionRepository();
-        var plans = new InMemoryEntitySyncPlanRepository();
+        var plans = new TestEntitySyncPlanRepository();
         connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
         connections.Register("tenant", "halo", new FakeAdapter("HaloPSA", beforeCreate: () => Task.FromException(new OperationCanceledException())));
         var service = CreateService(connections, plans);
@@ -508,7 +507,7 @@ public sealed class PlatformTests
     [Fact]
     public void PlanRepositoryReturnsSnapshotsInsteadOfStoredMutableInstances()
     {
-        var repository = new InMemoryEntitySyncPlanRepository();
+        var repository = new TestEntitySyncPlanRepository();
         var plan = new EntitySyncPlan
         {
             TenantId = "tenant",
@@ -530,7 +529,7 @@ public sealed class PlatformTests
     [Fact]
     public void ExpiredPlansAreEvicted()
     {
-        var repository = new InMemoryEntitySyncPlanRepository();
+        var repository = new TestEntitySyncPlanRepository();
         var plan = new EntitySyncPlan { TenantId = "tenant", ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1) };
         repository.Add(plan);
 
@@ -541,7 +540,7 @@ public sealed class PlatformTests
     [Fact]
     public void ApplyingPlanCanReachTerminalStateAfterExpiration()
     {
-        var repository = new InMemoryEntitySyncPlanRepository();
+        var repository = new TestEntitySyncPlanRepository();
         var plan = new EntitySyncPlan { TenantId = "tenant", ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(100) };
         repository.Add(plan);
         Assert.True(repository.TryTransition("tenant", plan.Id, EntitySyncPlanStatuses.Draft, EntitySyncPlanStatuses.Applying));
@@ -554,7 +553,7 @@ public sealed class PlatformTests
     [Fact]
     public void PlanSnapshotsPreserveCaseInsensitiveEntityFields()
     {
-        var repository = new InMemoryEntitySyncPlanRepository();
+        var repository = new TestEntitySyncPlanRepository();
         var source = Source("1", "Acme");
         source.ExternalIds.Clear();
         source.ExternalIds["mixedCaseId"] = "42";
@@ -586,40 +585,6 @@ public sealed class PlatformTests
         Assert.Contains("limited to 5000", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public async Task McpFocusedPlanUsesBoundedQueryAndExactSourceId()
-    {
-        using var connections = new InMemoryEntityConnectionRepository();
-        var source = new FakeAdapter("NetSuite", [Source("1815", "Other"), Source("1816", "Degmor Enterprises Inc")]);
-        connections.Register("tenant", "netsuite", source);
-        connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
-        var service = CreateService(connections);
-
-        var response = await SyncTools.CreateSyncPlan(
-            service,
-            new McpRequestContext("tenant", false),
-            "NetSuite",
-            "HaloPSA",
-            sourceConnectionId: "netsuite",
-            targetConnectionId: "halo",
-            sourceEntityType: "Customer",
-            targetEntityType: "Client",
-            createMissing: true,
-            sourceSearch: "Degmor",
-            sourceCount: 10,
-            sourceEntityId: "1816",
-            cancellationToken: CancellationToken.None);
-
-        using var document = JsonDocument.Parse(response);
-        var root = document.RootElement;
-        Assert.True(root.GetProperty("success").GetBoolean());
-        Assert.Equal(1, root.GetProperty("totalItems").GetInt32());
-        Assert.Equal("1816", root.GetProperty("items")[0].GetProperty("sourceId").GetString());
-        Assert.Equal("Degmor Enterprises Inc", root.GetProperty("items")[0].GetProperty("source").GetString());
-        Assert.Equal("1816", root.GetProperty("sourceSelection").GetProperty("entityId").GetString());
-        Assert.Equal("Degmor", source.LastQuery?.Search);
-        Assert.Equal(10, source.LastQuery?.Count);
-    }
 
     [Fact]
     public async Task FocusedPlanRejectsSourceIdOutsideBoundedQueryBeforeReadingTargets()
@@ -891,71 +856,6 @@ public sealed class PlatformTests
         Assert.NotNull(typeof(SyncTools).GetMethod(nameof(SyncTools.GetSyncPlanApply)));
     }
 
-    [Fact]
-    public async Task McpApplyStartsAndPollsAfterRequestCancellation()
-    {
-        using var connections = new InMemoryEntityConnectionRepository();
-        var plans = new InMemoryEntitySyncPlanRepository();
-        var writeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseWrite = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var target = new FakeAdapter("HaloPSA", beforeCreate: async () =>
-        {
-            writeStarted.TrySetResult(true);
-            await releaseWrite.Task;
-        });
-        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
-        connections.Register("tenant", "halo", target);
-        var service = CreateService(connections, plans);
-        var plan = await service.CreatePlanAsync(Request(), CancellationToken.None);
-        InspectAllAndApprove(service, plan);
-        var coordinator = new EntitySyncApplyCoordinator(service, plans, new TestApplicationLifetime());
-        var context = new McpRequestContext("tenant", true);
-        using var requestCancellation = new CancellationTokenSource();
-
-        try
-        {
-            var startResponse = await SyncTools.ApplySyncPlan(
-                    service,
-                    coordinator,
-                    context,
-                    plan.Id,
-                    apply: true,
-                    cancellationToken: requestCancellation.Token)
-                .WaitAsync(TimeSpan.FromSeconds(5));
-            await writeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            using var startJson = JsonDocument.Parse(startResponse);
-
-            Assert.True(startJson.RootElement.GetProperty("success").GetBoolean());
-            Assert.Equal("Applying", startJson.RootElement.GetProperty("snapshot").GetProperty("status").GetString());
-            Assert.Equal(0, target.CreateCalls);
-
-            requestCancellation.Cancel();
-        }
-        finally
-        {
-            releaseWrite.TrySetResult(true);
-        }
-
-        JsonElement snapshot;
-        using var pollTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        do
-        {
-            using var pollJson = JsonDocument.Parse(SyncTools.GetSyncPlanApply(coordinator, context, plan.Id));
-            Assert.True(pollJson.RootElement.GetProperty("success").GetBoolean());
-            snapshot = pollJson.RootElement.GetProperty("snapshot").Clone();
-            if (snapshot.GetProperty("status").GetString() is "Applied" or "Failed") break;
-            await Task.Delay(10, pollTimeout.Token);
-        }
-        while (true);
-
-        Assert.Equal("Applied", snapshot.GetProperty("status").GetString());
-        Assert.Equal(1, snapshot.GetProperty("total").GetInt32());
-        Assert.Equal(1, snapshot.GetProperty("processed").GetInt32());
-        Assert.Equal(1, snapshot.GetProperty("succeeded").GetInt32());
-        Assert.Equal(0, snapshot.GetProperty("failed").GetInt32());
-        Assert.Equal(0, snapshot.GetProperty("skipped").GetInt32());
-        Assert.Equal(1, target.CreateCalls);
-    }
 
     [Fact]
     public void HttpMcpContextUsesAuthenticatedOAuthSubjectAsTenant()
@@ -1433,7 +1333,7 @@ public sealed class PlatformTests
         IEntitySyncPlanRepository? plans = null,
         IEntityExclusionRepository? exclusions = null)
     {
-        plans ??= new InMemoryEntitySyncPlanRepository();
+        plans ??= new TestEntitySyncPlanRepository();
         exclusions ??= new InMemoryEntityExclusionRepository();
         var changeStates = new InMemoryEntitySyncChangeStateRepository();
         var mapper = new DefaultEntityMapper();

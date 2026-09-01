@@ -405,6 +405,91 @@ namespace EntitySyncTests
     $commands | Should -Contain 'Export-EntitySyncPlan'
     $commands | Should -Contain 'Import-EntitySyncPlan'
   }
+  It 'keeps exactly 16 exports for the durable control service' {
+    $commands = @(Get-Command -Module LISSTech.EntitySync)
+    $commands.Count | Should -Be 16
+    @($commands | Where-Object CommandType -EQ Alias).Count | Should -Be 0
+  }
+
+  It 'exposes generation-pinned connection IDs for the durable control service' {
+    foreach ($name in @(
+        'Connect-EntitySyncVendor',
+        'Test-EntitySyncConnection',
+        'Get-EntitySyncEntity',
+        'Get-EntitySyncLookup',
+        'Invoke-EntitySyncNetSuiteSuiteQL',
+        'Set-EntitySyncCustomProperty')) {
+      (Get-Command $name).Parameters.Keys | Should -Contain 'ConnectionId'
+    }
+    (Get-Command Invoke-EntitySyncPlan).ParameterSets.Name |
+      Should -Contain 'Durable'
+    (Get-Command Invoke-EntitySyncChain).ParameterSets.Name |
+      Should -Contain 'Durable'
+    (Get-Command Export-EntitySyncPlan).ParameterSets.Name |
+      Should -Contain 'Durable'
+  }
+
+  It 'keeps DPAPI profiles local from the durable control service' {
+    $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) (
+      'entitysync-local-profile-{0}.json' -f [guid]::NewGuid())
+    $oldProfilePath = [Environment]::GetEnvironmentVariable(
+      'LISSTECH_ENTITYSYNC_PROFILE_PATH')
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    try {
+      [Environment]::SetEnvironmentVariable(
+        'LISSTECH_ENTITYSYNC_PROFILE_PATH', $profilePath)
+      [Environment]::SetEnvironmentVariable(
+        'DATABASE_URL',
+        'Host=127.0.0.1;Port=1;Database=must-not-connect;Username=unused;Password=unused')
+      @(Get-EntitySyncProfile).Count | Should -Be 0
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable(
+        'LISSTECH_ENTITYSYNC_PROFILE_PATH', $oldProfilePath)
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+      Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'validates workbook artifacts before the durable control service insert' {
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) (
+      'entitysync-local-workbook-{0}.xlsx' -f [guid]::NewGuid())
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    $oldTenant = [Environment]::GetEnvironmentVariable('ENTITYSYNC_TENANT_ID')
+    $oldActor = [Environment]::GetEnvironmentVariable('ENTITYSYNC_ACTOR_ID')
+    $oldKeyPath = [Environment]::GetEnvironmentVariable(
+      'ENTITYSYNC_DATA_PROTECTION_KEY_PATH')
+    try {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $null)
+      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
+      $plan.TenantId = 'tenant-a'
+      $plan.SourceVendor = 'NetSuite'
+      $plan.SourceEntityType = 'Customer'
+      $plan.TargetVendor = 'HaloPSA'
+      $plan.TargetEntityType = 'Client'
+      $plan | Export-EntitySyncPlan -Path $path
+
+      [Environment]::SetEnvironmentVariable(
+        'DATABASE_URL',
+        'Host=127.0.0.1;Port=1;Database=must-not-connect;Username=unused;Password=unused')
+      [Environment]::SetEnvironmentVariable('ENTITYSYNC_TENANT_ID', 'tenant-a')
+      [Environment]::SetEnvironmentVariable('ENTITYSYNC_ACTOR_ID', 'actor-a')
+      [Environment]::SetEnvironmentVariable(
+        'ENTITYSYNC_DATA_PROTECTION_KEY_PATH',
+        [System.IO.Path]::GetTempPath())
+      { Import-EntitySyncPlan -Path $path } |
+        Should -Throw '*durable EntitySync plan artifact*'
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+      [Environment]::SetEnvironmentVariable('ENTITYSYNC_TENANT_ID', $oldTenant)
+      [Environment]::SetEnvironmentVariable('ENTITYSYNC_ACTOR_ID', $oldActor)
+      [Environment]::SetEnvironmentVariable(
+        'ENTITYSYNC_DATA_PROTECTION_KEY_PATH', $oldKeyPath)
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
 
   It 'Saves DPAPI-protected connection profiles and reconnects from them' {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-profile-{0}.json" -f [guid]::NewGuid())

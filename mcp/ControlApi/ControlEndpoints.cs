@@ -173,7 +173,7 @@ public static class ControlEndpoints
             .AddEndpointFilter<IdempotencyEndpointFilter>();
 
     private static async Task<IResult> ListConnectionsAsync(
-        IControlApiQueries queries,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         ControlCursorProtector cursors,
         string? cursor,
@@ -181,8 +181,10 @@ public static class ControlEndpoints
         CancellationToken cancellationToken = default)
     {
         var offset = Offset(cursors, cursor, "connections", control, pageSize);
-        var values = await queries.ListConnectionsAsync(
-            control.TenantId, offset, pageSize + 1, cancellationToken).ConfigureAwait(false);
+        var all = await ControlHttpOperations.ListConnectionsAsync(
+            commands, control, cancellationToken).ConfigureAwait(false);
+        var values = all.Skip(offset).Take(pageSize + 1)
+            .Select(ConnectionResponse.From).ToArray();
         return Page(values, pageSize, offset, cursors, "connections", control);
     }
 
@@ -413,29 +415,17 @@ public static class ControlEndpoints
     private static async Task<IResult> CreatePlanAsync(
         HttpContext http,
         CreatePlanRequest request,
-        DurablePlanService service,
-        IDurableSyncPlanRepository repository,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         CancellationToken cancellationToken)
     {
-        if (request.LifetimeMinutes is < 1 or > 1440)
-            throw new ArgumentOutOfRangeException(
-                nameof(request.LifetimeMinutes), "Lifetime must be between 1 and 1440 minutes.");
-        var token = IdempotencyEndpointFilter.GetExecutionToken(http);
-        var result = await service.CreatePlanAsync(new CreateDurablePlanRequest
-        {
-            TenantId = control.TenantId,
-            IdempotencyKey = token,
-            PolicyId = request.PolicyId,
-            PolicyVersion = request.PolicyVersion,
-            SourceSearch = request.SourceSearch,
-            SourceCount = request.SourceCount,
-            SourceEntityId = request.SourceEntityId,
-            PlanLifetime = TimeSpan.FromMinutes(request.LifetimeMinutes)
-        }, control.Actor, cancellationToken).ConfigureAwait(false);
-        var persisted = await repository.GetAsync(
-            control.TenantId, result.PlanId, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The committed plan is unavailable.");
+        var command = await ControlHttpOperations.CreatePlanAsync(
+            commands,
+            control,
+            request,
+            IdempotencyEndpointFilter.GetExecutionToken(http),
+            cancellationToken).ConfigureAwait(false);
+        var persisted = command.Plan;
         return Results.Json(PlanResponse.From(persisted), statusCode: StatusCodes.Status201Created);
     }
 
@@ -463,7 +453,7 @@ public static class ControlEndpoints
     private static async Task<IResult> InspectPlanAsync(
         Guid planId,
         InspectPlanRequest request,
-        DurablePlanService service,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         ControlCursorProtector cursors,
         CancellationToken cancellationToken)
@@ -474,12 +464,12 @@ public static class ControlEndpoints
             ? 0
             : cursors.UnprotectOffset(request.Cursor, resource, control.TenantId);
         if (offset % request.PageSize != 0) throw new InvalidControlCursorException();
-        var page = await service.GetPageAsync(
-            control.TenantId,
+        var page = await ControlHttpOperations.InspectPlanAsync(
+            commands,
+            control,
             planId,
             (offset / request.PageSize) + 1,
             request.PageSize,
-            control.Actor,
             cancellationToken).ConfigureAwait(false);
         var next = offset + page.Items.Count < page.Plan.ItemCount
             ? cursors.ProtectOffset(resource, control.TenantId, offset + page.Items.Count)
@@ -498,21 +488,17 @@ public static class ControlEndpoints
         HttpContext http,
         Guid planId,
         ApprovePlanRequest request,
-        DurablePlanService service,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         CancellationToken cancellationToken)
     {
-        var approvalId = StableGuid(IdempotencyEndpointFilter.GetExecutionToken(http));
-        var approval = await service.RecoverControlApprovalAsync(
-            control.TenantId, planId, request.Digest, approvalId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? await service.ApproveControlAsync(
-                control.TenantId,
-                planId,
-                request.Digest,
-                control.Actor,
-                approvalId,
-                cancellationToken).ConfigureAwait(false);
+        var approval = await ControlHttpOperations.ApprovePlanAsync(
+            commands,
+            control,
+            planId,
+            request.Digest,
+            IdempotencyEndpointFilter.GetExecutionToken(http),
+            cancellationToken).ConfigureAwait(false);
         return Results.Ok(new ApprovalResponse(
             approval.PlanId,
             approval.ApprovalId,
@@ -525,15 +511,15 @@ public static class ControlEndpoints
     private static async Task<IResult> QueueDryRunAsync(
         HttpContext http,
         Guid planId,
-        SyncOperationService service,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         CancellationToken cancellationToken)
     {
-        var operation = await service.QueueDryRunAsync(
-            control.TenantId,
+        var operation = await ControlHttpOperations.QueueDryRunAsync(
+            commands,
+            control,
             planId,
             IdempotencyEndpointFilter.GetExecutionToken(http),
-            control.Actor,
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,
@@ -547,16 +533,16 @@ public static class ControlEndpoints
         HttpContext http,
         Guid planId,
         ApplyPlanRequest request,
-        SyncOperationService service,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         CancellationToken cancellationToken)
     {
-        var operation = await service.QueueApplyAsync(
-            control.TenantId,
+        var operation = await ControlHttpOperations.QueueApplyAsync(
+            commands,
+            control,
             planId,
             request.ApprovalId,
             IdempotencyEndpointFilter.GetExecutionToken(http),
-            control.Actor,
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,
@@ -699,7 +685,7 @@ public static class ControlEndpoints
             : throw new KeyNotFoundException("The retained audit values were not found.");
 
     private static async Task<IResult> ListExclusionsAsync(
-        IControlApiQueries queries,
+        IEntitySyncControlCommands commands,
         ControlRequestContext control,
         ControlCursorProtector cursors,
         string sourceVendor,
@@ -715,13 +701,14 @@ public static class ControlEndpoints
         var resource = $"exclusions:{sourceVendor}:{sourceConnectionId}:{sourceEntityType}:" +
                        $"{targetVendor}:{targetConnectionId}:{targetEntityType}";
         var offset = Offset(cursors, cursor, resource, control, pageSize);
-        var values = await queries.ListExclusionsAsync(
+        var all = await ControlHttpOperations.ListExclusionsAsync(
+            commands,
+            control,
             Route(control, new ExclusionRouteContract(
                 sourceVendor, sourceConnectionId, sourceEntityType,
                 targetVendor, targetConnectionId, targetEntityType)),
-            offset,
-            pageSize + 1,
             cancellationToken).ConfigureAwait(false);
+        var values = all.Skip(offset).Take(pageSize + 1).ToArray();
         return Page(
             values.Select(ExclusionResponse.From).ToArray(),
             pageSize,

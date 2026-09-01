@@ -743,7 +743,7 @@ public sealed class OrchestraEntityAdapterTests
         connections.Register("tenant", "target", target);
         var planner = new EntitySyncPlanner(
             connections,
-            new InMemoryEntitySyncPlanRepository(),
+            new TestEntitySyncPlanRepository(),
             new InMemoryEntityExclusionRepository(),
             new WeightedEntityMatcher(),
             new DefaultEntityMapper(),
@@ -944,7 +944,7 @@ public sealed class OrchestraEntityAdapterTests
         connections.Register("tenant", "target", target);
         var planner = new EntitySyncPlanner(
             connections,
-            new InMemoryEntitySyncPlanRepository(),
+            new TestEntitySyncPlanRepository(),
             new InMemoryEntityExclusionRepository(),
             new WeightedEntityMatcher(),
             new DefaultEntityMapper(),

@@ -218,7 +218,7 @@ public static class ConnectionTools
     [Description("List tenant-scoped connected vendor adapters.")]
     public static async Task<string> ListConnections(
         IServiceProvider services,
-        IConnectionDefinitionRepository connections,
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
         CancellationToken cancellationToken = default)
     {
@@ -237,10 +237,8 @@ public static class ConnectionTools
             return JsonSerializer.Serialize(new { success = true, connections = local });
         }
 
-        var result = (await connections.ListAsync(
+        var result = (await commands.ListConnectionsAsync(
                 context.TenantId,
-                vendor: null,
-                enabled: null,
                 cancellationToken).ConfigureAwait(false))
             .Select(connection => new
             {

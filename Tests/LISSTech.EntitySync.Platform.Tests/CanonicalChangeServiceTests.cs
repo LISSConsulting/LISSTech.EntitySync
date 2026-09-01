@@ -104,7 +104,7 @@ public sealed class CanonicalChangeServiceTests
         connections.Register("tenant", "target", new CountingAdapter("HaloPSA", []));
         var planner = new EntitySyncPlanner(
             connections,
-            new InMemoryEntitySyncPlanRepository(),
+            new TestEntitySyncPlanRepository(),
             new InMemoryEntityExclusionRepository(),
             new WeightedEntityMatcher(),
             new DefaultEntityMapper(),

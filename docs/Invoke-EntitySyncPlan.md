@@ -12,6 +12,10 @@ Applies a reviewed EntitySync plan.
 
 ## DESCRIPTION
 Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
+For durable plans, `-PlanId` queues a run immediately. Apply also requires the
+matching one-time `-ApprovalId`; the cmdlet returns operation ID/status without
+waiting for vendor work. A consumed approval cannot authorize another run.
+
 
 `-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.
 

@@ -10,7 +10,7 @@ using LISSTech.EntitySync.Runtime;
 namespace LISSTech.EntitySync.Commands;
 
 [Cmdlet(VerbsLifecycle.Invoke, "EntitySyncChain", SupportsShouldProcess = true, ConfirmImpact = ConfirmImpact.High, DefaultParameterSetName = "Plan")]
-[OutputType(typeof(FileInfo), typeof(EntityWriteResult))]
+[OutputType(typeof(FileInfo), typeof(EntityWriteResult), typeof(EntitySyncOperation))]
 public sealed class InvokeEntitySyncChainCommand : PSCmdlet
 {
     [Parameter(ParameterSetName = "Plan")]
@@ -31,6 +31,18 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
 
     [Parameter(Mandatory = true, ParameterSetName = "Apply")]
     public SwitchParameter Apply { get; set; }
+    [Parameter(Mandatory = true, ParameterSetName = "Durable")]
+    public Guid[] PlanId { get; set; } = [];
+
+    [Parameter(ParameterSetName = "Durable")]
+    public Guid[] ApprovalId { get; set; } = [];
+
+    [Parameter(Mandatory = true, ParameterSetName = "Durable")]
+    public string IdempotencyKey { get; set; } = string.Empty;
+
+    [Parameter(ParameterSetName = "Durable")]
+    public SwitchParameter DurableApply { get; set; }
+
 
     [Parameter]
     public SwitchParameter PassThru { get; set; }
@@ -64,6 +76,12 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
     {
         try
         {
+            if (ParameterSetName.Equals("Durable", StringComparison.Ordinal))
+            {
+                InvokeDurableChain();
+                return;
+            }
+
             if (ParameterSetName.Equals("Apply", StringComparison.OrdinalIgnoreCase))
             {
                 ApplyReviewedPlans();
@@ -75,6 +93,50 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         catch (Exception ex)
         {
             ThrowTerminatingError(new ErrorRecord(ex, "InvokeEntitySyncChainFailed", ErrorCategory.InvalidOperation, null));
+        }
+    }
+
+    private void InvokeDurableChain()
+    {
+        if (!PowerShellControlRuntime.IsDurableConfigured)
+            throw new InvalidOperationException(
+                "Durable PowerShell control configuration is required.");
+        if (PlanId.Length == 0)
+            throw new InvalidOperationException("At least one -PlanId is required.");
+        if (DurableApply && ApprovalId.Length != PlanId.Length)
+            throw new InvalidOperationException(
+                "Durable apply requires one -ApprovalId for each -PlanId.");
+        using var control = PowerShellControlRuntime.Open();
+        for (var index = 0; index < PlanId.Length; index++)
+        {
+            var operationKey = $"{IdempotencyKey.Trim()}:{index}";
+            EntitySyncOperation operation;
+            if (DurableApply)
+            {
+                if (!ShouldProcess(
+                        PlanId[index].ToString(),
+                        "Queue durable EntitySync chain apply"))
+                    continue;
+                operation = control.Commands.QueueApplyAsync(
+                        control.TenantId,
+                        PlanId[index],
+                        ApprovalId[index],
+                        operationKey,
+                        control.Actor,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            else
+            {
+                operation = control.Commands.QueueDryRunAsync(
+                        control.TenantId,
+                        PlanId[index],
+                        operationKey,
+                        control.Actor,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            WriteObject(operation);
         }
     }
 

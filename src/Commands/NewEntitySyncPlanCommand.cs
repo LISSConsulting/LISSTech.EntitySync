@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using LISSTech.EntitySync.Application;
 using System.Collections.ObjectModel;
 using System.Management.Automation;
 using LISSTech.EntitySync.Adapters.BillCom;
@@ -15,7 +16,7 @@ using LISSTech.EntitySync.Runtime;
 namespace LISSTech.EntitySync.Commands;
 
 [Cmdlet(VerbsCommon.New, "EntitySyncPlan")]
-[OutputType(typeof(EntitySyncPlan))]
+[OutputType(typeof(EntitySyncPlan), typeof(EntitySyncDurablePlan))]
 public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
 {
     private readonly List<ExternalEntity> pipelineSources = new();
@@ -61,6 +62,19 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     [Parameter]
     [ValidateRange(0, int.MaxValue)]
     public int SourceCount { get; set; }
+    [Parameter]
+    public string? SourceEntityId { get; set; }
+
+    [Parameter]
+    public Guid? PolicyId { get; set; }
+
+    [Parameter]
+    public string? IdempotencyKey { get; set; }
+
+    [Parameter]
+    [ValidateRange(1, 1440)]
+    public int PlanLifetimeMinutes { get; set; } = 60;
+
 
     [Parameter]
     public int AutoLinkScore { get; set; } = 90;
@@ -89,6 +103,35 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         {
             TargetVendor = NormalizeVendorAlias(TargetVendor);
             SourceVendor = NormalizeVendorAlias(SourceVendor);
+            if (PowerShellControlRuntime.IsDurableConfigured)
+            {
+                if (pipelineSources.Count > 0)
+                    throw new InvalidOperationException(
+                        "Pipeline source objects are local-only and cannot create a durable control plan.");
+                using var control = PowerShellControlRuntime.Open();
+                var policyId = PolicyId
+                    ?? ParseRequiredGuidEnvironment("ENTITYSYNC_POLICY_ID");
+                if (string.IsNullOrWhiteSpace(IdempotencyKey))
+                    throw new InvalidOperationException(
+                        "-IdempotencyKey is required for durable plan creation.");
+                var command = control.Commands.CreatePlanAsync(
+                        new CreateDurablePlanRequest
+                        {
+                            TenantId = control.TenantId,
+                            IdempotencyKey = IdempotencyKey.Trim(),
+                            PolicyId = policyId,
+                            SourceSearch = SourceSearch,
+                            SourceCount = SourceCount > 0 ? SourceCount : null,
+                            SourceEntityId = SourceEntityId,
+                            PlanLifetime = TimeSpan.FromMinutes(PlanLifetimeMinutes)
+                        },
+                        control.Actor,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                WriteObject(command.Plan);
+                return;
+            }
+
             using var sourceLease = ConnectionRegistry.Acquire(SourceVendor);
             using var targetLease = ConnectionRegistry.Acquire(TargetVendor);
             var sourceAdapter = sourceLease.Connection.Adapter;
@@ -650,4 +693,13 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = null;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = null;
     }
+    private static Guid ParseRequiredGuidEnvironment(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (!Guid.TryParse(value, out var parsed) || parsed == Guid.Empty)
+            throw new InvalidOperationException(
+                $"{name} or -PolicyId must contain a non-empty GUID.");
+        return parsed;
+    }
+
 }

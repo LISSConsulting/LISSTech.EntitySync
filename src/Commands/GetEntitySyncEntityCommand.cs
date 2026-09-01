@@ -18,6 +18,9 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
     [Parameter(Mandatory = true, Position = 0)]
     [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
+    [Parameter]
+    public string? ConnectionId { get; set; }
+
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
@@ -79,8 +82,8 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             var entityType = DynamicValue<string?>("EntityType", null) ?? throw new InvalidOperationException("EntityType is required.");
             var query = new EntityQuery { EntityType = entityType, Search = Search, IncludeInactive = IncludeInactive, FullObjects = FullObjects, IncludeSiteDetails = FullObjects, ThrottleLimit = ThrottleLimit };
             if (Count > 0) query.Count = Count;
-            using var lease = ConnectionRegistry.Acquire(Vendor);
-            var adapter = lease.Connection.Adapter;
+            using var lease = PowerShellConnectionLease.Acquire(Vendor, ConnectionId);
+            var adapter = lease.Adapter;
             if (adapter is HaloEntityAdapter haloQueryAdapter && !FullObjects) query.RequiredCustomFieldName = string.Join(',', haloQueryAdapter.NetSuiteCustomerIdField, haloQueryAdapter.NetSuiteCustomerNameField);
             var traces = new ConcurrentQueue<string>();
             var progress = new ConcurrentQueue<EntitySyncProgress>();

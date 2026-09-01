@@ -458,7 +458,7 @@ public sealed class DurablePlanServiceTests
             DurableRepository = new MemoryDurableRepository(Time);
             Planner = new EntitySyncPlanner(
                 Connections,
-                new InMemoryEntitySyncPlanRepository(),
+                new TestEntitySyncPlanRepository(),
                 Exclusions,
                 new WeightedEntityMatcher(),
                 Mapper,

@@ -6,13 +6,25 @@ namespace LISSTech.EntitySync.Application;
 
 public sealed class EntitySyncPlanner(
     IConnectionRuntimeFactory connections,
-    IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
     IEntityMatcher matcher,
     IEntityMapper mapper,
     IEntitySyncChangeStateRepository changeStates)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
+    private IEntitySyncPlanRepository? legacyPlans;
+
+    public EntitySyncPlanner(
+        IConnectionRuntimeFactory connections,
+        IEntitySyncPlanRepository plans,
+        IEntityExclusionRepository exclusions,
+        IEntityMatcher matcher,
+        IEntityMapper mapper,
+        IEntitySyncChangeStateRepository changeStates)
+        : this(connections, exclusions, matcher, mapper, changeStates)
+    {
+        legacyPlans = plans;
+    }
 
     public async Task<EntitySyncPlan> CreateAsync(
         CreateEntitySyncPlanRequest request,
@@ -38,7 +50,7 @@ public sealed class EntitySyncPlanner(
             sourceLease,
             targetLease,
             cancellationToken).ConfigureAwait(false);
-        plans.Add(plan);
+        legacyPlans?.Add(plan);
         return plan;
     }
 

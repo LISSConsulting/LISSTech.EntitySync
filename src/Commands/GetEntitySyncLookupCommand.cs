@@ -14,6 +14,9 @@ public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
     [Parameter(Mandatory = true, Position = 0)]
     [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
+    [Parameter]
+    public string? ConnectionId { get; set; }
+
 
     private RuntimeDefinedParameterDictionary? dynamicParameters;
 
@@ -36,8 +39,9 @@ public sealed class GetEntitySyncLookupCommand : PSCmdlet, IDynamicParameters
             if (lookupTypes.Count == 0) return;
 
             var type = DynamicValue<string?>("Type", null) ?? throw new InvalidOperationException("Type is required.");
-            using var lease = ConnectionRegistry.Acquire(normalizedVendor);
-            var adapter = lease.Connection.Adapter;
+            using var lease = PowerShellConnectionLease.Acquire(
+                normalizedVendor, ConnectionId);
+            var adapter = lease.Adapter;
             var traces = new ConcurrentQueue<string>();
             var progress = new ConcurrentQueue<EntitySyncProgress>();
             if (adapter is HaloEntityAdapter haloAdapter)

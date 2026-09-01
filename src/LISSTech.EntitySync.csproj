@@ -11,6 +11,9 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="System.Management.Automation" Version="7.4.6" />
   </ItemGroup>
   <ItemGroup>
@@ -26,6 +29,7 @@
     <ProjectReference Include="Runtime\LISSTech.EntitySync.Runtime.csproj" />
     <ProjectReference Include="Artifacts\LISSTech.EntitySync.Artifacts.csproj" />
     <ProjectReference Include="Application\LISSTech.EntitySync.Application.csproj" />
+    <ProjectReference Include="Hosting\LISSTech.EntitySync.Hosting.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\en-US\*" CopyToOutputDirectory="PreserveNewest" Link="en-US\%(Filename)%(Extension)" />

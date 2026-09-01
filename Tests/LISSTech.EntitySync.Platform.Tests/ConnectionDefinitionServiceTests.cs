@@ -379,7 +379,7 @@ public sealed class ConnectionDefinitionServiceTests
             default);
         var planner = new EntitySyncPlanner(
             runtime,
-            new InMemoryEntitySyncPlanRepository(),
+            new TestEntitySyncPlanRepository(),
             new InMemoryEntityExclusionRepository(),
             new WeightedEntityMatcher(),
             new DefaultEntityMapper(),
