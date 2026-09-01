@@ -489,7 +489,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
         var item = Assert.Single(await Fixture.Operations.GetItemsAsync(
             Fixture.Tenant, queued.OperationId, default));
         var failed = new EntitySyncOperationItem(
-            item.TenantId, item.OperationId, item.PlanId, item.ItemId,
+            item.TenantId, item.OperationId, item.PlanId, item.ItemId, item.ItemIndex,
             item.SourceVendor, item.SourceConnectionId, item.SourceEntityType,
             item.SourceEntityKey, item.SourceEntityId, item.TargetVendor,
             item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,

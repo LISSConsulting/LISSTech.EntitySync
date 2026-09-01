@@ -343,6 +343,7 @@ public sealed record EntitySyncOperationItem
         Guid operationId,
         Guid planId,
         Guid itemId,
+        int itemIndex,
         string sourceVendor,
         string sourceConnectionId,
         string sourceEntityType,
@@ -367,9 +368,9 @@ public sealed record EntitySyncOperationItem
         DateTimeOffset? completedAt,
         EntityWriteParent? resolvedTargetParent = null)
         : this(
-            tenantId, operationId, planId, itemId, sourceVendor, sourceConnectionId,
-            sourceEntityType, sourceEntityKey, sourceEntityId, targetVendor,
-            targetConnectionId, targetEntityType, targetEntityId, action,
+            tenantId, operationId, planId, itemId, itemIndex, sourceVendor,
+            sourceConnectionId, sourceEntityType, sourceEntityKey, sourceEntityId,
+            targetVendor, targetConnectionId, targetEntityType, targetEntityId, action,
             redactedBefore, redactedDesired, beforePayloadSha256, desiredPayloadSha256,
             afterPayloadSha256, snapshotsExpireAt, vendorRequestId, outcome,
             errorCode, errorMessage, startedAt, completedAt,
@@ -382,6 +383,7 @@ public sealed record EntitySyncOperationItem
         Guid operationId,
         Guid planId,
         Guid itemId,
+        int itemIndex,
         string sourceVendor,
         string sourceConnectionId,
         string sourceEntityType,
@@ -411,6 +413,10 @@ public sealed record EntitySyncOperationItem
         OperationId = validateCommand ? ControlModelGuard.NonEmpty(operationId, nameof(operationId)) : operationId;
         PlanId = validateCommand ? ControlModelGuard.NonEmpty(planId, nameof(planId)) : planId;
         ItemId = validateCommand ? ControlModelGuard.NonEmpty(itemId, nameof(itemId)) : itemId;
+        if (itemIndex < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(itemIndex), itemIndex, "Item index cannot be negative.");
+        ItemIndex = itemIndex;
         SourceVendor = validateCommand
             ? EntitySyncVendors.Normalize(ControlModelGuard.Required(sourceVendor, nameof(sourceVendor)))
             : Preserve(sourceVendor, nameof(sourceVendor));
@@ -474,7 +480,7 @@ public sealed record EntitySyncOperationItem
     public Guid OperationId { get; }
     public Guid PlanId { get; }
     public Guid ItemId { get; }
-    public int ItemIndex { get; init; }
+    public int ItemIndex { get; }
     public string SourceVendor { get; }
     public string SourceConnectionId { get; }
     public string SourceEntityType { get; }
@@ -507,6 +513,7 @@ public sealed record EntitySyncOperationItem
         Guid operationId,
         Guid planId,
         Guid itemId,
+        int itemIndex,
         string sourceVendor,
         string sourceConnectionId,
         string sourceEntityType,
@@ -531,9 +538,9 @@ public sealed record EntitySyncOperationItem
         DateTimeOffset? completedAt,
         EntityWriteParent? resolvedTargetParent = null) =>
         new(
-            tenantId, operationId, planId, itemId, sourceVendor, sourceConnectionId,
-            sourceEntityType, sourceEntityKey, sourceEntityId, targetVendor,
-            targetConnectionId, targetEntityType, targetEntityId, action,
+            tenantId, operationId, planId, itemId, itemIndex, sourceVendor,
+            sourceConnectionId, sourceEntityType, sourceEntityKey, sourceEntityId,
+            targetVendor, targetConnectionId, targetEntityType, targetEntityId, action,
             redactedBefore, redactedDesired, beforePayloadSha256, desiredPayloadSha256,
             afterPayloadSha256, snapshotsExpireAt, vendorRequestId, outcome,
             errorCode, errorMessage, startedAt, completedAt,

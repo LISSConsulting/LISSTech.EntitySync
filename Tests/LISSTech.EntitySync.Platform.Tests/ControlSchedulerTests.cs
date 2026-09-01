@@ -230,7 +230,7 @@ public sealed class ControlSchedulerTests
     private static EntitySyncOperationItem OperationItem(
         EntitySyncItemOutcome outcome, bool dispatchStarted) =>
         EntitySyncOperationItem.Rehydrate(
-            "tenant", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "tenant", Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 0,
             "OrchestraMSP", "source", "Client", "key", "id",
             "HaloPSA", "target", "Client", "target-id", "Update",
             new EntitySyncJsonValue("{}"), new EntitySyncJsonValue("{}"), null,

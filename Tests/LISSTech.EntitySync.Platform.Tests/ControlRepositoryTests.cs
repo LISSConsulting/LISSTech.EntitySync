@@ -1706,7 +1706,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
         var completed = EntitySyncOperationItem.Rehydrate(
             items[0].TenantId, items[0].OperationId, items[0].PlanId, items[0].ItemId,
-            items[0].SourceVendor, items[0].SourceConnectionId, items[0].SourceEntityType,
+            items[0].ItemIndex, items[0].SourceVendor, items[0].SourceConnectionId,
+            items[0].SourceEntityType,
             items[0].SourceEntityKey, items[0].SourceEntityId, items[0].TargetVendor,
             items[0].TargetConnectionId, items[0].TargetEntityType, items[0].TargetEntityId,
             items[0].Action, items[0].RedactedBefore, items[0].RedactedDesired,
@@ -1964,7 +1965,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                         context.Now.AddMinutes(3))
                     : EntitySyncOperationItem.Rehydrate(
                         items[index].TenantId, items[index].OperationId,
-                        items[index].PlanId, items[index].ItemId,
+                        items[index].PlanId, items[index].ItemId, items[index].ItemIndex,
                         items[index].SourceVendor, items[index].SourceConnectionId,
                         items[index].SourceEntityType, items[index].SourceEntityKey,
                         items[index].SourceEntityId, items[index].TargetVendor,
@@ -2959,7 +2960,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         DateTimeOffset startedAt,
         DateTimeOffset completedAt) =>
         EntitySyncOperationItem.Rehydrate(
-            item.TenantId, item.OperationId, item.PlanId, item.ItemId,
+            item.TenantId, item.OperationId, item.PlanId, item.ItemId, item.ItemIndex,
             item.SourceVendor, item.SourceConnectionId, item.SourceEntityType,
             item.SourceEntityKey, item.SourceEntityId, item.TargetVendor,
             item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,
@@ -2974,7 +2975,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         DateTimeOffset expiresAt) =>
         planItems.Select(item => EntitySyncOperationItem.Rehydrate(
             operation.TenantId, operation.OperationId, operation.PlanId, item.ItemId,
-            item.SourceVendor, item.SourceConnectionId, item.SourceEntityType,
+            item.ItemOrdinal, item.SourceVendor, item.SourceConnectionId,
+            item.SourceEntityType,
             item.SourceEntityKey, item.SourceEntityId, item.TargetVendor,
             item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,
             item.Action, item.RedactedBefore, item.RedactedDesired,

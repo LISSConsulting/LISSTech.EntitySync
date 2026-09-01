@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Reflection;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Commands;
 using LISSTech.EntitySync.Ports;
 using Xunit;
 
@@ -262,6 +263,7 @@ public sealed class ControlModelTests
             operationId: Guid.NewGuid(),
             planId: PlanId,
             itemId: Guid.NewGuid(),
+            itemIndex: 17,
             sourceVendor: " halo ",
             sourceConnectionId: "source-1",
             sourceEntityType: " Company ",
@@ -291,6 +293,27 @@ public sealed class ControlModelTests
         Assert.Equal(" request ", item.VendorRequestId);
         Assert.Null(item.ErrorCode);
         Assert.Null(item.CompletedAt);
+    }
+
+    [Fact]
+    public void Local_orchestra_apply_requires_the_durable_control_operation()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+                apply: true,
+                EntitySyncVendors.OrchestraMSP));
+
+        Assert.StartsWith(
+            "ORCHESTRA_DURABLE_CONTROL_REQUIRED:",
+            error.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("correlation", error.Message, StringComparison.OrdinalIgnoreCase);
+        PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+            apply: false,
+            EntitySyncVendors.OrchestraMSP);
+        PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+            apply: true,
+            "HaloPSA");
     }
 
     [Fact]

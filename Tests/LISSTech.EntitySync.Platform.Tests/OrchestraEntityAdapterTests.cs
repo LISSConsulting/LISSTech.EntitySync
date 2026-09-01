@@ -1180,6 +1180,7 @@ public sealed class OrchestraEntityAdapterTests
             Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
             Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
             Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            3,
             "NCentral",
             "ncentral-prod",
             "Site",
@@ -1385,8 +1386,7 @@ public sealed class OrchestraEntityAdapterTests
         Assert.Equal(Correlation.PlanId, correlation.GetProperty("plan_id").GetGuid());
         Assert.Equal(Correlation.RunId, correlation.GetProperty("run_id").GetGuid());
         Assert.Equal(Correlation.ItemIndex, correlation.GetProperty("item_index").GetInt32());
-        Assert.Equal(Correlation.CorrelationId,
-            correlation.GetProperty("correlation_id").GetGuid());
+        Assert.False(correlation.TryGetProperty("correlation_id", out _));
         Assert.False(correlation.TryGetProperty("request_id", out _));
         Assert.NotEqual(Correlation.OperationId, Correlation.PlanId);
         Assert.NotEqual(Correlation.OperationId, Correlation.RunId);

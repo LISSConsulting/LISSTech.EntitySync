@@ -101,6 +101,9 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             Plan = localPlan;
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
             if (Apply) ReviewedPlanPolicy.EnsureApproved(Plan);
+            PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+                Apply,
+                Plan.TargetVendor);
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions

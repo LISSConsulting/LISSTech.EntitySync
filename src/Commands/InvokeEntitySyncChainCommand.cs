@@ -202,6 +202,9 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         {
             var plan = ReadPlan(planPaths[planIndex]);
             ReviewedPlanPolicy.EnsureApproved(plan);
+            PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+                apply: true,
+                plan.TargetVendor);
             if (!ShouldProcess($"{plan.SourceVendor} -> {plan.TargetVendor}", "Apply reviewed EntitySync plan")) continue;
             using var targetLease = ConnectionRegistry.Acquire(plan.TargetVendor);
             using var haloLease = plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !plan.TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)

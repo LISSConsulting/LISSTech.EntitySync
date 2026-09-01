@@ -35,6 +35,13 @@ internal static class PowerShellControlRuntime
     internal static bool IsDurableConfigured =>
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DATABASE_URL"));
 
+    internal static void RejectUnsafeLocalOrchestraApply(bool apply, string targetVendor)
+    {
+        if (apply && EntitySyncVendors.IsOrchestraMSP(targetVendor))
+            throw new InvalidOperationException(
+                "ORCHESTRA_DURABLE_CONTROL_REQUIRED: OrchestraMSP writes require a durable control operation. Use -PlanId, -IdempotencyKey, -ApprovalId, and -Apply.");
+    }
+
     internal static PowerShellControlLease Open()
     {
         var tenantId = RequireEnvironment("ENTITYSYNC_TENANT_ID");

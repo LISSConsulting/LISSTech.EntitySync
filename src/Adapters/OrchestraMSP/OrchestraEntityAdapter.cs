@@ -487,14 +487,9 @@ public sealed class OrchestraEntityAdapter :
             "OrchestraMSP supports Client, Site, and Address entities.");
     }
 
-    private static CommandCorrelation ToCommandCorrelation(
+    private static OrchestraCommandCorrelation ToCommandCorrelation(
         EntityWriteCorrelation correlation) =>
-        new(
-            correlation.OperationId,
-            correlation.PlanId,
-            correlation.RunId,
-            correlation.ItemIndex,
-            correlation.CorrelationId);
+        OrchestraCommandCorrelation.From(correlation);
 
     private static WriteRoute ResolveWriteRoute(
         EntityWriteRequest request,
@@ -699,32 +694,26 @@ public sealed class OrchestraEntityAdapter :
         string Path,
         ParentIdentities Parents);
 
-    private sealed record CommandCorrelation(
-        Guid OperationId,
-        Guid PlanId,
-        Guid RunId,
-        int ItemIndex,
-        Guid CorrelationId);
     private sealed record ClientCreateCommand(
         string Name,
         string LifecycleStatus,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
     private sealed record ClientUpdateCommand(
         string Name,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
     private sealed record SiteCreateCommand(
         Guid ClientId,
         string Name,
         string LifecycleStatus,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
     private sealed record SiteUpdateCommand(
         Guid ClientId,
         string Name,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
     private sealed record AddressCreateCommand(
         Guid ClientId,
         Guid? SiteId,
@@ -739,7 +728,7 @@ public sealed class OrchestraEntityAdapter :
         string? PostalCode,
         string? Country,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
     private sealed record AddressUpdateCommand(
         Guid ClientId,
         Guid? SiteId,
@@ -753,7 +742,7 @@ public sealed class OrchestraEntityAdapter :
         string? PostalCode,
         string? Country,
         IReadOnlyDictionary<string, object?> Fields,
-        CommandCorrelation Correlation);
+        OrchestraCommandCorrelation Correlation);
 
     public void Dispose()
     {

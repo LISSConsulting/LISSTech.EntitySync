@@ -99,7 +99,7 @@ The focused tests use real asynchronous HTTP over a loopback socket. They do not
 
 - Pre-migration incompatibility: durable operations stored operation/plan/idempotency only; neither an authoritative run UUID nor the original request correlation UUID existed, and operation items did not persist their plan ordinal. Migration `019_operation_audit_correlation` therefore adds nullable legacy-safe operation run/correlation UUIDs plus a required item index, backfills only the index from the authoritative plan item ordinal, and fails rather than fabricating missing identity for any replayable legacy operation.
 - New operations persist distinct operation, plan, run, and correlation UUIDs. The application worker and unknown-outcome reconciler reconstruct the immutable typed tuple with the persisted item index. Retry/restart paths reuse it while the opaque idempotency key remains independent.
-- Orchestra client/site/address create and update commands and platform-link PUT use one snake-case command-correlation shape (`operation_id`, `plan_id`, `run_id`, `item_index`, `correlation_id`) and the exact UUID `X-Correlation-ID` header. No `request_id` alias is serialized.
+- Orchestra client/site/address create and update commands and platform-link PUT use one snake-case command-correlation shape (`operation_id`, `plan_id`, `run_id`, `item_index`) and the exact UUID `X-Correlation-ID` header. No `correlation_id` or `request_id` alias is serialized in the body.
 - Verification: Orchestra adapter contract tests passed 43/43; durable operation/restart tests passed 14/14; migration application/idempotency passed 1/1; the full focused test project Release build passed with 0 errors.
 - Security review: correlation values originate at the control boundary and are persisted before dispatch; no payload, secret, token, or raw vendor value was added to logs or storage. Invalid/missing replay identity fails closed.
 
@@ -107,3 +107,11 @@ The focused tests use real asynchronous HTTP over a loopback socket. They do not
 
 - Updated all post-019 raw-SQL operation fixtures with distinct run/correlation UUIDs and all operation-item fixtures with their authoritative plan ordinal. Existing tests now reach the constraints they were designed to verify; the production migration constraints were not weakened.
 - GREEN: the complete `ControlPlaneMigrationTests` class passed 23/23, including application/idempotency and the seven formerly shadowed constraint cases. `DurableOperationTests` remained green at 14/14.
+
+## Canonical audit-correlation fix round 2 — exact wire shape and immutable item index
+
+- Removed the header-only correlation UUID from the command body DTO and consolidated all Orchestra entity and platform-link writes on the same explicit four-field wire type. The exact `X-Correlation-ID` remains sourced independently from the durable typed correlation, and `Idempotency-Key` is unchanged.
+- Made the persisted plan item index a required operation-item constructor and rehydration argument. Queueing, worker checkpoint copies, reconciliation copies, and PostgreSQL hydration now preserve it explicitly rather than relying on a mutable initializer default.
+- Local nondurable `Invoke-EntitySyncPlan` and `Invoke-EntitySyncChain` Orchestra apply paths reject before connection acquisition, mapping, or adapter dispatch with `ORCHESTRA_DURABLE_CONTROL_REQUIRED`; they do not invent operation/run/correlation identity. Durable PowerShell queueing remains the supported write surface.
+- GREEN: Orchestra adapter contract tests passed 43/43; the nondurable guard contract passed 1/1; the complete Platform.Tests project compiled with 0 errors; exact Adapter, Runtime, Hosting, MCP, PowerShell module, and Scheduler Release builds passed. The migration fixture correction remained green at 23/23 and durable operation/restart coverage at 14/14 from fix round 1.
+- Security self-review: body and header correlation cannot be conflated, replay identity is immutable and fail-closed, nondurable writes do not synthesize audit identity, and no payload, secret, token, or raw vendor value is logged or persisted.

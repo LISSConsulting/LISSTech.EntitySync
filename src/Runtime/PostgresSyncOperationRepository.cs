@@ -1948,8 +1948,9 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
     {
         var item = EntitySyncOperationItem.Rehydrate(
             reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2),
-            reader.GetGuid(3), reader.GetString(5), reader.GetString(6),
-            reader.GetString(7), reader.GetString(8), reader.GetString(9),
+            reader.GetGuid(3), reader.GetInt32(4), reader.GetString(5),
+            reader.GetString(6), reader.GetString(7), reader.GetString(8),
+            reader.GetString(9),
             reader.GetString(10), reader.GetString(11), reader.GetString(12),
             PostgresControlPersistence.NullableString(reader, 13),
             reader.GetString(14), new EntitySyncJsonValue(reader.GetString(15)),
@@ -1969,7 +1970,6 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 PostgresControlPersistence.NullableString(reader, 30)));
         return item with
         {
-            ItemIndex = reader.GetInt32(4),
             DispatchStartedAt = PostgresControlPersistence.NullableTime(reader, 27),
             VendorTargetEntityId =
                 PostgresControlPersistence.NullableString(reader, 28),

@@ -17,6 +17,24 @@ public sealed record OrchestraPlatformLinkCommand(
     Guid EntityId,
     EntityWriteCorrelation Correlation);
 
+internal sealed record OrchestraCommandCorrelation(
+    Guid OperationId,
+    Guid PlanId,
+    Guid RunId,
+    int ItemIndex)
+{
+    internal static OrchestraCommandCorrelation From(
+        EntityWriteCorrelation correlation)
+    {
+        ArgumentNullException.ThrowIfNull(correlation);
+        return new(
+            correlation.OperationId,
+            correlation.PlanId,
+            correlation.RunId,
+            correlation.ItemIndex);
+    }
+}
+
 public sealed class OrchestraClientDirectoryClient : IDisposable
 {
     private const int PageSize = 100;
@@ -158,7 +176,14 @@ public sealed class OrchestraClientDirectoryClient : IDisposable
         var json = await SendWriteAsync(
             HttpMethod.Put,
             "platform-links",
-            command,
+            new OrchestraPlatformLinkWriteCommand(
+                command.PlatformInstanceId,
+                command.Platform,
+                command.ExternalId,
+                command.Status,
+                command.EntityType,
+                command.EntityId,
+                OrchestraCommandCorrelation.From(command.Correlation)),
             idempotencyKey,
             command.Correlation.CorrelationId,
             expectedVersion: null,
@@ -411,6 +436,15 @@ internal sealed class OrchestraAddressContract
     public List<string> Tags { get; init; } = [];
     public List<OrchestraPlatformLinkContract> PlatformLinks { get; init; } = [];
 }
+
+internal sealed record OrchestraPlatformLinkWriteCommand(
+    string PlatformInstanceId,
+    string Platform,
+    string ExternalId,
+    string Status,
+    string EntityType,
+    Guid EntityId,
+    OrchestraCommandCorrelation Correlation);
 
 internal sealed class OrchestraPlatformLinkContract
 {

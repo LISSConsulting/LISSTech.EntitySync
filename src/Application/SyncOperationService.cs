@@ -234,17 +234,14 @@ public sealed class SyncOperationService(
             foreach (var item in page.Items)
             {
                 result.Add(new EntitySyncOperationItem(
-                    tenantId, operationId, plan.PlanId, item.ItemId,
+                    tenantId, operationId, plan.PlanId, item.ItemId, item.ItemOrdinal,
                     item.SourceVendor, item.SourceConnectionId, item.SourceEntityType,
                     item.SourceEntityKey, item.SourceEntityId, item.TargetVendor,
                     item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,
                     item.Action, item.RedactedBefore, item.RedactedDesired,
                     item.BeforePayloadSha256, item.DesiredPayloadSha256, null,
                     snapshotsExpireAt, null, EntitySyncItemOutcome.Pending,
-                    null, null, null, null, item.ResolvedTargetParent)
-                {
-                    ItemIndex = item.ItemOrdinal
-                });
+                    null, null, null, null, item.ResolvedTargetParent));
             }
         }
         if (result.Count != plan.ItemCount)
