@@ -6,6 +6,20 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Application;
 
+public interface IEntitySyncOperationRouteLease : IAsyncDisposable
+{
+    Task<bool> TryRenewAsync(TimeSpan leaseDuration, CancellationToken cancellationToken);
+}
+
+public interface IEntitySyncOperationRouteLock
+{
+    Task<IEntitySyncOperationRouteLease?> TryAcquireAsync(
+        EntitySyncOperation operation,
+        string owner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken);
+}
+
 public sealed class EntitySyncOperationWorker(
     ISyncOperationRepository operations,
     IDurableSyncPlanRepository plans,
@@ -16,7 +30,8 @@ public sealed class EntitySyncOperationWorker(
     VendorOutcomeReconciler reconciler,
     SyncAuditService audits,
     TimeProvider? timeProvider = null,
-    EntitySyncOperationWorkerOptions? options = null)
+    EntitySyncOperationWorkerOptions? options = null,
+    IEntitySyncOperationRouteLock? operationRouteLock = null)
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private readonly EntitySyncOperationWorkerOptions workerOptions =
@@ -32,6 +47,17 @@ public sealed class EntitySyncOperationWorker(
             tenantId, leaseOwner, now, now + workerOptions.LeaseDuration,
             cancellationToken).ConfigureAwait(false);
         if (operation is null) return null;
+        await using var routeLease = operationRouteLock is null
+            ? null
+            : await operationRouteLock.TryAcquireAsync(
+                operation, leaseOwner + ":route", workerOptions.LeaseDuration,
+                cancellationToken).ConfigureAwait(false);
+        if (operationRouteLock is not null && routeLease is null) return operation;
+        using var ownership = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cancellationToken = ownership.Token;
+        var routeRenewal = routeLease is null
+            ? Task.CompletedTask
+            : MaintainRouteLeaseAsync(routeLease, ownership);
         var running = operation.Start(clock.GetUtcNow());
         if (!await operations.TryReplaceAsync(
                 tenantId, operation.OperationId, EntitySyncOperationStatus.Leased,
@@ -311,6 +337,34 @@ public sealed class EntitySyncOperationWorker(
                     tenantId, running, pending, leaseOwner, null, null,
                     "WORKER_FAILED_AFTER_DISPATCH").ConfigureAwait(false);
             return await FinalizeAsync(tenantId, running, leaseOwner).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ownership.CancelAsync().ConfigureAwait(false);
+            try
+            {
+                await routeRenewal.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ownership.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
+    private async Task MaintainRouteLeaseAsync(
+        IEntitySyncOperationRouteLease routeLease,
+        CancellationTokenSource ownership)
+    {
+        var interval = TimeSpan.FromTicks(workerOptions.LeaseDuration.Ticks / 3);
+        while (!ownership.IsCancellationRequested)
+        {
+            await Task.Delay(interval, clock, ownership.Token).ConfigureAwait(false);
+            if (!await routeLease.TryRenewAsync(
+                    workerOptions.LeaseDuration, ownership.Token).ConfigureAwait(false))
+            {
+                await ownership.CancelAsync().ConfigureAwait(false);
+                return;
+            }
         }
     }
 

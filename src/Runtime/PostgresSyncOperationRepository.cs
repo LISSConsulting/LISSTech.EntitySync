@@ -1053,6 +1053,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    encrypted_after_ciphertext, expires_at
             FROM entitysync.sync_operation_item_snapshots
             WHERE tenant_id = @tenant_id AND operation_id = @operation_id AND item_id = @item_id
+              AND (encrypted_before_ciphertext IS NOT NULL
+                   OR encrypted_after_ciphertext IS NOT NULL)
             """;
         await using var command = dataSource.CreateCommand(sql);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);

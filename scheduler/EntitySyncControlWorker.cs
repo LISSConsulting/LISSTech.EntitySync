@@ -204,7 +204,8 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     .ConfigureAwait(false);
 
             string? sourceEntityId = null;
-            if (work.Kind == SyncControlWorkKind.CanonicalChange)
+            CanonicalEntityVersion? pinnedCanonicalSource = null;
+            if (work.Kind == SyncControlWorkKind.CanonicalChange && work.PlanId is null)
             {
                 var sourceDefinition = await connectionDefinitions.GetAsync(
                     work.TenantId, policy.Definition.SourceConnectionId, cancellationToken)
@@ -229,32 +230,60 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     timeProvider.GetUtcNow());
                 var read = await CanonicalChangeService.ReadAssertedVersionAsync(
                     versioned, canonical, cancellationToken).ConfigureAwait(false);
-                if (read.Status != CanonicalVersionReadStatus.Exact)
+                if (read.Status != CanonicalVersionReadStatus.Exact || read.Entity is null)
                     return await HoldAsync(
                         work, "CANONICAL_" + read.Status.ToString().ToUpperInvariant(),
                         cancellationToken).ConfigureAwait(false);
                 sourceEntityId = work.CanonicalEntityId.Value.ToString("D");
+                pinnedCanonicalSource = new CanonicalEntityVersion(
+                    work.CanonicalEntityId.Value, work.CanonicalVersion.Value, read.Entity);
             }
 
-            var plan = await durablePlans.CreatePlanAsync(
-                new CreateDurablePlanRequest
-                {
-                    TenantId = work.TenantId,
-                    IdempotencyKey = $"control-work:{work.WorkId:N}",
-                    PolicyId = work.PolicyId,
-                    PolicyVersion = work.PolicyVersion,
-                    SourceEntityId = sourceEntityId,
-                    PlanLifetime = TimeSpan.FromHours(4)
-                },
-                new EntitySyncActor("entitysync-control-worker"),
-                cancellationToken).ConfigureAwait(false);
-            if (plan.ItemCount == 0)
-                return await HoldAsync(work, "NO_PLAN_ITEMS", cancellationToken)
-                    .ConfigureAwait(false);
-
             var actor = new EntitySyncActor("entitysync-control-worker");
+            IReadOnlyList<EntitySyncDurablePlanItem>? recoveredFirstPage = null;
+            DurablePlanResult plan;
+            if (work.PlanId is null)
+            {
+                plan = await durablePlans.CreatePlanAsync(
+                    new CreateDurablePlanRequest
+                    {
+                        TenantId = work.TenantId,
+                        IdempotencyKey = $"control-work:{work.WorkId:N}",
+                        PolicyId = work.PolicyId,
+                        PolicyVersion = work.PolicyVersion,
+                        SourceEntityId = sourceEntityId,
+                        PinnedCanonicalSource = pinnedCanonicalSource,
+                        PlanLifetime = TimeSpan.FromHours(4)
+                    },
+                    actor,
+                    cancellationToken).ConfigureAwait(false);
+                if (plan.ItemCount == 0)
+                    return await HoldAsync(work, "NO_PLAN_ITEMS", cancellationToken)
+                        .ConfigureAwait(false);
+                var planDigest = new EntitySyncSha256(plan.Digest);
+                if (!await queue.TryCheckpointPlanAsync(
+                        work, plan.PlanId, planDigest, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException("Control work lost its plan checkpoint fence.");
+                work = work with { PlanId = plan.PlanId, PlanDigestSha256 = planDigest };
+            }
+            else
+            {
+                if (work.PlanDigestSha256 is null)
+                    throw new InvalidOperationException("Checkpointed plan digest is missing.");
+                var firstPage = await durablePlans.GetPageAsync(
+                    work.TenantId, work.PlanId.Value, 1, 100, actor, cancellationToken)
+                    .ConfigureAwait(false);
+                plan = firstPage.Plan;
+                if (plan.Digest != work.PlanDigestSha256.Value)
+                    throw new InvalidOperationException("Checkpointed plan digest changed.");
+                recoveredFirstPage = firstPage.Items;
+            }
+
             var items = new List<EntitySyncDurablePlanItem>(plan.ItemCount);
-            for (var page = 1; page <= plan.PageCount(100); page++)
+            if (recoveredFirstPage is not null) items.AddRange(recoveredFirstPage);
+            for (var page = recoveredFirstPage is null ? 1 : 2;
+                 page <= plan.PageCount(100);
+                 page++)
             {
                 var inspected = await durablePlans.GetPageAsync(
                     work.TenantId, plan.PlanId, page, 100, actor, cancellationToken)
@@ -265,15 +294,36 @@ public sealed class EntitySyncControlWorker : BackgroundService
                 return await HoldAsync(work, "UNSAFE_PLAN_HELD", cancellationToken)
                     .ConfigureAwait(false);
 
-            var approval = await durablePlans.ApproveAsync(
-                work.TenantId, plan.PlanId, plan.Digest, actor, cancellationToken)
-                .ConfigureAwait(false);
-            var operation = await operationService.QueueApplyAsync(
-                work.TenantId, plan.PlanId, approval.ApprovalId,
-                $"control-work:{work.WorkId:N}:apply", actor, cancellationToken)
-                .ConfigureAwait(false);
+            var approvalId = work.ApprovalId;
+            if (approvalId is null)
+            {
+                var deterministicApprovalId =
+                    PostgresSyncWorkQueue.CreateControlApprovalId(work.WorkId);
+                var approval = await durablePlans.ApproveControlAsync(
+                    work.TenantId, plan.PlanId, plan.Digest, actor,
+                    deterministicApprovalId, cancellationToken).ConfigureAwait(false);
+                approvalId = approval.ApprovalId;
+                if (!await queue.TryCheckpointApprovalAsync(
+                        work, approvalId.Value, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException("Control work lost its approval checkpoint fence.");
+                work = work with { ApprovalId = approvalId };
+            }
+
+            var operationId = work.OperationId;
+            if (operationId is null)
+            {
+                var operation = await operationService.QueueApplyAsync(
+                    work.TenantId, plan.PlanId, approvalId.Value,
+                    $"control-work:{work.WorkId:N}:apply", actor, cancellationToken)
+                    .ConfigureAwait(false);
+                operationId = operation.OperationId;
+                if (!await queue.TryCheckpointOperationAsync(
+                        work, operationId.Value, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException("Control work lost its operation checkpoint fence.");
+                work = work with { OperationId = operationId };
+            }
             if (!await queue.TryCompleteAsync(
-                    work, plan.PlanId, approval.ApprovalId, operation.OperationId,
+                    work, plan.PlanId, approvalId.Value, operationId.Value,
                     cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException(
                     "Control work lost its owner/attempt/lease completion fence.");
@@ -287,10 +337,8 @@ public sealed class EntitySyncControlWorker : BackgroundService
         {
             logger.LogWarning(
                 exception,
-                "EntitySync control work {WorkId} was held for reconciliation.",
+                "EntitySync control work {WorkId} will resume after its fenced lease expires.",
                 work.WorkId);
-            await queue.TryHoldAsync(work, "CONTROL_WORK_RECONCILIATION_REQUIRED",
-                CancellationToken.None).ConfigureAwait(false);
             return true;
         }
         finally

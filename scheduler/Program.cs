@@ -47,7 +47,11 @@ namespace LISSTech.EntitySync.Scheduler
                 services => services.GetRequiredService<PostgresSyncWorkQueue>());
             builder.Services.AddSingleton<IEntitySyncWorkSignal>(
                 services => services.GetRequiredService<PostgresSyncWorkQueue>());
-            builder.Services.AddSingleton<IEntitySyncRouteLock, PostgresRouteLock>();
+            builder.Services.AddSingleton<PostgresRouteLock>();
+            builder.Services.AddSingleton<IEntitySyncRouteLock>(
+                services => services.GetRequiredService<PostgresRouteLock>());
+            builder.Services.AddSingleton<IEntitySyncOperationRouteLock>(
+                services => services.GetRequiredService<PostgresRouteLock>());
             builder.Services.AddSingleton<CanonicalChangeService>();
             builder.Services.AddSingleton<EntitySyncControlWorker>();
             builder.Services.AddHostedService(

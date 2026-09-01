@@ -1,11 +1,12 @@
+using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Core;
 using Npgsql;
 using NpgsqlTypes;
 
 namespace LISSTech.EntitySync.Scheduler;
 
-public interface IEntitySyncRouteLease : IAsyncDisposable
+public interface IEntitySyncRouteLease : IEntitySyncOperationRouteLease
 {
-    Task<bool> TryRenewAsync(TimeSpan leaseDuration, CancellationToken cancellationToken);
 }
 
 public interface IEntitySyncRouteLock
@@ -18,12 +19,23 @@ public interface IEntitySyncRouteLock
         CancellationToken cancellationToken);
 }
 
-public sealed class PostgresRouteLock(NpgsqlDataSource dataSource) : IEntitySyncRouteLock
+public sealed class PostgresRouteLock(NpgsqlDataSource dataSource)
+    : IEntitySyncRouteLock, IEntitySyncOperationRouteLock
 {
     public static bool CanTakeLease(
         DateTimeOffset existingLeaseExpiresAt,
         DateTimeOffset databaseNow) =>
         existingLeaseExpiresAt <= databaseNow;
+
+    async Task<IEntitySyncOperationRouteLease?>
+        IEntitySyncOperationRouteLock.TryAcquireAsync(
+            EntitySyncOperation operation,
+            string owner,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) =>
+        await TryAcquireAsync(
+            operation.TenantId, operation.RouteScope, owner, leaseDuration,
+            cancellationToken).ConfigureAwait(false);
 
     public async Task<IEntitySyncRouteLease?> TryAcquireAsync(
         string tenantId,

@@ -12,4 +12,8 @@
     <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
     <ProjectReference Include="..\Planning\LISSTech.EntitySync.Planning.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="lisstech-entitysync-scheduler" />
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
+  </ItemGroup>
 </Project>

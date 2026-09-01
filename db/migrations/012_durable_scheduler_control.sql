@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_control_work (
     work_id uuid NOT NULL,
     work_kind text NOT NULL CHECK (work_kind IN ('Schedule','CanonicalChange')),
     state text NOT NULL CHECK (state IN ('Queued','Leased','Planning','Held','Completed')),
+    checkpoint text NOT NULL DEFAULT 'Pending'
+        CHECK (checkpoint IN ('Pending','Planned','Approved','OperationQueued')),
     policy_id uuid NOT NULL,
     policy_version integer NOT NULL CHECK (policy_version > 0),
     route_scope text NOT NULL,
@@ -77,6 +79,8 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_control_work (
     canonical_version bigint,
     changed_fields jsonb,
     payload_sha256 char(64),
+    plan_digest_sha256 char(64),
+    not_before timestamptz NOT NULL DEFAULT '-infinity',
     lease_owner text,
     lease_expires_at timestamptz,
     attempt integer NOT NULL DEFAULT 0 CHECK (attempt >= 0),
@@ -99,6 +103,11 @@ CREATE TABLE IF NOT EXISTS entitysync.sync_control_work (
          AND canonical_entity_id IS NOT NULL AND canonical_version IS NOT NULL
          AND changed_fields IS NOT NULL AND payload_sha256 IS NOT NULL)),
     CHECK (payload_sha256 IS NULL OR payload_sha256 ~ '^[0-9a-f]{64}$'),
+    CHECK (plan_digest_sha256 IS NULL OR plan_digest_sha256 ~ '^[0-9a-f]{64}$'),
+    CHECK ((plan_id IS NULL) = (plan_digest_sha256 IS NULL)),
+    CHECK (checkpoint = 'Pending' OR plan_id IS NOT NULL),
+    CHECK (checkpoint NOT IN ('Approved','OperationQueued') OR approval_id IS NOT NULL),
+    CHECK (checkpoint <> 'OperationQueued' OR operation_id IS NOT NULL),
     CHECK ((state = 'Held') = (hold_reason IS NOT NULL))
 );
 
@@ -110,7 +119,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS sync_control_work_canonical_policy_uidx
     ON entitysync.sync_control_work (tenant_id, canonical_event_id, policy_id, policy_version)
     WHERE work_kind = 'CanonicalChange';
 CREATE INDEX IF NOT EXISTS sync_control_work_lease_idx
-    ON entitysync.sync_control_work (tenant_id, state, lease_expires_at, created_at);
+    ON entitysync.sync_control_work (tenant_id, state, not_before, lease_expires_at, created_at);
 
 CREATE TABLE IF NOT EXISTS entitysync.sync_route_leases (
     tenant_id text NOT NULL,
@@ -193,6 +202,25 @@ BEGIN
         RAISE EXCEPTION 'Ciphertext can only be scrubbed once after database expiry'
             USING ERRCODE = '55000';
     END IF;
+    IF TG_TABLE_NAME = 'audit_event_full_values' THEN
+        IF NEW.audit_event_id IS DISTINCT FROM OLD.audit_event_id
+           OR NEW.full_values_ciphertext IS NOT NULL THEN
+            RAISE EXCEPTION 'Audit retention scrub cannot alter identity or metadata'
+                USING ERRCODE = '55000';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'sync_operation_item_snapshots' THEN
+        IF NEW.operation_id IS DISTINCT FROM OLD.operation_id
+           OR NEW.item_id IS DISTINCT FROM OLD.item_id
+           OR NEW.encrypted_before_ciphertext IS NOT NULL
+           OR NEW.encrypted_after_ciphertext IS NOT NULL THEN
+            RAISE EXCEPTION 'Operation snapshot scrub cannot alter identity or metadata'
+                USING ERRCODE = '55000';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'Unsupported retention table'
+            USING ERRCODE = '55000';
+    END IF;
+    NEW.values_redacted_at := clock_timestamp();
     RETURN NEW;
 END;
 $$;

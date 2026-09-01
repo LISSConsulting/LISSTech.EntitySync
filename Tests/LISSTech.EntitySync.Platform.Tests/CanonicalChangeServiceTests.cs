@@ -1,6 +1,10 @@
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using Xunit;
+using LISSTech.EntitySync.Mapping;
+using LISSTech.EntitySync.Matching;
+using LISSTech.EntitySync.Ports;
+using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Platform.Tests;
 
@@ -83,6 +87,47 @@ public sealed class CanonicalChangeServiceTests
 
     private static EntitySyncSha256 Hash(char value) => new(new string(value, 64));
 
+    [Fact]
+    public async Task Pinned_canonical_snapshot_is_planned_without_rereading_latest()
+    {
+        var id = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var pinned = new ExternalEntity
+        {
+            Vendor = "OrchestraMSP",
+            EntityType = "Client",
+            Id = id.ToString("D"),
+            Name = "version-7"
+        };
+        using var connections = new InMemoryEntityConnectionRepository();
+        var source = new CountingAdapter("OrchestraMSP", []);
+        connections.Register("tenant", "source", source);
+        connections.Register("tenant", "target", new CountingAdapter("HaloPSA", []));
+        var planner = new EntitySyncPlanner(
+            connections,
+            new InMemoryEntitySyncPlanRepository(),
+            new InMemoryEntityExclusionRepository(),
+            new WeightedEntityMatcher(),
+            new DefaultEntityMapper(),
+            new InMemoryEntitySyncChangeStateRepository());
+
+        var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "OrchestraMSP",
+            SourceConnectionId = "source",
+            SourceEntityType = "Client",
+            SourceEntityId = id.ToString("D"),
+            PinnedCanonicalSource = new CanonicalEntityVersion(id, 7, pinned),
+            TargetVendor = "HaloPSA",
+            TargetConnectionId = "target",
+            TargetEntityType = "Client"
+        }, default);
+
+        Assert.Equal(0, source.EntityReads);
+        Assert.Single(plan.Items);
+        Assert.Equal("version-7", plan.Items[0].Source.Name);
+    }
+
     private sealed class MemoryCanonicalRepository : ICanonicalChangeRepository
     {
         private readonly Dictionary<string, (CanonicalChangeRequest Request, CanonicalChangeReceipt Receipt)> receipts = [];
@@ -139,6 +184,32 @@ public sealed class CanonicalChangeServiceTests
             RequestedVersion = assertedVersion;
             return Task.FromResult<CanonicalEntityVersion?>(result);
         }
+    }
+
+    private sealed class CountingAdapter(
+        string vendor,
+        IReadOnlyList<ExternalEntity> entities) : IEntityAdapter
+    {
+        public string Vendor { get; } = vendor;
+        public IReadOnlyList<string> LookupTypes => [];
+        public int EntityReads { get; private set; }
+        public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
+            EntityQuery query, CancellationToken cancellationToken)
+        {
+            EntityReads++;
+            return Task.FromResult(entities);
+        }
+        public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(
+            string type, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
+        public Task<EntityWriteResult> CreateEntityAsync(
+            EntityWriteRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<EntityWriteResult> UpdateEntityAsync(
+            EntityWriteRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

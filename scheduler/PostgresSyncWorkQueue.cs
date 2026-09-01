@@ -17,7 +17,8 @@ public sealed record SyncControlWork(
     long? CanonicalVersion, IReadOnlyList<string> ChangedFields,
     EntitySyncSha256? PayloadSha256, string? LeaseOwner,
     DateTimeOffset? LeaseExpiresAt, int Attempt, Guid? PlanId,
-    Guid? ApprovalId, Guid? OperationId, string? HoldReason);
+    EntitySyncSha256? PlanDigestSha256, Guid? ApprovalId, Guid? OperationId,
+    string? HoldReason);
 
 public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
     : ICanonicalChangeRepository, IEntitySyncWorkSignal
@@ -41,6 +42,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             .ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
+        var eventInserted = false;
         const string insertEventSql = """
             INSERT INTO entitysync.canonical_change_events (
                 tenant_id, event_id, receipt_id, om_event_id, canonical_entity_type,
@@ -62,7 +64,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             Add(insert, "fields", NpgsqlDbType.Jsonb, fieldsJson);
             Add(insert, "hash", NpgsqlDbType.Char, request.PayloadSha256.Value);
             Add(insert, "occurred", NpgsqlDbType.TimestampTz, request.OccurredAt);
-            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            eventInserted = await insert.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false) == 1;
         }
 
         const string readEventSql = """
@@ -133,7 +136,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             Add(work, "version", NpgsqlDbType.Bigint, request.CanonicalVersion);
             Add(work, "fields", NpgsqlDbType.Jsonb, fieldsJson);
             Add(work, "hash", NpgsqlDbType.Char, request.PayloadSha256.Value);
-            await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (eventInserted)
+                await work.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
         var workIds = await ReadCanonicalWorkIdsAsync(
@@ -150,10 +154,12 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
                 workIds.Count == 0 ? "Ignored" : "Planned");
             Add(status, "tenant", NpgsqlDbType.Text, request.TenantId);
             Add(status, "event", NpgsqlDbType.Uuid, storedEventId);
-            await status.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (eventInserted)
+                await status.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        await NotifyInTransactionAsync(connection, transaction, cancellationToken)
-            .ConfigureAwait(false);
+        if (eventInserted)
+            await NotifyInTransactionAsync(connection, transaction, cancellationToken)
+                .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new CanonicalChangeReceipt(
             eventId, request.TenantId, request.OutboxEventId,
@@ -265,7 +271,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
         const string sql = """
             WITH candidate AS (
                 SELECT tenant_id, work_id FROM entitysync.sync_control_work
-                WHERE tenant_id = @tenant
+                WHERE tenant_id = @tenant AND not_before <= clock_timestamp()
                   AND (state = 'Queued' OR (state IN ('Leased','Planning')
                        AND lease_expires_at <= clock_timestamp()))
                 ORDER BY created_at, work_id FOR UPDATE SKIP LOCKED LIMIT 1
@@ -283,8 +289,9 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
                    route_scope, schedule_id, schedule_version, scheduled_for,
                    canonical_event_id, canonical_entity_type, canonical_entity_id,
                    canonical_version, changed_fields::text, payload_sha256,
-                   lease_owner, lease_expires_at, attempt, plan_id, approval_id,
-                   operation_id, hold_reason FROM leased
+                   lease_owner, lease_expires_at, attempt, plan_id,
+                   plan_digest_sha256, approval_id, operation_id, hold_reason
+            FROM leased
             """;
         await using var command = dataSource.CreateCommand(sql);
         Add(command, "tenant", NpgsqlDbType.Text, tenantId);
@@ -333,6 +340,59 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             null,
             cancellationToken);
 
+    public Task<bool> TryDeferAsync(
+        SyncControlWork work,
+        TimeSpan delay,
+        CancellationToken cancellationToken)
+    {
+        if (delay <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(delay));
+        return FencedUpdateAsync(
+            work,
+            "state = 'Queued', not_before = clock_timestamp() + @delay, lease_owner = NULL, lease_expires_at = NULL, updated_at = clock_timestamp()",
+            "state = 'Leased'",
+            null,
+            cancellationToken,
+            ("delay", NpgsqlDbType.Interval, delay));
+    }
+
+    public Task<bool> TryCheckpointPlanAsync(
+        SyncControlWork work,
+        Guid planId,
+        EntitySyncSha256 digest,
+        CancellationToken cancellationToken) =>
+        FencedUpdateAsync(
+            work,
+            "checkpoint = 'Planned', plan_id = @plan, plan_digest_sha256 = @digest, updated_at = clock_timestamp()",
+            "state = 'Planning' AND checkpoint = 'Pending' AND plan_id IS NULL",
+            null,
+            cancellationToken,
+            ("plan", NpgsqlDbType.Uuid, planId),
+            ("digest", NpgsqlDbType.Char, digest.Value));
+
+    public Task<bool> TryCheckpointApprovalAsync(
+        SyncControlWork work,
+        Guid approvalId,
+        CancellationToken cancellationToken) =>
+        FencedUpdateAsync(
+            work,
+            "checkpoint = 'Approved', approval_id = @approval, updated_at = clock_timestamp()",
+            "state = 'Planning' AND checkpoint = 'Planned' AND approval_id IS NULL",
+            null,
+            cancellationToken,
+            ("approval", NpgsqlDbType.Uuid, approvalId));
+
+    public Task<bool> TryCheckpointOperationAsync(
+        SyncControlWork work,
+        Guid operationId,
+        CancellationToken cancellationToken) =>
+        FencedUpdateAsync(
+            work,
+            "checkpoint = 'OperationQueued', operation_id = @operation, updated_at = clock_timestamp()",
+            "state = 'Planning' AND checkpoint = 'Approved' AND operation_id IS NULL",
+            null,
+            cancellationToken,
+            ("operation", NpgsqlDbType.Uuid, operationId));
+
     public Task<bool> TryHoldAsync(SyncControlWork work, string reason, CancellationToken cancellationToken) =>
         FencedUpdateAsync(work,
             "state = 'Held', hold_reason = @reason, lease_owner = NULL, lease_expires_at = NULL, updated_at = clock_timestamp()",
@@ -344,13 +404,14 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
     {
         const string sql = """
             UPDATE entitysync.sync_control_work
-            SET state = 'Completed', plan_id = @plan, approval_id = @approval,
-                operation_id = @operation, hold_reason = NULL,
+            SET state = 'Completed', hold_reason = NULL,
                 lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = clock_timestamp()
             WHERE tenant_id = @tenant AND work_id = @work
               AND attempt = @attempt AND lease_owner = @owner
               AND lease_expires_at > clock_timestamp() AND state = 'Planning'
+              AND checkpoint = 'OperationQueued'
+              AND plan_id = @plan AND approval_id = @approval AND operation_id = @operation
             """;
         await using var command = dataSource.CreateCommand(sql);
         AddFence(command, work);
@@ -394,6 +455,13 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             ScheduledFor = scheduledFor
         }));
 
+    public static Guid CreateControlApprovalId(Guid workId) =>
+        StableGuid(EntitySyncCanonicalDigest.Compute(new
+        {
+            Namespace = "entitysync-control-approval-v1",
+            WorkId = workId
+        }));
+
     public static bool CanQueueDue(
         EntitySyncSchedule schedule,
         EntitySyncPolicy policy,
@@ -431,7 +499,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
 
     private async Task<bool> FencedUpdateAsync(
         SyncControlWork work, string setClause, string stateClause, string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        params (string Name, NpgsqlDbType Type, object? Value)[] values)
     {
         var sql = $"""
             UPDATE entitysync.sync_control_work SET {setClause}
@@ -442,7 +511,10 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
         await using var command = dataSource.CreateCommand(sql);
         AddFence(command, work);
         if (reason is not null) Add(command, "reason", NpgsqlDbType.Text, reason);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        foreach (var value in values)
+            Add(command, value.Name, value.Type, value.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false) == 1;
     }
 
     private static async Task<IReadOnlyList<Guid>> ReadCanonicalWorkIdsAsync(
@@ -494,9 +566,10 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             reader.IsDBNull(16) ? null : reader.GetString(16),
             reader.IsDBNull(17) ? null : reader.GetFieldValue<DateTimeOffset>(17),
             reader.GetInt32(18), reader.IsDBNull(19) ? null : reader.GetGuid(19),
-            reader.IsDBNull(20) ? null : reader.GetGuid(20),
+            reader.IsDBNull(20) ? null : new EntitySyncSha256(reader.GetString(20)),
             reader.IsDBNull(21) ? null : reader.GetGuid(21),
-            reader.IsDBNull(22) ? null : reader.GetString(22));
+            reader.IsDBNull(22) ? null : reader.GetGuid(22),
+            reader.IsDBNull(23) ? null : reader.GetString(23));
     }
 
     private static void AddFence(NpgsqlCommand command, SyncControlWork work)

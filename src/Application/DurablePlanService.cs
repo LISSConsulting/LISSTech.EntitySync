@@ -225,6 +225,11 @@ public sealed class DurablePlanService(
         var policy = await ResolveCurrentPolicyAsync(
             tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
+        if (request.PinnedCanonicalSource is not null
+            && !policy.Definition.SourceVendor.Equals(
+                "OrchestraMSP", StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Pinned canonical sources are restricted to OrchestraMSP policies.");
         var sourceDefinition = await RequireCurrentConnectionAsync(
             tenantId,
             policy.Definition.SourceConnectionId,
@@ -373,16 +378,46 @@ public sealed class DurablePlanService(
             session.Status == EntitySyncInspectionStatus.Completed);
     }
 
-    public async Task<DurablePlanApprovalResult> ApproveAsync(
+    public Task<DurablePlanApprovalResult> ApproveAsync(
         string tenantId,
         Guid planId,
         string digest,
         EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        ApproveCoreAsync(tenantId, planId, digest, actor, null, cancellationToken);
+
+    internal Task<DurablePlanApprovalResult> ApproveControlAsync(
+        string tenantId,
+        Guid planId,
+        string digest,
+        EntitySyncActor actor,
+        Guid approvalId,
+        CancellationToken cancellationToken) =>
+        ApproveCoreAsync(tenantId, planId, digest, actor, approvalId, cancellationToken);
+
+    private async Task<DurablePlanApprovalResult> ApproveCoreAsync(
+        string tenantId,
+        Guid planId,
+        string digest,
+        EntitySyncActor actor,
+        Guid? requestedApprovalId,
         CancellationToken cancellationToken)
     {
         tenantId = RequireTenant(tenantId);
         ArgumentNullException.ThrowIfNull(actor);
         var requestedDigest = new EntitySyncSha256(digest);
+        if (requestedApprovalId is not null)
+        {
+            var existing = await plans.GetApprovalAsync(
+                tenantId, requestedApprovalId.Value, cancellationToken).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                if (existing.PlanId != planId
+                    || existing.PlanDigestSha256 != requestedDigest)
+                    throw new DurablePlanApprovalConflictException(planId);
+                return ToApprovalResult(existing);
+            }
+        }
         var plan = await plans.GetAsync(tenantId, planId, cancellationToken)
             .ConfigureAwait(false)
             ?? throw new DurablePlanNotFoundException(planId);
@@ -418,7 +453,7 @@ public sealed class DurablePlanService(
             plan.TargetConnectionGeneration,
             cancellationToken).ConfigureAwait(false);
 
-        var approvalId = Guid.NewGuid();
+        var approvalId = requestedApprovalId ?? Guid.NewGuid();
         var auditValuesElement = JsonSerializer.SerializeToElement(new
         {
             PlanId = plan.PlanId,
@@ -470,15 +505,18 @@ public sealed class DurablePlanService(
         {
             throw new DurablePlanApprovalConflictException(planId, exception);
         }
-        return new DurablePlanApprovalResult(
-            tenantId,
-            planId,
+        return ToApprovalResult(approval);
+    }
+
+    private static DurablePlanApprovalResult ToApprovalResult(EntitySyncApproval approval) =>
+        new(
+            approval.TenantId,
+            approval.PlanId,
             approval.ApprovalId,
             approval.InspectionId,
             approval.PlanDigestSha256.Value,
             approval.ApprovedAt,
             approval.ExpiresAt);
-    }
 
     private async Task<EntitySyncPolicy> ResolveCurrentPolicyAsync(
         string tenantId,
@@ -571,6 +609,7 @@ public sealed class DurablePlanService(
             SourceSearch = request.SourceSearch,
             SourceCount = request.SourceCount,
             SourceEntityId = request.SourceEntityId,
+            PinnedCanonicalSource = request.PinnedCanonicalSource,
             TargetEntityType = policy.Definition.TargetEntityType,
             CreateMissing = policy.Definition.CreateMissing,
             IncludeInactive = policy.Definition.IncludeInactive,
@@ -658,6 +697,10 @@ public sealed class DurablePlanService(
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
+            PinnedCanonicalVersion = request.PinnedCanonicalSource?.CanonicalVersion,
+            PinnedCanonicalEntitySha256 = request.PinnedCanonicalSource is null
+                ? null
+                : EntitySyncCanonicalDigest.Compute(request.PinnedCanonicalSource.Entity).Value,
             PlanLifetimeTicks = request.PlanLifetime.Ticks,
             CreatedBy = actor.ActorId
         });
@@ -701,6 +744,17 @@ public sealed class DurablePlanService(
             throw new ArgumentException("Policy ID is required.", nameof(request));
         if (request.PolicyVersion is <= 0)
             throw new ArgumentOutOfRangeException(nameof(request.PolicyVersion));
+        if (request.PinnedCanonicalSource is not null)
+        {
+            if (request.SourceEntityId is null
+                || request.PinnedCanonicalSource.CanonicalEntityId.ToString("D")
+                    != request.SourceEntityId.Trim())
+                throw new ArgumentException(
+                    "Pinned canonical source must match SourceEntityId.", nameof(request));
+            if (request.SourceSearch is not null || request.SourceCount is not null)
+                throw new ArgumentException(
+                    "Pinned canonical work cannot combine bounded search inputs.", nameof(request));
+        }
         if (request.SourceCount is <= 0)
             throw new ArgumentOutOfRangeException(nameof(request.SourceCount));
         if (request.PlanLifetime <= TimeSpan.Zero)

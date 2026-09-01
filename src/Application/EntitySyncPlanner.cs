@@ -65,28 +65,53 @@ public sealed class EntitySyncPlanner(
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
 
-        var sourceQuery = new EntityQuery
+        IReadOnlyList<ExternalEntity> sources;
+        if (request.PinnedCanonicalSource is not null)
         {
-            EntityType = sourceType,
-            Search = request.SourceSearch?.Trim(),
-            IncludeInactive = request.IncludeInactive,
-            Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
-        };
-        var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
-        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
-
-        var sources = await sourceLease.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
-        if (request.SourceEntityId is not null)
-        {
-            var expectedSourceId = request.SourceEntityId.Trim();
-            sources = sources
-                .Where(source => source.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (sources.Count != 1)
-                throw new ArgumentException(
-                    $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
-                    nameof(request));
+            if (!sourceVendor.Equals("OrchestraMSP", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Pinned canonical sources are restricted to OrchestraMSP control work.");
+            var pinned = request.PinnedCanonicalSource;
+            var expectedSourceId = request.SourceEntityId?.Trim();
+            if (expectedSourceId is null
+                || pinned.CanonicalEntityId.ToString("D") != expectedSourceId
+                || !pinned.Entity.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase)
+                || !pinned.Entity.EntityType.Equals(sourceType, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "Pinned canonical source identity does not match the durable selection.");
+            sources = [pinned.Entity];
         }
+        else
+        {
+            var sourceQuery = new EntityQuery
+            {
+                EntityType = sourceType,
+                Search = request.SourceSearch?.Trim(),
+                IncludeInactive = request.IncludeInactive,
+                Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
+            };
+            sources = await sourceLease.Adapter.GetEntitiesAsync(
+                sourceQuery, cancellationToken).ConfigureAwait(false);
+            if (request.SourceEntityId is not null)
+            {
+                var expectedSourceId = request.SourceEntityId.Trim();
+                sources = sources
+                    .Where(source => source.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (sources.Count != 1)
+                    throw new ArgumentException(
+                        $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
+                        nameof(request));
+            }
+        }
+        var targetQuery = new EntityQuery
+        {
+            EntityType = targetType,
+            IncludeInactive = true,
+            Count = MaxEntitiesPerPlanSide + 1
+        };
+        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+            targetQuery.RequiredCustomFieldName = customFieldName;
         var targets = await targetLease.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, EntityExclusion> exclusionsBySourceId;
