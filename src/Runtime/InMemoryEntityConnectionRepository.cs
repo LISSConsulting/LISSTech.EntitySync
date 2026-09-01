@@ -40,7 +40,11 @@ public sealed class InMemoryEntityConnectionRepository
         }
     }
 
-    public EntityConnectionRegistration Register(string tenantId, string? connectionId, IEntityAdapter adapter)
+    public EntityConnectionRegistration Register(
+        string tenantId,
+        string? connectionId,
+        IEntityAdapter adapter,
+        Guid? platformInstanceId = null)
     {
         tenantId = Require(tenantId, nameof(tenantId));
         var vendor = EntitySyncVendors.Normalize(adapter.Vendor);
@@ -57,14 +61,23 @@ public sealed class InMemoryEntityConnectionRepository
             {
                 if (connections.Values.Count(entry => entry.Current?.TenantId.Equals(tenantId, StringComparison.OrdinalIgnoreCase) == true) >= MaxConnectionsPerTenant)
                     throw new InvalidOperationException($"Tenant connection limit of {MaxConnectionsPerTenant} has been reached.");
-                registration = new EntityConnectionRegistration(connectionId, tenantId, vendor, 1, adapter);
+                registration = new EntityConnectionRegistration(
+                    connectionId, tenantId, vendor, 1, adapter, platformInstanceId);
                 connections.Add(key, new ConnectionEntry(registration));
                 return registration;
             }
 
             var current = entry.Current ?? throw new ObjectDisposedException(nameof(InMemoryEntityConnectionRepository));
-            if (ReferenceEquals(current.Adapter, adapter)) return current;
-            registration = new EntityConnectionRegistration(connectionId, tenantId, vendor, current.Generation + 1, adapter);
+            if (ReferenceEquals(current.Adapter, adapter)
+                && current.PlatformInstanceId == platformInstanceId)
+                return current;
+            registration = new EntityConnectionRegistration(
+                connectionId,
+                tenantId,
+                vendor,
+                current.Generation + 1,
+                adapter,
+                platformInstanceId);
             entry.Current = registration;
             if (current.Adapter is IDisposable disposable)
             {
@@ -183,7 +196,8 @@ public sealed class InMemoryEntityConnectionRepository
             now,
             actor,
             now,
-            actor);
+            actor,
+            registration.PlatformInstanceId);
     }
 
     public IReadOnlyList<EntityConnectionRegistration> List(string tenantId)

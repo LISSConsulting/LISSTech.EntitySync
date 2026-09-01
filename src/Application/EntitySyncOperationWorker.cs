@@ -140,7 +140,11 @@ public sealed class EntitySyncOperationWorker(
                         "The immutable target entity was unavailable before dispatch.");
             }
             var resolvedParent = await ResolveCreateParentAsync(
-                    item, targetLease.Adapter, cancellationToken)
+                    item,
+                    source,
+                    sourceLease.Definition.PlatformInstanceId,
+                    targetLease.Adapter,
+                    cancellationToken)
                 .ConfigureAwait(false);
             var writeRequest = CreateWriteRequest(
                 item, source, targetBefore, policy, resolvedParent);
@@ -491,6 +495,8 @@ public sealed class EntitySyncOperationWorker(
 
     internal static async Task<EntityWriteParent?> ResolveCreateParentAsync(
         EntitySyncOperationItem item,
+        ExternalEntity liveSource,
+        Guid? sourcePlatformInstanceId,
         IEntityAdapter targetAdapter,
         CancellationToken cancellationToken)
     {
@@ -501,18 +507,32 @@ public sealed class EntitySyncOperationWorker(
                 && !item.TargetEntityType.Equals(
                     "Address", StringComparison.OrdinalIgnoreCase)))
             return null;
+        ArgumentNullException.ThrowIfNull(liveSource);
         var approved = item.ResolvedTargetParent
             ?? throw new EntityWriteParentValidationException(
                 "ORCHESTRA_PARENT_EVIDENCE_MISSING");
+        if (sourcePlatformInstanceId is null)
+            throw new EntityWriteParentValidationException(
+                "ORCHESTRA_SOURCE_PLATFORM_INSTANCE_UNCONFIGURED");
+        if (!string.Equals(
+                liveSource.ParentId,
+                approved.MatchedLinkExternalId,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                liveSource.ParentEntityType,
+                approved.ParentEntityType,
+                StringComparison.OrdinalIgnoreCase))
+            throw new EntityWriteParentValidationException(
+                "ORCHESTRA_SOURCE_PARENT_CHANGED");
         if (targetAdapter is not IEntityWriteParentResolver resolver)
             throw new EntityWriteParentValidationException(
                 "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
         var current = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
                 item.SourceVendor,
-                item.SourceConnectionId,
-                approved.ParentEntityType,
-                approved.MatchedLinkExternalId),
+                sourcePlatformInstanceId.Value.ToString("D"),
+                liveSource.ParentEntityType!,
+                liveSource.ParentId!),
             cancellationToken).ConfigureAwait(false);
         if (current.Status != EntityWriteParentResolutionStatus.Resolved
             || current.Parent is null)

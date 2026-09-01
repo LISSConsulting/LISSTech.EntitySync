@@ -58,11 +58,11 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             INSERT INTO entitysync.connection_definitions (
                 tenant_id, connection_id, vendor, display_name, generation, enabled,
                 public_configuration, secret_ciphertext, created_at, created_by,
-                updated_at, updated_by)
+                updated_at, updated_by, platform_instance_id)
             VALUES (
                 @tenant_id, @connection_id, @vendor, @display_name, @generation, @enabled,
                 @public_configuration, @secret_ciphertext, @created_at, @created_by,
-                @updated_at, @updated_by)
+                @updated_at, @updated_by, @platform_instance_id)
             """;
         await using (var insert =
             new NpgsqlCommand(insertSql, connection, transaction))
@@ -82,7 +82,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         const string sql = """
             SELECT tenant_id, connection_id, vendor, display_name, generation, enabled,
                    public_configuration::text, secret_ciphertext, created_at, created_by,
-                   updated_at, updated_by
+                   updated_at, updated_by, platform_instance_id
             FROM entitysync.connection_definitions
             WHERE tenant_id = @tenant_id AND connection_id = @connection_id
             """;
@@ -101,7 +101,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         const string sql = """
             SELECT tenant_id, connection_id, vendor, display_name, generation, enabled,
                    public_configuration::text, secret_ciphertext, created_at, created_by,
-                   updated_at, updated_by
+                   updated_at, updated_by, platform_instance_id
             FROM entitysync.connection_definitions
             WHERE tenant_id = @tenant_id
               AND (@vendor IS NULL OR vendor = @vendor)
@@ -186,7 +186,8 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
                 created_at = @created_at,
                 created_by = @created_by,
                 updated_at = @updated_at,
-                updated_by = @updated_by
+                updated_by = @updated_by,
+                platform_instance_id = @platform_instance_id
             WHERE tenant_id = @tenant_id
               AND connection_id = @connection_id
               AND generation = @expected_generation
@@ -312,6 +313,11 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         PostgresControlPersistence.Add(command, "created_by", NpgsqlDbType.Text, definition.CreatedBy.ActorId);
         PostgresControlPersistence.Add(command, "updated_at", NpgsqlDbType.TimestampTz, definition.UpdatedAt);
         PostgresControlPersistence.Add(command, "updated_by", NpgsqlDbType.Text, definition.UpdatedBy.ActorId);
+        PostgresControlPersistence.Add(
+            command,
+            "platform_instance_id",
+            NpgsqlDbType.Uuid,
+            definition.PlatformInstanceId);
     }
 
     private static EntitySyncConnectionDefinition WithGeneration(
@@ -329,7 +335,8 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             definition.CreatedAt,
             definition.CreatedBy,
             definition.UpdatedAt,
-            definition.UpdatedBy);
+            definition.UpdatedBy,
+            definition.PlatformInstanceId);
 
     private static EntitySyncConnectionDefinition Read(NpgsqlDataReader reader) =>
         new(
@@ -337,5 +344,6 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             reader.GetInt64(4), reader.GetBoolean(5), new EntitySyncJsonValue(reader.GetString(6)),
             reader.GetString(7), reader.GetFieldValue<DateTimeOffset>(8),
             new EntitySyncActor(reader.GetString(9)), reader.GetFieldValue<DateTimeOffset>(10),
-            new EntitySyncActor(reader.GetString(11)));
+            new EntitySyncActor(reader.GetString(11)),
+            reader.IsDBNull(12) ? null : reader.GetGuid(12));
 }

@@ -6,6 +6,7 @@ using LISSTech.EntitySync.Adapters.OrchestraMSP;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Hosting;
+using LISSTech.EntitySync.Mcp.ControlApi;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
@@ -24,6 +25,8 @@ public sealed class OrchestraEntityAdapterTests
         Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid AddressId =
         Guid.Parse("33333333-3333-3333-3333-333333333333");
+    private static readonly Guid PlatformInstanceId =
+        Guid.Parse("44444444-4444-4444-4444-444444444444");
 
     [Fact]
     public async Task Token_uses_client_credentials_default_scope_and_refreshes_at_five_minute_skew()
@@ -507,7 +510,7 @@ public sealed class OrchestraEntityAdapterTests
         var resolution = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
                 source.Vendor,
-                "ncentral-prod",
+                PlatformInstanceId.ToString("D"),
                 parentType,
                 foreignParentId),
             default);
@@ -735,7 +738,8 @@ public sealed class OrchestraEntityAdapterTests
                     ParentEntityType = "Client",
                     Name = "Dallas"
                 }
-            ]));
+            ]),
+            PlatformInstanceId);
         connections.Register("tenant", "target", target);
         var planner = new EntitySyncPlanner(
             connections,
@@ -792,15 +796,15 @@ public sealed class OrchestraEntityAdapterTests
         var resolver = Assert.IsAssignableFrom<IEntityWriteParentResolver>(adapter);
         var exact = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
-                "NCentral", "ncentral-prod", "Client", "customer-42"),
+                "NCentral", PlatformInstanceId.ToString("D"), "Client", "customer-42"),
             default);
         var wrongInstance = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
-                "NCentral", "ncentral-other", "Client", "customer-42"),
+                "NCentral", Guid.NewGuid().ToString("D"), "Client", "customer-42"),
             default);
 
         Assert.Equal(EntityWriteParentResolutionStatus.Resolved, exact.Status);
-        Assert.Equal("ncentral-prod", exact.Parent!.SourcePlatformInstanceId);
+        Assert.Equal(PlatformInstanceId.ToString("D"), exact.Parent!.SourcePlatformInstanceId);
         Assert.Equal(7, exact.Parent.ObservedOwnerVersion);
         Assert.False(string.IsNullOrWhiteSpace(exact.Parent.MatchedLinkToken));
         Assert.Equal(EntityWriteParentResolutionStatus.Stale, wrongInstance.Status);
@@ -847,49 +851,150 @@ public sealed class OrchestraEntityAdapterTests
         Assert.NotEqual(baseline, addressChanged);
         Assert.NotEqual(baseline, parentChanged);
     }
+    [Theory]
+    [InlineData("customer-99", "Client")]
+    [InlineData("customer-42", "Site")]
+    public async Task Worker_rejects_live_source_parent_drift_before_target_resolution(
+        string liveParentId,
+        string liveParentType)
+    {
+        using var handler = new LoopbackHttpHandler((_, _, _) =>
+            Json(HttpStatusCode.OK, ParentLinkDirectoryJson()));
+        using var http = new HttpClient(handler);
+        using var adapter = Adapter(http, StaticTokenProvider("token"));
+        var approved = new EntityWriteParent(
+            ClientId,
+            null,
+            "Client",
+            PlatformInstanceId.ToString("D"),
+            "customer-42",
+            "active",
+            new string('a', 64),
+            7);
+        var item = ParentOperationItem(approved);
+        var liveSource = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Site",
+            Id = "foreign-site",
+            ParentId = liveParentId,
+            ParentEntityType = liveParentType,
+        };
+
+        var changed = await Assert.ThrowsAsync<EntityWriteParentValidationException>(
+            () => EntitySyncOperationWorker.ResolveCreateParentAsync(
+                item, liveSource, PlatformInstanceId, adapter, default));
+
+        Assert.Equal("ORCHESTRA_SOURCE_PARENT_CHANGED", changed.SafeCode);
+        Assert.Empty(handler.Requests);
+    }
 
     [Fact]
-    public async Task Worker_live_parent_recheck_holds_drift_with_exact_safe_code_before_dispatch()
+    public async Task Worker_uses_configured_platform_uuid_and_unchanged_live_parent()
     {
-        var versionChanged = ParentLinkDirectoryJson().Replace(
-            "\"version\":7",
-            "\"version\":8",
-            StringComparison.Ordinal);
-        var inactive = ParentLinkDirectoryJson().Replace(
-            "\"lifecycle_status\":\"active\"",
-            "\"lifecycle_status\":\"suspended\"",
-            StringComparison.Ordinal);
-        using var handler = new LoopbackHttpHandler((_, index, _) =>
-            Json(
-                HttpStatusCode.OK,
-                index switch
-                {
-                    1 => ParentLinkDirectoryJson(),
-                    2 => versionChanged,
-                    _ => inactive
-                }));
+        using var handler = new LoopbackHttpHandler((_, _, _) =>
+            Json(HttpStatusCode.OK, ParentLinkDirectoryJson()));
         using var http = new HttpClient(handler);
         using var adapter = Adapter(http, StaticTokenProvider("token"));
         var resolver = Assert.IsAssignableFrom<IEntityWriteParentResolver>(adapter);
         var approval = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
-                "NCentral", "ncentral-prod", "Client", "customer-42"),
+                "NCentral", PlatformInstanceId.ToString("D"), "Client", "customer-42"),
             default);
         var approved = Assert.IsType<EntityWriteParent>(approval.Parent);
         var item = ParentOperationItem(approved);
+        var liveSource = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Site",
+            Id = "foreign-site",
+            ParentId = "customer-42",
+            ParentEntityType = "client",
+            Name = "Dallas"
+        };
 
-        var changed = await Assert.ThrowsAsync<EntityWriteParentValidationException>(
-            () => EntitySyncOperationWorker.ResolveCreateParentAsync(
-                item, adapter, default));
-        var stale = await Assert.ThrowsAsync<EntityWriteParentValidationException>(
-            () => EntitySyncOperationWorker.ResolveCreateParentAsync(
-                item, adapter, default));
+        var current = await EntitySyncOperationWorker.ResolveCreateParentAsync(
+            item, liveSource, PlatformInstanceId, adapter, default);
 
-        Assert.Equal("ORCHESTRA_PARENT_EVIDENCE_CHANGED", changed.SafeCode);
-        Assert.Equal("ORCHESTRA_PARENT_LINK_STALE", stale.SafeCode);
-        Assert.Equal(3, handler.Requests.Count);
-        Assert.All(handler.Requests, request => Assert.Equal(
-            HttpMethod.Get, request.Method));
+        Assert.NotNull(current);
+        Assert.Equal(PlatformInstanceId.ToString("D"), current.SourcePlatformInstanceId);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Planner_holds_nested_Orchestra_create_when_source_platform_uuid_is_missing()
+    {
+        using var handler = new LoopbackHttpHandler((_, _, _) =>
+            Json(HttpStatusCode.OK, ParentLinkDirectoryJson()));
+        using var http = new HttpClient(handler);
+        using var target = Adapter(http, StaticTokenProvider("token"));
+        using var connections = new InMemoryEntityConnectionRepository();
+        connections.Register("tenant", "ncentral-prod", new StaticEntityAdapter(
+        [
+            new ExternalEntity
+            {
+                Vendor = "NCentral",
+                EntityType = "Site",
+                Id = "foreign-site",
+                ParentId = "customer-42",
+                ParentEntityType = "Client",
+                Name = "Dallas"
+            }
+        ]));
+        connections.Register("tenant", "target", target);
+        var planner = new EntitySyncPlanner(
+            connections,
+            new InMemoryEntitySyncPlanRepository(),
+            new InMemoryEntityExclusionRepository(),
+            new WeightedEntityMatcher(),
+            new DefaultEntityMapper(),
+            new InMemoryEntitySyncChangeStateRepository());
+
+        var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NCentral",
+            SourceConnectionId = "ncentral-prod",
+            SourceEntityType = "Site",
+            TargetVendor = EntitySyncVendors.OrchestraMSP,
+            TargetConnectionId = "target",
+            TargetEntityType = "Site",
+            CreateMissing = true
+        }, default);
+
+        var item = Assert.Single(plan.Items);
+        Assert.Equal("Review", item.Action);
+        Assert.Contains(item.Reasons, reason => reason.Contains(
+            "ORCHESTRA_SOURCE_PLATFORM_INSTANCE_UNCONFIGURED",
+            StringComparison.Ordinal));
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public void Control_connection_contract_round_trips_platform_instance_uuid()
+    {
+        var actor = new EntitySyncActor("actor");
+        var definition = new EntitySyncConnectionDefinition(
+            "tenant",
+            "ncentral-prod",
+            "NCentral",
+            "N-central production",
+            1,
+            true,
+            new EntitySyncJsonValue("{}"),
+            "ciphertext",
+            Now,
+            actor,
+            Now,
+            actor,
+            PlatformInstanceId);
+
+        var response = ConnectionResponse.From(definition);
+        var create = new CreateConnectionRequest(
+            "NCentral", "ncentral-prod", "N-central production", PlatformInstanceId);
+
+        Assert.Equal(PlatformInstanceId, response.PlatformInstanceId);
+        Assert.Equal(PlatformInstanceId, create.PlatformInstanceId);
     }
 
     [Fact]
@@ -1287,11 +1392,11 @@ public sealed class OrchestraEntityAdapterTests
             "site_id":"{{SiteId:D}}","client_id":"{{ClientId:D}}","version":3,
             "name":"Austin","lifecycle_status":"active","is_deleted":false,
             "fields":{},"tags":[],"addresses":[],"platform_links":[{
-              "platform_instance_id":"ncentral-prod","platform":"NCentral",
+              "platform_instance_id":"{{PlatformInstanceId:D}}","platform":"NCentral",
               "external_id":"site-99","status":"active","entity_type":"Site",
               "entity_id":"{{SiteId:D}}"}]}],
           "addresses":[],"platform_links":[{
-            "platform_instance_id":"ncentral-prod","platform":"NCentral",
+            "platform_instance_id":"{{PlatformInstanceId:D}}","platform":"NCentral",
             "external_id":"customer-42","status":"active","entity_type":"Client",
             "entity_id":"{{ClientId:D}}"}]
         }],"next_cursor":null}

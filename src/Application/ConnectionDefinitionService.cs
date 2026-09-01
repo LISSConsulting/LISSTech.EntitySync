@@ -10,7 +10,8 @@ public sealed record ConnectionDefinitionRequest(
     string ConnectionId,
     string DisplayName,
     IReadOnlyDictionary<string, JsonElement> PublicConfiguration,
-    IReadOnlyDictionary<string, string> SecretConfiguration);
+    IReadOnlyDictionary<string, string> SecretConfiguration,
+    Guid? PlatformInstanceId = null);
 
 public enum ConnectionDeleteOutcome
 {
@@ -65,7 +66,8 @@ public sealed class ConnectionDefinitionService(
             now,
             actor,
             now,
-            actor);
+            actor,
+            validated.PlatformInstanceId);
         return await repository.InsertAsync(
                 tenantId,
                 definition,
@@ -155,7 +157,8 @@ public sealed class ConnectionDefinitionService(
             SerializePublicConfiguration(validated.PublicConfiguration),
             ProtectSecrets(validated.SecretConfiguration),
             actor,
-            timeProvider.GetUtcNow());
+            timeProvider.GetUtcNow(),
+            validated.PlatformInstanceId);
         return await repository.TryReplaceAsync(
                 tenantId,
                 connectionId,
@@ -287,6 +290,10 @@ public sealed class ConnectionDefinitionService(
         var displayName = Require(request.DisplayName, nameof(request.DisplayName));
         ArgumentNullException.ThrowIfNull(request.PublicConfiguration);
         ArgumentNullException.ThrowIfNull(request.SecretConfiguration);
+        if (request.PlatformInstanceId == Guid.Empty)
+            throw new ArgumentException(
+                "Platform instance ID cannot be empty.",
+                nameof(request));
         var publicKeys = ValidateKeys(
             request.PublicConfiguration.Keys,
             nameof(request.PublicConfiguration));
@@ -316,7 +323,8 @@ public sealed class ConnectionDefinitionService(
             connectionId,
             displayName,
             request.PublicConfiguration,
-            request.SecretConfiguration);
+            request.SecretConfiguration,
+            request.PlatformInstanceId);
     }
 
     private static HashSet<string> ValidateKeys(

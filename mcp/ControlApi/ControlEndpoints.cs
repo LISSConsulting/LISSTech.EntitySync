@@ -217,7 +217,8 @@ public static class ControlEndpoints
                     request.ConnectionId,
                     request.DisplayName,
                     configuration.PublicConfiguration,
-                    configuration.SecretConfiguration),
+                    configuration.SecretConfiguration,
+                    request.PlatformInstanceId ?? configuration.PlatformInstanceId),
                 control.Actor,
                 cancellationToken).ConfigureAwait(false);
             return Results.Json(
@@ -253,7 +254,10 @@ public static class ControlEndpoints
                     connectionId,
                     request.DisplayName,
                     configuration.PublicConfiguration,
-                    configuration.SecretConfiguration),
+                    configuration.SecretConfiguration,
+                    request.PlatformInstanceId
+                    ?? current.PlatformInstanceId
+                    ?? configuration.PlatformInstanceId),
                 control.Actor,
                 cancellationToken).ConfigureAwait(false);
             return Results.Ok(ConnectionResponse.From(updated));

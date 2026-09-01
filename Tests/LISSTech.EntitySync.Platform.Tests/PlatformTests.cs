@@ -756,6 +756,11 @@ public sealed class PlatformTests
     {
         using var connections = new InMemoryEntityConnectionRepository();
         var factory = new RecordingServerManagedEntityAdapterFactory();
+        var platformInstanceId =
+            Guid.Parse("44444444-4444-4444-4444-444444444444");
+        factory.PlatformInstanceId = platformInstanceId;
+        var explicitPlatformInstanceId =
+            Guid.Parse("55555555-5555-5555-5555-555555555555");
         var context = new McpRequestContext("tenant", true);
         using var services = new ServiceCollection()
             .AddSingleton<IEntityConnectionRepository>(connections)
@@ -769,6 +774,9 @@ public sealed class PlatformTests
             vendor: "HaloPSA",
             connectionId: "primary",
             cancellationToken: CancellationToken.None);
+        Assert.Equal(
+            platformInstanceId,
+            Assert.Single(connections.List("tenant")).PlatformInstanceId);
         var secondResponse = await ConnectionTools.ConnectVendor(
             services,
             factory,
@@ -776,6 +784,7 @@ public sealed class PlatformTests
             context: context,
             vendor: "HaloPSA",
             connectionId: "primary",
+            platformInstanceId: explicitPlatformInstanceId,
             cancellationToken: CancellationToken.None);
 
         using var firstJson = JsonDocument.Parse(firstResponse);
@@ -789,6 +798,9 @@ public sealed class PlatformTests
         Assert.All(factory.Calls, call => Assert.Null(call.ProfileSettings));
         Assert.True(factory.Adapters[0].Disposed);
         Assert.False(factory.Adapters[1].Disposed);
+        Assert.Equal(
+            explicitPlatformInstanceId,
+            Assert.Single(connections.List("tenant")).PlatformInstanceId);
     }
 
     [Fact]
@@ -1518,6 +1530,7 @@ public sealed class PlatformTests
     {
         public List<(string Vendor, IReadOnlyDictionary<string, string>? ProfileSettings)> Calls { get; } = [];
         public List<FakeAdapter> Adapters { get; } = [];
+        public Guid? PlatformInstanceId { get; set; }
 
         public Task<IEntityAdapter> CreateAsync(
             string vendor,
@@ -1543,7 +1556,8 @@ public sealed class PlatformTests
             IReadOnlyDictionary<string, string>? profileSettings) =>
             new(
                 new Dictionary<string, JsonElement>(),
-                new Dictionary<string, string>());
+                new Dictionary<string, string>(),
+                PlatformInstanceId);
 
         public void ValidateNetSuiteHaloFixedRouteConfiguration()
         {

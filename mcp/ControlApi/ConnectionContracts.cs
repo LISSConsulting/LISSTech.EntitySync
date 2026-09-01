@@ -5,11 +5,13 @@ namespace LISSTech.EntitySync.Mcp.ControlApi;
 public sealed record CreateConnectionRequest(
     string Vendor,
     string ConnectionId,
-    string DisplayName);
+    string DisplayName,
+    Guid? PlatformInstanceId = null);
 
 public sealed record UpdateConnectionRequest(
     string DisplayName,
-    long ExpectedGeneration);
+    long ExpectedGeneration,
+    Guid? PlatformInstanceId = null);
 
 public sealed record DeleteConnectionRequest(long ExpectedGeneration);
 
@@ -24,7 +26,8 @@ public sealed record ConnectionResponse(
     DateTimeOffset CreatedAt,
     string CreatedBy,
     DateTimeOffset UpdatedAt,
-    string UpdatedBy)
+    string UpdatedBy,
+    Guid? PlatformInstanceId)
 {
     public static ConnectionResponse From(EntitySyncConnectionDefinition value) =>
         new(
@@ -36,7 +39,8 @@ public sealed record ConnectionResponse(
             value.CreatedAt,
             value.CreatedBy.ActorId,
             value.UpdatedAt,
-            value.UpdatedBy.ActorId);
+            value.UpdatedBy.ActorId,
+            value.PlatformInstanceId);
 }
 
 public sealed record ConnectionTestResponse(

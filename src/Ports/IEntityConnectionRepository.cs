@@ -7,7 +7,8 @@ public sealed record EntityConnectionRegistration(
     string TenantId,
     string Vendor,
     long Generation,
-    IEntityAdapter Adapter);
+    IEntityAdapter Adapter,
+    Guid? PlatformInstanceId = null);
 
 public interface IEntityConnectionLease : IDisposable
 {
@@ -87,7 +88,11 @@ public sealed class StaleConnectionGenerationException : InvalidOperationExcepti
 public interface IEntityConnectionRepository
 {
     IEntityConnectionAdmission BeginRegistration(string tenantId, string? connectionId, string vendor);
-    EntityConnectionRegistration Register(string tenantId, string? connectionId, IEntityAdapter adapter);
+    EntityConnectionRegistration Register(
+        string tenantId,
+        string? connectionId,
+        IEntityAdapter adapter,
+        Guid? platformInstanceId = null);
     EntityConnectionRegistration Resolve(string tenantId, string vendor, string? connectionId = null);
     IEntityConnectionLease Acquire(string tenantId, string vendor, string? connectionId = null, long? generation = null);
     IReadOnlyList<EntityConnectionRegistration> List(string tenantId);

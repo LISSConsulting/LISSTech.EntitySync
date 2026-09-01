@@ -20,9 +20,10 @@ public static class ConnectionTools
         IServerManagedEntityAdapterFactory adapterFactory,
         ConnectionDefinitionService? definitions,
         McpRequestContext context,
-        [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, or Bill.com")] string vendor,
+        [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, Bill.com, or OrchestraMSP")] string vendor,
         [Description("Stable connection ID. Use distinct IDs for multiple accounts of the same vendor.")] string? connectionId = null,
         [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
+        [Description("Optional Orchestra platform-instance UUID for this source connection. Required only for nested Orchestra creates.")] Guid? platformInstanceId = null,
         CancellationToken cancellationToken = default)
     {
         IReadOnlyDictionary<string, string>? secretConfiguration = null;
@@ -38,6 +39,7 @@ public static class ConnectionTools
                     normalized,
                     connectionId,
                     profileName,
+                    platformInstanceId,
                     cancellationToken).ConfigureAwait(false);
             }
             if (!string.IsNullOrWhiteSpace(profileName))
@@ -55,7 +57,8 @@ public static class ConnectionTools
                 resolvedConnectionId,
                 normalized,
                 configuration.PublicConfiguration,
-                configuration.SecretConfiguration);
+                configuration.SecretConfiguration,
+                platformInstanceId ?? configuration.PlatformInstanceId);
             EntitySyncConnectionDefinition definition;
             try
             {
@@ -84,7 +87,8 @@ public static class ConnectionTools
                 success = true,
                 Id = definition.ConnectionId,
                 definition.Vendor,
-                definition.Generation
+                definition.Generation,
+                definition.PlatformInstanceId
             });
         }
         catch (OperationCanceledException)
@@ -114,9 +118,11 @@ public static class ConnectionTools
         string vendor,
         string? connectionId,
         string? profileName,
+        Guid? platformInstanceId,
         CancellationToken cancellationToken)
     {
         IEntityAdapter? adapter = null;
+        IReadOnlyDictionary<string, string>? localSecretConfiguration = null;
         using var admission = connections.BeginRegistration(
             context.TenantId,
             connectionId,
@@ -124,13 +130,17 @@ public static class ConnectionTools
         try
         {
             var profile = FindProfile(vendor, profileName);
+            var configuration = adapterFactory.GetConnectionConfiguration(
+                vendor, profile?.Settings);
+            localSecretConfiguration = configuration.SecretConfiguration;
             adapter = await adapterFactory
                 .CreateAsync(vendor, profile?.Settings, cancellationToken)
                 .ConfigureAwait(false);
             var registration = connections.Register(
                 context.TenantId,
                 admission.ConnectionId,
-                adapter);
+                adapter,
+                platformInstanceId ?? configuration.PlatformInstanceId);
             adapter = null;
             return JsonSerializer.Serialize(new
             {
@@ -138,6 +148,7 @@ public static class ConnectionTools
                 registration.Id,
                 registration.Vendor,
                 registration.Generation,
+                registration.PlatformInstanceId,
                 profile = profile?.Name
             });
         }
@@ -147,6 +158,8 @@ public static class ConnectionTools
                 await asyncDisposable.DisposeAsync().ConfigureAwait(false);
             else if (adapter is IDisposable disposable)
                 disposable.Dispose();
+            if (localSecretConfiguration is IDictionary<string, string> secrets)
+                secrets.Clear();
         }
     }
 
@@ -218,6 +231,7 @@ public static class ConnectionTools
                     Id = connection.Id,
                     connection.Vendor,
                     connection.Generation,
+                    connection.PlatformInstanceId,
                     Enabled = true
                 });
             return JsonSerializer.Serialize(new { success = true, connections = local });
@@ -233,6 +247,7 @@ public static class ConnectionTools
                 Id = connection.ConnectionId,
                 connection.Vendor,
                 connection.Generation,
+                connection.PlatformInstanceId,
                 connection.Enabled
             });
         return JsonSerializer.Serialize(new { success = true, connections = result });

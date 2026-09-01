@@ -5,7 +5,8 @@ using LISSTech.EntitySync.Ports;
 namespace LISSTech.EntitySync.Hosting;
 public sealed record ServerManagedConnectionConfiguration(
     IReadOnlyDictionary<string, JsonElement> PublicConfiguration,
-    IReadOnlyDictionary<string, string> SecretConfiguration);
+    IReadOnlyDictionary<string, string> SecretConfiguration,
+    Guid? PlatformInstanceId = null);
 
 
 public interface IServerManagedEntityAdapterFactory

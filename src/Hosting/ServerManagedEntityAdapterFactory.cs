@@ -308,6 +308,7 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         try
         {
         var normalized = EntitySyncVendors.Normalize(vendor);
+        var platformInstanceId = ResolvePlatformInstanceId(profileSettings);
 
         void AddPublic(string key, string value) =>
             publicConfiguration.Add(key, JsonSerializer.SerializeToElement(value));
@@ -473,7 +474,8 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
 
         return new ServerManagedConnectionConfiguration(
             publicConfiguration,
-            secretConfiguration);
+            secretConfiguration,
+            platformInstanceId);
         }
         catch
         {
@@ -684,6 +686,21 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         if (!string.IsNullOrWhiteSpace(value)) return value;
         throw new InvalidOperationException(
             $"Missing required server configuration: {string.Join(" or ", environmentVariables)}.");
+    }
+
+    private Guid? ResolvePlatformInstanceId(
+        IReadOnlyDictionary<string, string>? profileSettings)
+    {
+        var value = ResolveOptional(
+            profileSettings,
+            "EntitySyncPlatformInstanceId",
+            "ENTITYSYNC_PLATFORM_INSTANCE_ID");
+        if (value is null) return null;
+        if (!Guid.TryParse(value, out var platformInstanceId)
+            || platformInstanceId == Guid.Empty)
+            throw new InvalidOperationException(
+                "EntitySync platform instance ID must be a non-empty UUID.");
+        return platformInstanceId;
     }
 
     private string? ResolveOptional(

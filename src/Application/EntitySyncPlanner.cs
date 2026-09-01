@@ -233,7 +233,7 @@ public sealed class EntitySyncPlanner(
                 await ResolveCreateParentAsync(
                     item,
                     targetLease.Adapter,
-                    sourceConnection.ConnectionId,
+                    sourceConnection.PlatformInstanceId,
                     cancellationToken).ConfigureAwait(false);
             if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
             plan.Items.Add(item);
@@ -307,9 +307,15 @@ public sealed class EntitySyncPlanner(
     private static async Task ResolveCreateParentAsync(
         EntitySyncPlanItem item,
         IEntityAdapter targetAdapter,
-        string sourcePlatformInstanceId,
+        Guid? sourcePlatformInstanceId,
         CancellationToken cancellationToken)
     {
+        if (sourcePlatformInstanceId is null)
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_SOURCE_PLATFORM_INSTANCE_UNCONFIGURED");
+            return;
+        }
         if (targetAdapter is not IEntityWriteParentResolver resolver)
         {
             HoldForParentReview(
@@ -326,7 +332,7 @@ public sealed class EntitySyncPlanner(
         var resolution = await resolver.ResolveWriteParentAsync(
             new EntityWriteParentResolutionRequest(
                 item.Source.Vendor,
-                sourcePlatformInstanceId,
+                sourcePlatformInstanceId.Value.ToString("D"),
                 item.Source.ParentEntityType,
                 item.Source.ParentId),
             cancellationToken).ConfigureAwait(false);

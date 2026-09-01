@@ -43,7 +43,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "012_durable_scheduler_control",
                 "013_control_api_readiness",
                 "014_idempotency_execution_leases",
-                "015_persist_resolved_target_parent"
+                "015_persist_resolved_target_parent",
+                "016_connection_platform_instance_id"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));

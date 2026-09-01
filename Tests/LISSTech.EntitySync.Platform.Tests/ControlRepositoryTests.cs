@@ -136,7 +136,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         using var keyRing = new TemporaryDirectory();
         var protector = CreateProtector(keyRing.Path, "repository-test");
         var secret = protector.Protect(EntitySyncDataProtectionPurpose.ConnectionSecret, "plain-secret");
-        var connection = Connection("tenant-a", "source", "NetSuite", 1, secret, now);
+        var platformInstanceId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var connection = Connection(
+            "tenant-a", "source", "NetSuite", 1, secret, now, platformInstanceId);
 
         await connectionRepository.InsertAsync("tenant-a", connection, default);
         await using (var raw = Database.CreateCommand("""
@@ -151,7 +153,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             Assert.DoesNotContain("plain-secret", storedCiphertext, StringComparison.Ordinal);
         }
 
-        Assert.Equal(connection, await connectionRepository.GetAsync("tenant-a", "source", default));
+        var reloadedConnection = await new PostgresConnectionDefinitionRepository(Database)
+            .GetAsync("tenant-a", "source", default);
+        Assert.Equal(connection, reloadedConnection);
+        Assert.Equal(platformInstanceId, reloadedConnection!.PlatformInstanceId);
         Assert.Null(await connectionRepository.GetAsync("tenant-b", "source", default));
         Assert.Single(await connectionRepository.ListAsync("tenant-a", "NetSuite", true, default));
         Assert.Empty(await connectionRepository.ListAsync("tenant-b", null, null, default));
@@ -2193,11 +2198,12 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
     private static EntitySyncConnectionDefinition Connection(
         string tenantId, string connectionId, string vendor, long generation,
-        string ciphertext, DateTimeOffset now) =>
+        string ciphertext, DateTimeOffset now, Guid? platformInstanceId = null) =>
         new(
             tenantId, connectionId, vendor, connectionId, generation, true,
             new EntitySyncJsonValue("{\"region\":\"us\"}"), ciphertext,
-            now, new EntitySyncActor("creator"), now, new EntitySyncActor("creator"));
+            now, new EntitySyncActor("creator"), now, new EntitySyncActor("creator"),
+            platformInstanceId);
 
     private static EntitySyncPolicy Policy(
         string tenantId, string sourceConnectionId, string targetConnectionId,

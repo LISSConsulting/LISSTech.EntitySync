@@ -297,7 +297,9 @@ public sealed class ConnectionDefinitionServiceTests
                 ["NETSUITE_CONSUMER_KEY"] = "environment-key",
                 ["NETSUITE_CONSUMER_SECRET"] = "environment-secret",
                 ["NETSUITE_TOKEN_ID"] = "environment-token",
-                ["NETSUITE_TOKEN_SECRET"] = "environment-token-secret"
+                ["NETSUITE_TOKEN_SECRET"] = "environment-token-secret",
+                ["ENTITYSYNC_PLATFORM_INSTANCE_ID"] =
+                    "44444444-4444-4444-4444-444444444444",
             });
         var exported = factory.GetConnectionConfiguration(
             "NetSuite",
@@ -305,6 +307,9 @@ public sealed class ConnectionDefinitionServiceTests
         Assert.Equal(
             "environment-account",
             exported.PublicConfiguration["NetSuiteAccountId"].GetString());
+        Assert.Equal(
+            Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            exported.PlatformInstanceId);
         Assert.False(exported.PublicConfiguration.ContainsKey("NetSuiteConsumerSecret"));
         Assert.Equal(
             "environment-secret",

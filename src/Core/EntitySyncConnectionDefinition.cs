@@ -66,7 +66,8 @@ public sealed record EntitySyncConnectionDefinition
         DateTimeOffset createdAt,
         EntitySyncActor createdBy,
         DateTimeOffset updatedAt,
-        EntitySyncActor updatedBy)
+        EntitySyncActor updatedBy,
+        Guid? platformInstanceId = null)
     {
         TenantId = ControlModelGuard.Required(tenantId, nameof(tenantId));
         ConnectionId = ControlModelGuard.Required(connectionId, nameof(connectionId));
@@ -80,6 +81,9 @@ public sealed record EntitySyncConnectionDefinition
         CreatedBy = createdBy ?? throw new ArgumentNullException(nameof(createdBy));
         UpdatedAt = updatedAt;
         UpdatedBy = updatedBy ?? throw new ArgumentNullException(nameof(updatedBy));
+        PlatformInstanceId = platformInstanceId is null
+            ? null
+            : ControlModelGuard.NonEmpty(platformInstanceId.Value, nameof(platformInstanceId));
         if (updatedAt < createdAt) throw new ArgumentException("Updated time cannot precede created time.", nameof(updatedAt));
     }
 
@@ -91,6 +95,7 @@ public sealed record EntitySyncConnectionDefinition
     public bool Enabled { get; }
     public EntitySyncJsonValue PublicConfiguration { get; }
     public string SecretCiphertext { get; }
+    public Guid? PlatformInstanceId { get; }
     public DateTimeOffset CreatedAt { get; }
     public EntitySyncActor CreatedBy { get; }
     public DateTimeOffset UpdatedAt { get; }
@@ -102,7 +107,8 @@ public sealed record EntitySyncConnectionDefinition
         EntitySyncJsonValue publicConfiguration,
         string secretCiphertext,
         EntitySyncActor actor,
-        DateTimeOffset now) =>
+        DateTimeOffset now,
+        Guid? platformInstanceId = null) =>
         new(
             TenantId,
             ConnectionId,
@@ -115,7 +121,8 @@ public sealed record EntitySyncConnectionDefinition
             CreatedAt,
             CreatedBy,
             now,
-            actor);
+            actor,
+            platformInstanceId ?? PlatformInstanceId);
 }
 
 internal static class ControlModelGuard
