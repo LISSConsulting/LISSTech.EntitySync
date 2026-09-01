@@ -162,6 +162,17 @@ public interface ISyncOperationRepository
         EntitySyncOperationItem replacement,
         EntitySyncOperationItemSnapshot? snapshot,
         CancellationToken cancellationToken);
+    Task<bool> TryCommitReconciliationSuccessAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string reconciliationLeaseOwner,
+        EntitySyncOperationItem replacement,
+        EntitySyncChangeState? checkpoint,
+        EntitySyncAuditEvent auditEvent,
+        EntitySyncAuditEventFullValues? auditFullValues,
+        CancellationToken cancellationToken);
 
 
     Task InsertSnapshotAsync(

@@ -178,7 +178,7 @@ public sealed class PostgresSyncAuditRepository(NpgsqlDataSource dataSource) : I
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static void AddEvent(NpgsqlCommand command, EntitySyncAuditEvent auditEvent)
+    internal static void AddEvent(NpgsqlCommand command, EntitySyncAuditEvent auditEvent)
     {
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, auditEvent.TenantId);
         PostgresControlPersistence.Add(command, "audit_event_id", NpgsqlDbType.Uuid, auditEvent.AuditEventId);

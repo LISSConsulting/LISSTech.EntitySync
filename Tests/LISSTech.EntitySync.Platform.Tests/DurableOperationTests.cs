@@ -3,9 +3,12 @@ using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Matching;
+using LISSTech.EntitySync.Mcp;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using Npgsql;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -28,6 +31,9 @@ public sealed class DurableOperationTests : IAsyncLifetime
         Assert.Equal(EntitySyncOperationStatus.Failed,
             SyncOperationService.DeriveTerminalStatus(
                 [EntitySyncItemOutcome.Skipped, EntitySyncItemOutcome.Unknown]));
+        Assert.Equal(EntitySyncOperationStatus.Failed,
+            SyncOperationService.DeriveTerminalStatus(
+                [EntitySyncItemOutcome.Skipped, EntitySyncItemOutcome.Failed]));
         Assert.Equal(EntitySyncOperationStatus.Succeeded,
             SyncOperationService.DeriveTerminalStatus(
                 [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Skipped]));
@@ -35,6 +41,49 @@ public sealed class DurableOperationTests : IAsyncLifetime
             SyncOperationService.DeriveTerminalStatus(
                 [EntitySyncItemOutcome.Pending], cancellationRequestedBeforeDispatch: true));
     }
+    [Fact]
+    public async Task Attributed_tools_use_durable_plan_approval_and_operation_identities()
+    {
+        var context = new McpRequestContext(Fixture.Tenant, false);
+        var createdJson = await SyncTools.CreateSyncPlan(
+            Fixture.DurablePlanning, context, Fixture.PolicyId.ToString(),
+            "mcp-durable-plan", sourceEntityId: Fixture.SourceEntity.Id);
+        using var created = JsonDocument.Parse(createdJson);
+        Assert.True(created.RootElement.GetProperty("success").GetBoolean());
+        var planId = created.RootElement.GetProperty("planId").GetString()!;
+        var digest = created.RootElement.GetProperty("digest").GetString()!;
+
+        var inspectedJson = await SyncTools.GetSyncPlan(
+            Fixture.DurablePlanning, context, planId, 1, 25);
+        using var inspected = JsonDocument.Parse(inspectedJson);
+        Assert.True(inspected.RootElement.GetProperty("success").GetBoolean());
+        Assert.True(inspected.RootElement.GetProperty("result")
+            .GetProperty("inspectionComplete").GetBoolean());
+
+        var approvedJson = await SyncTools.ApproveSyncPlan(
+            Fixture.DurablePlanning, context, planId, digest);
+        using var approved = JsonDocument.Parse(approvedJson);
+        Assert.True(approved.RootElement.GetProperty("success").GetBoolean());
+        var approvalId = approved.RootElement.GetProperty("approvalId").GetString()!;
+
+        var dryRunJson = await SyncTools.ApplySyncPlan(
+            Fixture.Coordinator, context, planId, "mcp-dry-run");
+        using var dryRun = JsonDocument.Parse(dryRunJson);
+        Assert.True(dryRun.RootElement.GetProperty("success").GetBoolean());
+        Assert.NotEqual(Guid.Empty,
+            dryRun.RootElement.GetProperty("operationId").GetGuid());
+
+        var applyJson = await SyncTools.ApplySyncPlan(
+            Fixture.Coordinator, context, planId, "mcp-apply", true, approvalId);
+        using var apply = JsonDocument.Parse(applyJson);
+        Assert.True(apply.RootElement.GetProperty("success").GetBoolean());
+        var operationId = apply.RootElement.GetProperty("operationId").GetString()!;
+        var statusJson = await SyncTools.GetSyncPlanApply(
+            Fixture.Coordinator, context, operationId, default);
+        using var status = JsonDocument.Parse(statusJson);
+        Assert.True(status.RootElement.GetProperty("success").GetBoolean());
+    }
+
 
     [Fact]
     public void Vendor_request_id_is_deterministic_redacted_and_item_specific()
@@ -199,7 +248,6 @@ public sealed class DurableOperationTests : IAsyncLifetime
             "lost-response", Fixture.Actor, default);
         Fixture.Target.ThrowAfterWrite = true;
         Fixture.Target.HideReads = true;
-        Fixture.ChangeStates.ThrowOnUpsert = true;
         var first = await Fixture.Worker.ExecuteOneAsync(
             Fixture.Tenant, "worker-crash-a", default);
         var firstItem = (await Fixture.Operations.GetItemsAsync(
@@ -212,15 +260,32 @@ public sealed class DurableOperationTests : IAsyncLifetime
 
         Fixture.Target.ThrowAfterWrite = false;
         Fixture.Target.HideReads = false;
+        await Fixture.DelayCheckpointWritesAsync(true);
         var checkpointUnknown = await Fixture.Reconciler.ReconcileAsync(
             Fixture.Tenant, run.OperationId, plan.Item.ItemId,
             "reconcile-checkpoint-failure", default);
-        Assert.Equal(EntitySyncItemOutcome.Unknown, checkpointUnknown!.Outcome);
+        Assert.Null(checkpointUnknown);
+        var stillUnknown = await Fixture.Operations.GetItemAsync(
+            Fixture.Tenant, run.OperationId, plan.Item.ItemId, default);
+        Assert.Equal(EntitySyncItemOutcome.Unknown, stillUnknown!.Outcome);
+        var route = EntitySyncChangeStateRoute.Create(
+            Fixture.Tenant, plan.Plan.RouteScope, plan.Item.SourceVendor,
+            plan.Item.SourceConnectionId, plan.Item.SourceEntityType,
+            plan.Item.TargetVendor, plan.Item.TargetConnectionId,
+            plan.Item.TargetEntityType);
+        var checkpoints = await new PostgresEntitySyncChangeStateRepository(Database)
+            .GetBySourceIdsAsync(route, [plan.Item.SourceEntityId], default);
+        Assert.Empty(checkpoints);
+        var auditPage = await Fixture.AuditRepository.ListAsync(
+            Fixture.Tenant, null, null, 100, default);
+        Assert.DoesNotContain(auditPage.Events, audit =>
+            audit.EventType == "SyncOperationItemSucceeded"
+            && audit.ItemId == plan.Item.ItemId);
         var checkpointSnapshot = await Fixture.Operations.GetSnapshotAsync(
             Fixture.Tenant, run.OperationId, plan.Item.ItemId, default);
+        await Fixture.DelayCheckpointWritesAsync(false);
         Assert.NotNull(checkpointSnapshot?.EncryptedAfterCiphertext);
         Assert.Equal(1, Fixture.Target.WriteCalls);
-        Fixture.ChangeStates.ThrowOnUpsert = false;
         var reconciled = await Fixture.Reconciler.ReconcileAsync(
             Fixture.Tenant, run.OperationId, plan.Item.ItemId,
             "reconcile-restart", default);
@@ -232,6 +297,34 @@ public sealed class DurableOperationTests : IAsyncLifetime
             Fixture.Tenant, run.OperationId, default);
         Assert.Equal(EntitySyncOperationStatus.Succeeded, final!.Status);
         Assert.Equal(1, final.SucceededCount);
+    }
+
+    [Fact]
+    public async Task Immutable_target_id_prevents_fallback_to_a_different_desired_match()
+    {
+        var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
+        var run = await Fixture.Service.QueueApplyAsync(
+            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
+            "immutable-target", Fixture.Actor, default);
+        Fixture.Target.ThrowAfterWrite = true;
+        Fixture.Target.HideReads = true;
+        var unknown = await Fixture.Worker.ExecuteOneAsync(
+            Fixture.Tenant, "worker-immutable-target", default);
+        Assert.Equal(EntitySyncOperationStatus.Failed, unknown!.Status);
+        var item = Assert.Single(await Fixture.Operations.GetItemsAsync(
+            Fixture.Tenant, run.OperationId, default));
+        Assert.Equal(EntitySyncItemOutcome.Unknown, item.Outcome);
+
+        Fixture.Target.ThrowAfterWrite = false;
+        Fixture.Target.HideReads = false;
+        Fixture.TargetEntity.Id = "target-entity-b";
+        var reconciled = await Fixture.Reconciler.ReconcileAsync(
+            Fixture.Tenant, run.OperationId, item.ItemId,
+            "reconcile-immutable-target", default);
+
+        Assert.Equal(EntitySyncItemOutcome.Unknown, reconciled!.Outcome);
+        Assert.NotEqual("target-entity-b", reconciled.VendorTargetEntityId);
+        Assert.Equal(1, Fixture.Target.WriteCalls);
     }
 
     [Fact]
@@ -383,6 +476,10 @@ public sealed class DurableOperationTests : IAsyncLifetime
             Target = new FakeAdapter("HaloPSA", () => [TargetEntity]);
             runtime = new FakeRuntime(Source, Target);
             ChangeStates = new TestChangeStates();
+            var legacyPlans = new InMemoryEntitySyncPlanRepository();
+            var planner = new EntitySyncPlanner(
+                runtime, legacyPlans, Exclusions, new WeightedEntityMatcher(),
+                mapper, ChangeStates);
             var definition = new EntitySyncPolicyDefinition(
                 "NetSuite", SourceConnectionId, "Customer",
                 "HaloPSA", TargetConnectionId, "Client",
@@ -392,16 +489,51 @@ public sealed class DurableOperationTests : IAsyncLifetime
             policy = EntitySyncPolicy.Create(
                 Tenant, Guid.NewGuid(), "policy", new string('a', 64), definition,
                 true, DateTimeOffset.UtcNow, Actor);
+            Service = new SyncOperationService(
+                Plans, Operations, Policies, ConnectionDefinitions);
+            DurablePlanning = new DurablePlanService(
+                planner, new PlanManifestBuilder(mapper), Policies,
+                ConnectionDefinitions, runtime, Exclusions, Plans,
+                TimeProvider.System);
+            var legacyService = new EntitySyncService(
+                planner, runtime, legacyPlans, Exclusions, mapper, ChangeStates,
+                operationService: Service);
+            Coordinator = new EntitySyncApplyCoordinator(
+                legacyService, legacyPlans, new TestLifetime(),
+                operationRepository: Operations);
             var auditService = new SyncAuditService(AuditRepository, protector);
             Reconciler = new VendorOutcomeReconciler(
-                Operations, Plans, Policies, runtime, ChangeStates, protector,
-                auditService);
+                Operations, Plans, Policies, runtime, protector, auditService,
+                reconciliationLease: TimeSpan.FromMilliseconds(250));
             Worker = new EntitySyncOperationWorker(
                 Operations, Plans, Policies, runtime, mapper, protector,
                 Reconciler, auditService,
                 options: new EntitySyncOperationWorkerOptions(TimeSpan.FromSeconds(2)));
-            Service = new SyncOperationService(
-                Plans, Operations, Policies, ConnectionDefinitions);
+            
+        }
+
+        internal async Task DelayCheckpointWritesAsync(bool delay)
+        {
+            await using var command = database.CreateCommand(delay
+                ? """
+                  CREATE OR REPLACE FUNCTION entitysync.test_delay_checkpoint()
+                  RETURNS trigger LANGUAGE plpgsql AS $$
+                  BEGIN
+                      PERFORM pg_sleep(0.5);
+                      RETURN NEW;
+                  END;
+                  $$;
+                  DROP TRIGGER IF EXISTS test_delay_checkpoint
+                      ON entitysync.entity_change_state;
+                  CREATE TRIGGER test_delay_checkpoint
+                      BEFORE INSERT OR UPDATE ON entitysync.entity_change_state
+                      FOR EACH ROW EXECUTE FUNCTION entitysync.test_delay_checkpoint();
+                  """
+                : """
+                  DROP TRIGGER IF EXISTS test_delay_checkpoint
+                      ON entitysync.entity_change_state;
+                  """);
+            await command.ExecuteNonQueryAsync();
         }
 
         internal PostgresSyncOperationRepository Operations { get; }
@@ -411,6 +543,9 @@ public sealed class DurableOperationTests : IAsyncLifetime
         internal PostgresEntityExclusionRepository Exclusions { get; }
         internal PostgresSyncAuditRepository AuditRepository { get; }
         internal TestChangeStates ChangeStates { get; }
+        internal Guid PolicyId => policy.PolicyId;
+        internal DurablePlanService DurablePlanning { get; }
+        internal EntitySyncApplyCoordinator Coordinator { get; }
         internal SyncOperationService Service { get; }
         internal EntitySyncOperationWorker Worker { get; }
         internal VendorOutcomeReconciler Reconciler { get; }
@@ -444,6 +579,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
             if (effectivePolicy.Version != policy.Version)
                 await Policies.InsertAsync(Tenant, effectivePolicy, default);
             var now = DateTimeOffset.UtcNow;
+
             var desiredPayload = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
             {
                 ["name"] = JsonSerializer.SerializeToElement(SourceEntity.Name)
@@ -560,6 +696,16 @@ public sealed class DurableOperationTests : IAsyncLifetime
             EntitySyncCanonicalDigest.Compute(
                 JsonSerializer.SerializeToElement(payload));
 
+    }
+
+    private sealed class TestLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication()
+        {
+        }
     }
 
     private sealed class TestMapper : IEntityMapper

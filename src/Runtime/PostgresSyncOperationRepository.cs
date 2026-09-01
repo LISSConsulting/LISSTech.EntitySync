@@ -923,6 +923,105 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         return true;
     }
 
+    public async Task<bool> TryCommitReconciliationSuccessAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string reconciliationLeaseOwner,
+        EntitySyncOperationItem replacement,
+        EntitySyncChangeState? checkpoint,
+        EntitySyncAuditEvent auditEvent,
+        EntitySyncAuditEventFullValues? auditFullValues,
+        CancellationToken cancellationToken)
+    {
+        PostgresControlPersistence.RequireTenant(tenantId, replacement.TenantId, nameof(replacement));
+        PostgresControlPersistence.RequireTenant(tenantId, auditEvent.TenantId, nameof(auditEvent));
+        if (checkpoint is not null)
+            PostgresControlPersistence.RequireTenant(
+                tenantId, checkpoint.Route.TenantId, nameof(checkpoint));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string fenceSql = """
+            SELECT 1
+            FROM entitysync.sync_operation_items item
+            WHERE item.tenant_id = @tenant_id
+              AND item.operation_id = @operation_id
+              AND item.item_id = @item_id
+              AND item.outcome = 'Unknown'
+              AND item.reconcile_attempt = @reconcile_attempt
+              AND item.reconcile_lease_owner = @reconcile_owner
+              AND item.reconcile_lease_expires_at > clock_timestamp()
+            FOR UPDATE OF item
+            """;
+        await using (var fence = new NpgsqlCommand(fenceSql, connection, transaction))
+        {
+            AddOperationKey(fence, tenantId, operationId);
+            PostgresControlPersistence.Add(fence, "item_id", NpgsqlDbType.Uuid, itemId);
+            PostgresControlPersistence.Add(
+                fence, "reconcile_attempt", NpgsqlDbType.Integer,
+                expectedReconciliationAttempt);
+            PostgresControlPersistence.Add(
+                fence, "reconcile_owner", NpgsqlDbType.Text,
+                reconciliationLeaseOwner);
+            if (await fence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+        }
+        if (checkpoint is not null)
+            await UpsertChangeStateAsync(
+                connection, transaction, checkpoint, cancellationToken).ConfigureAwait(false);
+        await AppendAuditAsync(
+            connection, transaction, auditEvent, auditFullValues, cancellationToken)
+            .ConfigureAwait(false);
+        const string itemSql = """
+            UPDATE entitysync.sync_operation_items
+            SET after_payload_sha256 = COALESCE(
+                    @after_payload_sha256, after_payload_sha256),
+                vendor_target_entity_id = COALESCE(
+                    @vendor_target_entity_id, vendor_target_entity_id),
+                safe_write_code = @safe_write_code,
+                outcome = 'Succeeded',
+                error_code = NULL,
+                error_message = NULL,
+                completed_at = @completed_at,
+                reconcile_lease_owner = NULL,
+                reconcile_lease_expires_at = NULL
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND item_id = @item_id AND outcome = 'Unknown'
+              AND reconcile_attempt = @reconcile_attempt
+              AND reconcile_lease_owner = @reconcile_owner
+              AND reconcile_lease_expires_at > clock_timestamp()
+            """;
+        await using (var item = new NpgsqlCommand(itemSql, connection, transaction))
+        {
+            AddItemMutable(item, replacement);
+            AddOperationKey(item, tenantId, operationId);
+            PostgresControlPersistence.Add(item, "item_id", NpgsqlDbType.Uuid, itemId);
+            PostgresControlPersistence.Add(
+                item, "reconcile_attempt", NpgsqlDbType.Integer,
+                expectedReconciliationAttempt);
+            PostgresControlPersistence.Add(
+                item, "reconcile_owner", NpgsqlDbType.Text,
+                reconciliationLeaseOwner);
+            if (await item.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+        }
+        await RefreshTerminalOperationAsync(
+            connection, transaction, tenantId, operationId,
+            replacement.CompletedAt ?? DateTimeOffset.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
 
     public async Task InsertSnapshotAsync(
         string tenantId,
@@ -1071,7 +1170,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 ? EntitySyncOperationStatus.Queued
                 : succeeded + skipped == total
                     ? EntitySyncOperationStatus.Succeeded
-                    : succeeded + skipped > 0
+                    : succeeded > 0
                         ? EntitySyncOperationStatus.Partial
                         : EntitySyncOperationStatus.Failed;
         const string updateSql = """
@@ -1155,6 +1254,112 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(routeLock, "tenant_id", NpgsqlDbType.Text, tenantId);
         PostgresControlPersistence.Add(routeLock, "plan_id", NpgsqlDbType.Uuid, planId);
         await routeLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task UpsertChangeStateAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        EntitySyncChangeState state,
+        CancellationToken cancellationToken)
+    {
+        var validated = EntitySyncChangeStatePersistence.ValidateState(state);
+        const string sql = """
+            INSERT INTO entitysync.entity_change_state (
+                tenant_id, route_scope, source_vendor, source_connection_id,
+                source_entity_type, target_vendor, target_connection_id,
+                target_entity_type, source_entity_key, source_entity_id,
+                source_name, target_entity_id, hash_version, payload_hash, applied_at)
+            VALUES (
+                @tenant_id, @route_scope, @source_vendor, @source_connection_id,
+                @source_entity_type, @target_vendor, @target_connection_id,
+                @target_entity_type, @source_entity_key, @source_entity_id,
+                @source_name, @target_entity_id, @hash_version, @payload_hash, @applied_at)
+            ON CONFLICT (
+                tenant_id, route_scope, source_vendor, source_connection_id,
+                source_entity_type, target_vendor, target_connection_id,
+                target_entity_type, source_entity_key)
+            DO UPDATE SET
+                source_name = EXCLUDED.source_name,
+                target_entity_id = EXCLUDED.target_entity_id,
+                hash_version = EXCLUDED.hash_version,
+                payload_hash = EXCLUDED.payload_hash,
+                applied_at = EXCLUDED.applied_at
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        var route = validated.State.Route;
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, route.TenantId);
+        PostgresControlPersistence.Add(command, "route_scope", NpgsqlDbType.Text, route.Scope);
+        PostgresControlPersistence.Add(command, "source_vendor", NpgsqlDbType.Text, route.SourceVendor);
+        PostgresControlPersistence.Add(
+            command, "source_connection_id", NpgsqlDbType.Text, route.SourceConnectionId);
+        PostgresControlPersistence.Add(
+            command, "source_entity_type", NpgsqlDbType.Text, route.SourceEntityType);
+        PostgresControlPersistence.Add(command, "target_vendor", NpgsqlDbType.Text, route.TargetVendor);
+        PostgresControlPersistence.Add(
+            command, "target_connection_id", NpgsqlDbType.Text, route.TargetConnectionId);
+        PostgresControlPersistence.Add(
+            command, "target_entity_type", NpgsqlDbType.Text, route.TargetEntityType);
+        PostgresControlPersistence.Add(
+            command, "source_entity_key", NpgsqlDbType.Text, validated.SourceEntityKey);
+        PostgresControlPersistence.Add(
+            command, "source_entity_id", NpgsqlDbType.Text, validated.State.SourceEntityId);
+        PostgresControlPersistence.Add(
+            command, "source_name", NpgsqlDbType.Text, validated.State.SourceName);
+        PostgresControlPersistence.Add(
+            command, "target_entity_id", NpgsqlDbType.Text, validated.State.TargetEntityId);
+        PostgresControlPersistence.Add(
+            command, "hash_version", NpgsqlDbType.Integer, validated.State.HashVersion);
+        PostgresControlPersistence.Add(
+            command, "payload_hash", NpgsqlDbType.Text, validated.State.PayloadHash);
+        PostgresControlPersistence.Add(
+            command, "applied_at", NpgsqlDbType.TimestampTz, validated.State.AppliedAt);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task AppendAuditAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        EntitySyncAuditEvent auditEvent,
+        EntitySyncAuditEventFullValues? fullValues,
+        CancellationToken cancellationToken)
+    {
+        const string eventSql = """
+            INSERT INTO entitysync.audit_events (
+                tenant_id, audit_event_id, occurred_at, event_type, actor_id,
+                operation_id, run_id, plan_id, item_id, correlation_id,
+                redacted_values, redacted_values_sha256, full_values_sha256,
+                full_values_expires_at)
+            VALUES (
+                @tenant_id, @audit_event_id, @occurred_at, @event_type, @actor_id,
+                @operation_id, @run_id, @plan_id, @item_id, @correlation_id,
+                @redacted_values, @redacted_values_sha256, @full_values_sha256,
+                @full_values_expires_at)
+            ON CONFLICT (tenant_id, audit_event_id) DO NOTHING
+            """;
+        await using (var command = new NpgsqlCommand(eventSql, connection, transaction))
+        {
+            PostgresSyncAuditRepository.AddEvent(command, auditEvent);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        if (fullValues is null) return;
+        const string fullSql = """
+            INSERT INTO entitysync.audit_event_full_values (
+                tenant_id, audit_event_id, full_values_ciphertext, expires_at)
+            VALUES (
+                @tenant_id, @audit_event_id, @full_values_ciphertext, @expires_at)
+            ON CONFLICT (tenant_id, audit_event_id) DO NOTHING
+            """;
+        await using var full = new NpgsqlCommand(fullSql, connection, transaction);
+        PostgresControlPersistence.Add(
+            full, "tenant_id", NpgsqlDbType.Text, fullValues.TenantId);
+        PostgresControlPersistence.Add(
+            full, "audit_event_id", NpgsqlDbType.Uuid, fullValues.AuditEventId);
+        PostgresControlPersistence.Add(
+            full, "full_values_ciphertext", NpgsqlDbType.Text,
+            fullValues.FullValuesCiphertext);
+        PostgresControlPersistence.Add(
+            full, "expires_at", NpgsqlDbType.TimestampTz, fullValues.ExpiresAt);
+        await full.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task UpsertSnapshotAsync(

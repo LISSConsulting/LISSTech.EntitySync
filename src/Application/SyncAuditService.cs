@@ -24,6 +24,25 @@ public sealed class SyncAuditService(
         object? fullValues,
         CancellationToken cancellationToken)
     {
+        var prepared = Prepare(
+            tenantId, eventType, actor, operationId, planId, itemId,
+            correlationId, redactedValues, fullValues);
+        return await audits.TryAppendAsync(
+            tenantId, prepared.Event, prepared.FullValues, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public PreparedSyncAudit Prepare(
+        string tenantId,
+        string eventType,
+        EntitySyncActor actor,
+        Guid operationId,
+        Guid planId,
+        Guid? itemId,
+        string correlationId,
+        object redactedValues,
+        object? fullValues)
+    {
         ArgumentNullException.ThrowIfNull(actor);
         ArgumentNullException.ThrowIfNull(redactedValues);
         var occurredAt = clock.GetUtcNow();
@@ -70,8 +89,7 @@ public sealed class SyncAuditService(
             redactedHash,
             fullHash,
             expiresAt);
-        return await audits.TryAppendAsync(
-            tenantId, auditEvent, retained, cancellationToken).ConfigureAwait(false);
+        return new PreparedSyncAudit(auditEvent, retained);
     }
 
     private static Guid StableGuid(EntitySyncSha256 digest)
@@ -81,3 +99,7 @@ public sealed class SyncAuditService(
         return new Guid(bytes);
     }
 }
+
+public sealed record PreparedSyncAudit(
+    EntitySyncAuditEvent Event,
+    EntitySyncAuditEventFullValues? FullValues);

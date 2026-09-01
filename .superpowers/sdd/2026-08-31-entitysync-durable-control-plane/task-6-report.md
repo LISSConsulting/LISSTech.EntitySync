@@ -56,3 +56,13 @@ None within Task 6 scope. Scheduler cron hosting, HTTP controllers, and the Orch
 - Changed the focused protector to randomized ciphertext and added skipped-plus-unknown terminal coverage.
 
 Focused verification after these changes: `DurableOperationTests` passed 9/9 against PostgreSQL.
+
+## Fix Round 2
+
+- Cut every attributed plan lifecycle tool to durable state: explicit persisted policy ID and planning idempotency, durable page inspection, durable approval with returned approval ID, and operation-ID queue/status.
+- Added one PostgreSQL reconciliation-success transaction fenced by current Unknown outcome, reconciliation attempt/owner, and unexpired database-time lease. Changed-only checkpoint, idempotent encrypted audit, item success, and terminal run refresh now commit or roll back together.
+- Corrected the normal attempt classifier so skipped items do not count as successful writes when failed or unknown outcomes remain.
+- Stopped desired-state global fallback whenever an immutable returned or planned target ID exists.
+- Added focused coverage for the attributed durable lifecycle, immutable-ID mismatch, skipped-plus-failed classification, and a checkpoint delay that expires the reconciliation lease and proves checkpoint/audit/item rollback.
+
+Focused verification: `DurableOperationTests` passed 11/11 against PostgreSQL; `PlatformTests.McpFocusedPlanUsesBoundedQueryAndExactSourceId` passed 1/1 for the unannotated compatibility helper.

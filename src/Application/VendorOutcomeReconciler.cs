@@ -9,12 +9,13 @@ public sealed class VendorOutcomeReconciler(
     IDurableSyncPlanRepository plans,
     ISyncPolicyRepository policies,
     IConnectionRuntimeFactory connections,
-    IEntitySyncChangeStateRepository changeStates,
     IEntitySyncDataProtector protector,
     SyncAuditService audits,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    TimeSpan? reconciliationLease = null)
 {
-    private static readonly TimeSpan ReconciliationLease = TimeSpan.FromMinutes(2);
+    private readonly TimeSpan reconciliationLease =
+        reconciliationLease ?? TimeSpan.FromMinutes(2);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
 
     public async Task<EntitySyncOperationItem?> ReconcileAsync(
@@ -25,7 +26,7 @@ public sealed class VendorOutcomeReconciler(
         CancellationToken cancellationToken)
     {
         var claim = await operations.TryLeaseUnknownItemAsync(
-            tenantId, operationId, itemId, leaseOwner, ReconciliationLease,
+            tenantId, operationId, itemId, leaseOwner, reconciliationLease,
             cancellationToken).ConfigureAwait(false);
         if (claim is null) return null;
         var operation = await operations.GetAsync(
@@ -143,6 +144,9 @@ public sealed class VendorOutcomeReconciler(
                             "TARGET_ID_PROVED_APPLIED", cancellationToken)
                             .ConfigureAwait(false);
                 }
+                return await ReleaseUnknownAsync(
+                    tenantId, claim, "TARGET_ID_READBACK_INCONCLUSIVE",
+                    cancellationToken).ConfigureAwait(false);
             }
 
             var exactMatches = await ReadExactDesiredMatchesAsync(
@@ -176,7 +180,7 @@ public sealed class VendorOutcomeReconciler(
         CancellationToken cancellationToken) =>
         operations.TryRenewUnknownItemLeaseAsync(
             tenantId, claim.Item.OperationId, claim.Item.ItemId,
-            claim.ReconciliationAttempt, claim.LeaseOwner, ReconciliationLease,
+            claim.ReconciliationAttempt, claim.LeaseOwner, reconciliationLease,
             cancellationToken);
 
     private async Task<EntitySyncOperationItem?> CompleteAsync(
@@ -213,67 +217,55 @@ public sealed class VendorOutcomeReconciler(
         var replacement = Copy(
             claim.Item, outcome, completedAt, afterHash,
             observed?.Id ?? claim.Item.VendorTargetEntityId, safeCode);
-        if (outcome == EntitySyncItemOutcome.Succeeded)
+        if (outcome != EntitySyncItemOutcome.Succeeded)
         {
-            if (policy.Definition.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)
-            {
-                var route = EntitySyncChangeStateRoute.Create(
-                    tenantId, operation.RouteScope, claim.Item.SourceVendor,
-                    claim.Item.SourceConnectionId, claim.Item.SourceEntityType,
-                    claim.Item.TargetVendor, claim.Item.TargetConnectionId,
-                    claim.Item.TargetEntityType);
-                if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
-                        .ConfigureAwait(false))
-                    return null;
-                await changeStates.UpsertAsync(
-                    new EntitySyncChangeState(
-                        route, claim.Item.SourceEntityId, claim.Item.SourceEntityId,
-                        observed?.Id ?? claim.Item.VendorTargetEntityId
-                            ?? claim.Item.TargetEntityId
-                            ?? throw new InvalidOperationException(
-                                "A reconciled changed-only update requires a target ID."),
-                        EntityWriteRequestDigest.SchemaVersion,
-                        claim.Item.DesiredPayloadSha256.Value,
-                        completedAt),
-                    cancellationToken).ConfigureAwait(false);
-                if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
-                        .ConfigureAwait(false))
-                    return null;
-            }
-            if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
-                    .ConfigureAwait(false))
-                return null;
-            var audited = await audits.AppendAsync(
-                tenantId,
-                "SyncOperationItemSucceeded",
-                new EntitySyncActor("entitysync-worker"),
-                operation.OperationId,
-                operation.PlanId,
-                claim.Item.ItemId,
-                claim.Item.VendorRequestId ?? claim.Item.ItemId.ToString("N"),
-                new
-                {
-                    claim.Item.ItemId,
-                    Outcome = outcome.ToString(),
-                    claim.Item.DesiredPayloadSha256,
-                    AfterPayloadSha256 = afterHash,
-                    SafeCode = safeCode
-                },
-                observed,
-                cancellationToken).ConfigureAwait(false);
-            if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
-                    .ConfigureAwait(false))
-                return null;
-            if (!audited)
-                return await ReleaseUnknownAsync(
-                    tenantId, claim, "AUDIT_CHECKPOINT_FAILED", cancellationToken)
-                    .ConfigureAwait(false);
+            var persisted = await operations.TryCompleteReconciliationAsync(
+                tenantId, operation.OperationId, claim.Item.ItemId,
+                claim.ReconciliationAttempt, claim.LeaseOwner, replacement,
+                null, cancellationToken).ConfigureAwait(false);
+            return persisted ? replacement : null;
         }
-        var persisted = await operations.TryCompleteReconciliationAsync(
+        EntitySyncChangeState? checkpoint = null;
+        if (policy.Definition.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)
+        {
+            var route = EntitySyncChangeStateRoute.Create(
+                tenantId, operation.RouteScope, claim.Item.SourceVendor,
+                claim.Item.SourceConnectionId, claim.Item.SourceEntityType,
+                claim.Item.TargetVendor, claim.Item.TargetConnectionId,
+                claim.Item.TargetEntityType);
+            checkpoint = new EntitySyncChangeState(
+                route, claim.Item.SourceEntityId, claim.Item.SourceEntityId,
+                observed?.Id ?? claim.Item.VendorTargetEntityId
+                    ?? claim.Item.TargetEntityId
+                    ?? throw new InvalidOperationException(
+                        "A reconciled changed-only update requires a target ID."),
+                EntityWriteRequestDigest.SchemaVersion,
+                claim.Item.DesiredPayloadSha256.Value,
+                completedAt);
+        }
+        var audit = audits.Prepare(
+            tenantId,
+            "SyncOperationItemSucceeded",
+            new EntitySyncActor("entitysync-worker"),
+            operation.OperationId,
+            operation.PlanId,
+            claim.Item.ItemId,
+            claim.Item.VendorRequestId ?? claim.Item.ItemId.ToString("N"),
+            new
+            {
+                claim.Item.ItemId,
+                Outcome = outcome.ToString(),
+                claim.Item.DesiredPayloadSha256,
+                AfterPayloadSha256 = afterHash,
+                SafeCode = safeCode
+            },
+            observed);
+        var committed = await operations.TryCommitReconciliationSuccessAsync(
             tenantId, operation.OperationId, claim.Item.ItemId,
-            claim.ReconciliationAttempt, claim.LeaseOwner, replacement,
-            null, cancellationToken).ConfigureAwait(false);
-        return persisted ? replacement : null;
+            claim.ReconciliationAttempt, claim.LeaseOwner,
+            replacement, checkpoint, audit.Event, audit.FullValues,
+            cancellationToken).ConfigureAwait(false);
+        return committed ? replacement : null;
     }
 
     private async Task<EntitySyncOperationItem?> ReleaseUnknownAsync(
