@@ -265,6 +265,8 @@ public sealed class ControlSchedulerTests
         public EntitySyncPolicy Policy { get; } = policy;
         public Task InsertAsync(string tenantId, EntitySyncPolicy policy, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> TryInsertValidatedAsync(string tenantId, EntitySyncPolicy policy, string sourceConnectionId, long sourceGeneration, string targetConnectionId, long targetGeneration, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<bool> TryInsertValidatedWithTokenAsync(string tenantId, EntitySyncPolicy policy, string sourceConnectionId, long sourceGeneration, string targetConnectionId, long targetGeneration, string idempotencyToken, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(string tenantId, Guid policyId, string idempotencyToken, CancellationToken cancellationToken) => Task.FromResult<EntitySyncPolicy?>(null);
         public Task<EntitySyncPolicy?> GetAsync(string tenantId, Guid policyId, int version, CancellationToken cancellationToken) => Task.FromResult<EntitySyncPolicy?>(Policy.PolicyId == policyId && Policy.Version == version ? Policy : null);
         public Task<EntitySyncPolicy?> GetLatestAsync(string tenantId, Guid policyId, CancellationToken cancellationToken) => Task.FromResult<EntitySyncPolicy?>(Policy.PolicyId == policyId ? Policy : null);
         public Task<IReadOnlyList<EntitySyncPolicy>> ListLatestAsync(string tenantId, string? routeScope, bool? enabled, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<EntitySyncPolicy>>([Policy]);

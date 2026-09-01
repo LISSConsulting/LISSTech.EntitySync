@@ -35,13 +35,43 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<bool> TryInsertValidatedAsync(
+    public Task<bool> TryInsertValidatedAsync(
         string tenantId,
         EntitySyncPolicy policy,
         string sourceConnectionId,
         long sourceGeneration,
         string targetConnectionId,
         long targetGeneration,
+        CancellationToken cancellationToken) =>
+        TryInsertValidatedCoreAsync(
+            tenantId, policy, sourceConnectionId, sourceGeneration,
+            targetConnectionId, targetGeneration, null, cancellationToken);
+
+    public Task<bool> TryInsertValidatedWithTokenAsync(
+        string tenantId,
+        EntitySyncPolicy policy,
+        string sourceConnectionId,
+        long sourceGeneration,
+        string targetConnectionId,
+        long targetGeneration,
+        string idempotencyToken,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyToken);
+        return TryInsertValidatedCoreAsync(
+            tenantId, policy, sourceConnectionId, sourceGeneration,
+            targetConnectionId, targetGeneration, idempotencyToken.Trim(),
+            cancellationToken);
+    }
+
+    private async Task<bool> TryInsertValidatedCoreAsync(
+        string tenantId,
+        EntitySyncPolicy policy,
+        string sourceConnectionId,
+        long sourceGeneration,
+        string targetConnectionId,
+        long targetGeneration,
+        string? idempotencyToken,
         CancellationToken cancellationToken)
     {
         PostgresControlPersistence.RequireTenant(
@@ -99,16 +129,18 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         const string insertSql = """
             INSERT INTO entitysync.sync_policies (
                 tenant_id, policy_id, version, name, route_scope, definition,
-                definition_sha256, enabled, created_at, created_by)
+                definition_sha256, enabled, created_at, created_by, idempotency_token)
             VALUES (
                 @tenant_id, @policy_id, @version, @name, @route_scope, @definition,
-                @definition_sha256, @enabled, @created_at, @created_by)
+                @definition_sha256, @enabled, @created_at, @created_by, @idempotency_token)
             """;
         await using var insertCommand = new NpgsqlCommand(
             insertSql,
             connection,
             transaction);
         AddPolicy(insertCommand, policy);
+        PostgresControlPersistence.Add(
+            insertCommand, "idempotency_token", NpgsqlDbType.Char, idempotencyToken);
         try
         {
             await insertCommand.ExecuteNonQueryAsync(cancellationToken)
@@ -127,6 +159,32 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
             generations.TryGetValue(connectionId, out var current)
             && current.Enabled
             && current.Generation == generation;
+    }
+
+    public async Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(
+        string tenantId,
+        Guid policyId,
+        string idempotencyToken,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT tenant_id, policy_id, version, name, route_scope, definition::text,
+                   definition_sha256, enabled, created_at, created_by
+            FROM entitysync.sync_policies
+            WHERE tenant_id = @tenant_id
+              AND policy_id = @policy_id
+              AND idempotency_token = @idempotency_token
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "policy_id", NpgsqlDbType.Uuid, policyId);
+        PostgresControlPersistence.Add(
+            command, "idempotency_token", NpgsqlDbType.Char, idempotencyToken);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? Read(reader)
+            : null;
     }
 
 
@@ -190,6 +248,38 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<EntitySyncPolicy>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(Read(reader));
+        return result;
+    }
+
+    public async Task<IReadOnlyList<EntitySyncPolicy>> ListVersionsAsync(
+        string tenantId,
+        Guid policyId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (maximumRows is <= 0 or > 101)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows));
+        const string sql = """
+            SELECT tenant_id, policy_id, version, name, route_scope, definition::text,
+                   definition_sha256, enabled, created_at, created_by
+            FROM entitysync.sync_policies
+            WHERE tenant_id = @tenant_id AND policy_id = @policy_id
+            ORDER BY version DESC
+            LIMIT @maximum_rows OFFSET @offset
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "policy_id", NpgsqlDbType.Uuid, policyId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var result = new List<EntitySyncPolicy>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(Read(reader));
         return result;
     }
 

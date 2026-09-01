@@ -140,8 +140,10 @@ public sealed class PostgresSyncAuditRepository(NpgsqlDataSource dataSource) : I
         const string sql = """
             SELECT tenant_id, audit_event_id, full_values_ciphertext, expires_at
             FROM entitysync.audit_event_full_values
-            WHERE tenant_id = @tenant_id AND audit_event_id = @audit_event_id
+            WHERE tenant_id = @tenant_id
+              AND audit_event_id = @audit_event_id
               AND full_values_ciphertext IS NOT NULL
+              AND expires_at > clock_timestamp()
             """;
         await using var command = dataSource.CreateCommand(sql);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);

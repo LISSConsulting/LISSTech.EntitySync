@@ -46,6 +46,13 @@ public interface IDurableSyncPlanRepository
         Guid planId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<EntitySyncDurablePlan>> ListAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<EntitySyncDurablePlan>>([]);
+
     Task<EntitySyncDurablePlanPage> GetPageAsync(
         string tenantId,
         Guid planId,

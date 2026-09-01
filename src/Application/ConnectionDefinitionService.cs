@@ -107,13 +107,21 @@ public sealed class ConnectionDefinitionService(
         CancellationToken cancellationToken)
     {
         ValidateExpectedGeneration(expectedGeneration);
-        await using var lease = await runtimeFactory.AcquireAsync(
-            Require(tenantId, nameof(tenantId)),
-            RequireConnectionId(connectionId),
-            expectedGeneration,
-            cancellationToken).ConfigureAwait(false);
-        return await lease.Adapter.TestConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await using var lease = await runtimeFactory.AcquireAsync(
+                Require(tenantId, nameof(tenantId)),
+                RequireConnectionId(connectionId),
+                expectedGeneration,
+                cancellationToken).ConfigureAwait(false);
+            return await lease.Adapter.TestConnectionAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            throw new EntitySyncDependencyUnavailableException(
+                "The connection adapter is unavailable.", exception);
+        }
     }
 
     public async Task<EntitySyncConnectionDefinition> UpdateAsync(

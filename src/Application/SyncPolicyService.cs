@@ -36,13 +36,33 @@ public sealed class SyncPolicyService(
 {
     private const string OrchestraVendor = "OrchestraMSP";
 
-    public async Task<EntitySyncPolicy> CreateAsync(
+    public Task<EntitySyncPolicy> CreateAsync(
         string tenantId,
         SyncPolicyRequest request,
         EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        CreateAsync(tenantId, Guid.NewGuid(), request, actor, cancellationToken);
+
+    public Task<EntitySyncPolicy> CreateAsync(
+        string tenantId,
+        Guid policyId,
+        SyncPolicyRequest request,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        CreateIdempotentAsync(
+            tenantId, policyId, request, actor, null, cancellationToken);
+
+    public async Task<EntitySyncPolicy> CreateIdempotentAsync(
+        string tenantId,
+        Guid policyId,
+        SyncPolicyRequest request,
+        EntitySyncActor actor,
+        string? idempotencyToken,
         CancellationToken cancellationToken)
     {
         tenantId = Require(tenantId, nameof(tenantId));
+        if (policyId == Guid.Empty)
+            throw new ArgumentException("Policy ID cannot be empty.", nameof(policyId));
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Definition);
         ArgumentNullException.ThrowIfNull(actor);
@@ -53,23 +73,37 @@ public sealed class SyncPolicyService(
             request.Definition,
             (source, target) => EntitySyncPolicy.Create(
                 tenantId,
-                Guid.NewGuid(),
+                policyId,
                 name,
                 routeScope,
                 request.Definition,
                 request.Enabled,
                 timeProvider.GetUtcNow(),
                 actor),
+            idempotencyToken,
             cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<EntitySyncPolicy> CreateNextVersionAsync(
+    public Task<EntitySyncPolicy> CreateNextVersionAsync(
         string tenantId,
         Guid policyId,
         int expectedVersion,
         EntitySyncPolicyDefinition definition,
         bool? enabled,
         EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        CreateNextVersionIdempotentAsync(
+            tenantId, policyId, expectedVersion, definition, enabled, actor, null,
+            cancellationToken);
+
+    public async Task<EntitySyncPolicy> CreateNextVersionIdempotentAsync(
+        string tenantId,
+        Guid policyId,
+        int expectedVersion,
+        EntitySyncPolicyDefinition definition,
+        bool? enabled,
+        EntitySyncActor actor,
+        string? idempotencyToken,
         CancellationToken cancellationToken)
     {
         tenantId = Require(tenantId, nameof(tenantId));
@@ -95,6 +129,7 @@ public sealed class SyncPolicyService(
                 definition,
                 timeProvider.GetUtcNow(),
                 enabled),
+            idempotencyToken,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -114,6 +149,19 @@ public sealed class SyncPolicyService(
             ?? throw new PolicyNotFoundException(tenantId, policyId, version);
     }
 
+    public Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(
+        string tenantId,
+        Guid policyId,
+        string idempotencyToken,
+        CancellationToken cancellationToken) =>
+        policies.GetByIdempotencyTokenAsync(
+            Require(tenantId, nameof(tenantId)),
+            policyId == Guid.Empty
+                ? throw new ArgumentException("Policy ID cannot be empty.", nameof(policyId))
+                : policyId,
+            Require(idempotencyToken, nameof(idempotencyToken)),
+            cancellationToken);
+
     public Task<IReadOnlyList<EntitySyncPolicy>> ListLatestAsync(
         string tenantId,
         string? routeScope,
@@ -129,6 +177,7 @@ public sealed class SyncPolicyService(
         string tenantId,
         EntitySyncPolicyDefinition definition,
         Func<EntitySyncConnectionDefinition, EntitySyncConnectionDefinition, EntitySyncPolicy> createPolicy,
+        string? idempotencyToken,
         CancellationToken cancellationToken)
     {
         ValidateTopology(definition);
@@ -176,14 +225,25 @@ public sealed class SyncPolicyService(
             cancellationToken).ConfigureAwait(false);
 
         var policy = createPolicy(source, target);
-        if (await policies.TryInsertValidatedAsync(
+        var inserted = idempotencyToken is null
+            ? await policies.TryInsertValidatedAsync(
                 tenantId,
                 policy,
                 source.ConnectionId,
                 source.Generation,
                 target.ConnectionId,
                 target.Generation,
-                cancellationToken).ConfigureAwait(false))
+                cancellationToken).ConfigureAwait(false)
+            : await policies.TryInsertValidatedWithTokenAsync(
+                tenantId,
+                policy,
+                source.ConnectionId,
+                source.Generation,
+                target.ConnectionId,
+                target.Generation,
+                idempotencyToken,
+                cancellationToken).ConfigureAwait(false);
+        if (inserted)
             return policy;
 
         var currentSource = await connections.GetAsync(

@@ -31,7 +31,11 @@ public sealed record IdempotentResponse
 
 public sealed record IdempotencyExecutionContext
 {
-    public IdempotencyExecutionContext(string tenantId, string key, string token)
+    public IdempotencyExecutionContext(
+        string tenantId,
+        string key,
+        string token,
+        bool isRecovery = false)
     {
         if (string.IsNullOrWhiteSpace(tenantId))
             throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
@@ -42,11 +46,19 @@ public sealed record IdempotencyExecutionContext
         TenantId = tenantId.Trim();
         Key = key.Trim();
         Token = token.Trim();
+        IsRecovery = isRecovery;
     }
 
     public string TenantId { get; }
     public string Key { get; }
     public string Token { get; }
+    public bool IsRecovery { get; }
+}
+
+public enum IdempotencyExecutionMode
+{
+    Recoverable,
+    AtomicDatabase
 }
 
 public interface IIdempotentCommandExecutor
@@ -55,6 +67,7 @@ public interface IIdempotentCommandExecutor
         string tenantId,
         string key,
         string requestHash,
+        IdempotencyExecutionMode mode,
         Func<IdempotencyExecutionContext, CancellationToken, Task<IdempotentResponse>> command,
         CancellationToken cancellationToken);
 }

@@ -337,6 +337,46 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadPlan(reader) : null;
     }
 
+    public async Task<IReadOnlyList<EntitySyncDurablePlan>> ListAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (maximumRows is <= 0 or > 101)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows));
+        const string sql = """
+            SELECT plan.tenant_id, plan.plan_id, plan.policy_id, plan.policy_version,
+                   policy.definition_sha256, plan.route_scope, plan.source_connection_id,
+                   plan.source_connection_generation, plan.target_connection_id,
+                   plan.target_connection_generation, plan.plan_digest_sha256, plan.status,
+                   plan.source_search, plan.source_count, plan.source_entity_id,
+                   (SELECT count(*)::integer FROM entitysync.sync_plan_items item
+                     WHERE item.tenant_id = plan.tenant_id AND item.plan_id = plan.plan_id),
+                   plan.created_at, plan.created_by, plan.expires_at
+            FROM entitysync.sync_plans plan
+            JOIN entitysync.sync_policies policy
+              ON policy.tenant_id = plan.tenant_id AND policy.policy_id = plan.policy_id
+             AND policy.version = plan.policy_version
+            WHERE plan.tenant_id = @tenant_id
+            ORDER BY plan.created_at DESC, plan.plan_id
+            LIMIT @maximum_rows OFFSET @offset
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var result = new List<EntitySyncDurablePlan>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(ReadPlan(reader));
+        return result;
+    }
+
     public async Task<EntitySyncDurablePlanPage> GetPageAsync(string tenantId, Guid planId, int page, int pageSize, CancellationToken cancellationToken)
     {
         if (page <= 0) throw new ArgumentOutOfRangeException(nameof(page));

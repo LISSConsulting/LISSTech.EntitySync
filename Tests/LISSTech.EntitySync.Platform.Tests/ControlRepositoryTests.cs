@@ -7,6 +7,7 @@ using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Xunit;
@@ -178,6 +179,34 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Equal(policy.DefinitionSha256, latestPolicy.DefinitionSha256);
         Assert.Null(await policyRepository.GetAsync("tenant-b", policy.PolicyId, 1, default));
         Assert.Single(await policyRepository.ListLatestAsync("tenant-a", "route-a", true, default));
+    }
+
+    [Fact]
+    public async Task Policy_idempotency_token_is_tenant_scoped_and_bound_to_exact_version()
+    {
+        const string tenantId = "policy-token-tenant";
+        var now = DateTimeOffset.UtcNow;
+        var connections = new PostgresConnectionDefinitionRepository(Database);
+        var policies = new PostgresSyncPolicyRepository(Database);
+        await connections.InsertAsync(
+            tenantId, Connection(tenantId, "source", "NetSuite", 1, "cipher", now), default);
+        await connections.InsertAsync(
+            tenantId, Connection(tenantId, "target", "HaloPSA", 1, "cipher", now), default);
+        var policy = Policy(tenantId, "source", "target", now);
+        var token = new string('a', 64);
+
+        Assert.True(await policies.TryInsertValidatedWithTokenAsync(
+            tenantId, policy, "source", 1, "target", 1, token, default));
+        var recovered = await policies.GetByIdempotencyTokenAsync(
+            tenantId, policy.PolicyId, token, default);
+        Assert.NotNull(recovered);
+        Assert.Equal(policy.PolicyId, recovered.PolicyId);
+        Assert.Equal(policy.Version, recovered.Version);
+        Assert.Equal(policy.DefinitionSha256, recovered.DefinitionSha256);
+        Assert.Null(await policies.GetByIdempotencyTokenAsync(
+            "other-tenant", policy.PolicyId, token, default));
+        Assert.Null(await policies.GetByIdempotencyTokenAsync(
+            tenantId, policy.PolicyId, new string('b', 64), default));
     }
     [Fact]
     public async Task Deleted_connection_id_recreation_never_reuses_a_generation()
@@ -1533,7 +1562,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Equal(1, await operations.DeleteExpiredSnapshotsAsync(
             context.TenantId, DateTimeOffset.UtcNow, 1, default));
 
-        var idempotency = new PostgresIdempotencyRepository(Database, TimeProvider.System);
+        var idempotency = new PostgresIdempotencyRepository(Database);
         var createdAt = DateTimeOffset.UtcNow.AddMinutes(-2);
         var receipt = new EntitySyncIdempotencyReceipt(
             context.TenantId, "direct-key", new EntitySyncSha256(new string('1', 64)),
@@ -1644,7 +1673,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     [Fact]
     public async Task Idempotent_executor_replays_conflicts_and_executes_concurrent_command_once()
     {
-        var executor = new PostgresIdempotencyRepository(Database, TimeProvider.System);
+        var executor = new PostgresIdempotencyRepository(Database);
         var executions = 0;
         var hash = new string('f', 64);
         Task<IdempotentResponse> Command(
@@ -1659,13 +1688,18 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         }
 
         var responses = await Task.WhenAll(
-            executor.ExecuteAsync("idempotency-tenant", "same-key", hash, Command, default),
-            executor.ExecuteAsync("idempotency-tenant", "same-key", hash, Command, default));
+            executor.ExecuteAsync(
+                "idempotency-tenant", "same-key", hash,
+                IdempotencyExecutionMode.Recoverable, Command, default),
+            executor.ExecuteAsync(
+                "idempotency-tenant", "same-key", hash,
+                IdempotencyExecutionMode.Recoverable, Command, default));
 
         Assert.Equal(1, executions);
         Assert.All(responses, response => Assert.Equal(201, response.StatusCode));
         await Assert.ThrowsAsync<IdempotencyConflictException>(() => executor.ExecuteAsync(
-            "idempotency-tenant", "same-key", new string('a', 64), Command, default));
+            "idempotency-tenant", "same-key", new string('a', 64),
+            IdempotencyExecutionMode.Recoverable, Command, default));
         Assert.Null(await executor.GetAsync("other-tenant", "same-key", default));
         var downstreamTokens = new HashSet<string>(StringComparer.Ordinal);
         var logicalEffects = 0;
@@ -1682,7 +1716,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         }
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => executor.ExecuteAsync(
-            "idempotency-tenant", "crash-key", hash, CrashSafeCommand, default));
+            "idempotency-tenant", "crash-key", hash,
+            IdempotencyExecutionMode.Recoverable, CrashSafeCommand, default));
         var durableClaim = await executor.GetAsync(
             "idempotency-tenant", "crash-key", default);
         Assert.NotNull(durableClaim);
@@ -1690,6 +1725,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var conflictingInvocations = 0;
         await Assert.ThrowsAsync<IdempotencyConflictException>(() => executor.ExecuteAsync(
             "idempotency-tenant", "crash-key", new string('e', 64),
+            IdempotencyExecutionMode.Recoverable,
             (_, _) =>
             {
                 conflictingInvocations++;
@@ -1699,10 +1735,363 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             default));
         Assert.Equal(0, conflictingInvocations);
         var resumed = await executor.ExecuteAsync(
-            "idempotency-tenant", "crash-key", hash, CrashSafeCommand, default);
+            "idempotency-tenant", "crash-key", hash,
+            IdempotencyExecutionMode.Recoverable, CrashSafeCommand, default);
         Assert.Equal(202, resumed.StatusCode);
         Assert.Equal(1, logicalEffects);
         Assert.Equal(2, crashInvocations);
+    }
+
+    [Fact]
+    public async Task Twenty_five_live_same_key_contenders_run_one_callback_and_replay_exactly()
+    {
+        var executor = new PostgresIdempotencyRepository(
+            Database,
+            new PostgresIdempotencyExecutionOptions(
+                TimeSpan.FromMilliseconds(200),
+                TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromMilliseconds(5)));
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var invocations = 0;
+        async Task<IdempotentResponse> Command(
+            IdempotencyExecutionContext _,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref invocations);
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return new IdempotentResponse(
+                StatusCodes.Status202Accepted,
+                new EntitySyncJsonValue("{\"queued\":true,\"runId\":\"stable\"}"));
+        }
+
+        var first = executor.ExecuteAsync(
+            "heartbeat-tenant", "heartbeat-key", new string('3', 64),
+            IdempotencyExecutionMode.Recoverable, Command, default);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var executions = Enumerable.Range(0, 24)
+            .Select(_ => executor.ExecuteAsync(
+                "heartbeat-tenant", "heartbeat-key", new string('3', 64),
+                IdempotencyExecutionMode.Recoverable, Command, default))
+            .Prepend(first)
+            .ToArray();
+
+        await Task.Delay(TimeSpan.FromMilliseconds(350));
+        Assert.Equal(1, Volatile.Read(ref invocations));
+        release.SetResult();
+        var responses = await Task.WhenAll(executions);
+        Assert.All(responses, response =>
+        {
+            Assert.Equal(StatusCodes.Status202Accepted, response.StatusCode);
+            Assert.Equal(
+                "{\"queued\":true,\"runId\":\"stable\"}",
+                response.ResponseBody.Json);
+        });
+        Assert.Equal(1, Volatile.Read(ref invocations));
+    }
+
+    [Fact]
+    public async Task Lost_heartbeat_cancels_and_awaits_stale_owner_then_one_takeover_recovers()
+    {
+        const string tenantId = "takeover-tenant";
+        const string key = "takeover-key";
+        var hash = new string('4', 64);
+        var executor = new PostgresIdempotencyRepository(
+            Database,
+            new PostgresIdempotencyExecutionOptions(
+                TimeSpan.FromMilliseconds(200),
+                TimeSpan.FromMilliseconds(20),
+                TimeSpan.FromMilliseconds(5)));
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowStaleExit = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleOwner = executor.ExecuteAsync(
+            tenantId,
+            key,
+            hash,
+            IdempotencyExecutionMode.Recoverable,
+            async (_, cancellationToken) =>
+            {
+                started.SetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    throw new InvalidOperationException("Cancellation was not observed.");
+                }
+                catch (OperationCanceledException)
+                {
+                    cancellationObserved.SetResult();
+                    await allowStaleExit.Task;
+                    return new IdempotentResponse(
+                        StatusCodes.Status201Created,
+                        new EntitySyncJsonValue("{\"stale\":true}"));
+                }
+            },
+            default);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using (var revoke = Database.CreateCommand(
+                         """
+                         UPDATE entitysync.api_idempotency_records
+                         SET execution_owner = @replacement_owner,
+                             execution_lease_expires_at = clock_timestamp() - interval '1 second'
+                         WHERE tenant_id = @tenant_id
+                           AND idempotency_key = @idempotency_key
+                         """))
+        {
+            revoke.Parameters.AddWithValue("replacement_owner", Guid.NewGuid());
+            revoke.Parameters.AddWithValue("tenant_id", tenantId);
+            revoke.Parameters.AddWithValue("idempotency_key", key);
+            Assert.Equal(1, await revoke.ExecuteNonQueryAsync());
+        }
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
+        Assert.False(staleOwner.IsCompleted);
+        allowStaleExit.SetResult();
+        var lost = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => staleOwner);
+        Assert.Contains("lease was lost", lost.Message, StringComparison.OrdinalIgnoreCase);
+
+        await using (var incomplete = Database.CreateCommand(
+                         """
+                         SELECT response_status_code IS NULL
+                                AND response_body IS NULL
+                                AND completed_at IS NULL
+                         FROM entitysync.api_idempotency_records
+                         WHERE tenant_id = @tenant_id
+                           AND idempotency_key = @idempotency_key
+                         """))
+        {
+            incomplete.Parameters.AddWithValue("tenant_id", tenantId);
+            incomplete.Parameters.AddWithValue("idempotency_key", key);
+            Assert.True((bool)(await incomplete.ExecuteScalarAsync())!);
+        }
+
+        var recoveryInvocations = 0;
+        Task<IdempotentResponse> Recover(
+            IdempotencyExecutionContext context,
+            CancellationToken _)
+        {
+            Assert.True(context.IsRecovery);
+            Interlocked.Increment(ref recoveryInvocations);
+            return Task.FromResult(new IdempotentResponse(
+                StatusCodes.Status200OK,
+                new EntitySyncJsonValue("{\"recovered\":true}")));
+        }
+        var responses = await Task.WhenAll(
+            Enumerable.Range(0, 20).Select(_ => executor.ExecuteAsync(
+                tenantId,
+                key,
+                hash,
+                IdempotencyExecutionMode.Recoverable,
+                Recover,
+                default)));
+        Assert.Equal(1, recoveryInvocations);
+        Assert.All(responses, response =>
+        {
+            Assert.Equal(StatusCodes.Status200OK, response.StatusCode);
+            Assert.Equal("{\"recovered\":true}", response.ResponseBody.Json);
+        });
+
+        await using var inspect = Database.CreateCommand(
+            """
+            SELECT execution_attempt, execution_owner, completed_at IS NOT NULL
+            FROM entitysync.api_idempotency_records
+            WHERE tenant_id = @tenant_id AND idempotency_key = @idempotency_key
+            """);
+        inspect.Parameters.AddWithValue("tenant_id", tenantId);
+        inspect.Parameters.AddWithValue("idempotency_key", key);
+        await using var reader = await inspect.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(2L, reader.GetInt64(0));
+        Assert.True(reader.IsDBNull(1));
+        Assert.True(reader.GetBoolean(2));
+    }
+
+    [Fact]
+    public async Task Atomic_database_idempotency_rolls_back_effect_before_incomplete_receipt()
+    {
+        const string tenantId = "atomic-idempotency-tenant";
+        var route = EntityExclusionRoute.Create(
+            tenantId,
+            "NetSuite",
+            "source",
+            "Customer",
+            "HaloPSA",
+            "target",
+            "Client");
+        var exclusions = new PostgresEntityExclusionRepository(Database);
+        var executor = new PostgresIdempotencyRepository(Database);
+        var invocation = 0;
+        async Task<IdempotentResponse> Command(
+            IdempotencyExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            await exclusions.AddAsync(
+                route,
+                "source-1",
+                "Source One",
+                "atomic recovery",
+                "actor",
+                cancellationToken);
+            if (Interlocked.Increment(ref invocation) == 1)
+                throw new InvalidOperationException("simulated crash before receipt completion");
+            return new IdempotentResponse(
+                StatusCodes.Status201Created,
+                new EntitySyncJsonValue("{\"sourceEntityId\":\"source-1\"}"));
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => executor.ExecuteAsync(
+            tenantId,
+            "atomic-key",
+            new string('1', 64),
+            IdempotencyExecutionMode.AtomicDatabase,
+            Command,
+            default));
+        Assert.Empty(await exclusions.ListActiveAsync(route, default));
+
+        var response = await executor.ExecuteAsync(
+            tenantId,
+            "atomic-key",
+            new string('1', 64),
+            IdempotencyExecutionMode.AtomicDatabase,
+            Command,
+            default);
+        Assert.Equal(StatusCodes.Status201Created, response.StatusCode);
+        Assert.Single(await exclusions.ListActiveAsync(route, default));
+        Assert.Equal(2, invocation);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stale_atomic_owner_never_commits_effect_after_takeover(
+        bool ownerThrows)
+    {
+        var suffix = ownerThrows ? "throws" : "returns";
+        var tenantId = $"atomic-stale-{suffix}";
+        var key = $"atomic-stale-key-{suffix}";
+        var hash = new string(ownerThrows ? '6' : '5', 64);
+        var now = DateTimeOffset.UtcNow;
+        var connections = new PostgresConnectionDefinitionRepository(Database);
+        var executor = new PostgresIdempotencyRepository(
+            Database,
+            new PostgresIdempotencyExecutionOptions(
+                TimeSpan.FromSeconds(3),
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromMilliseconds(5)));
+        var ownerStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOwner = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var owner = executor.ExecuteAsync(
+            tenantId,
+            key,
+            hash,
+            IdempotencyExecutionMode.AtomicDatabase,
+            async (_, cancellationToken) =>
+            {
+                await connections.InsertAsync(
+                    tenantId,
+                    Connection(
+                        tenantId, "owner-a", "NetSuite", 1, "cipher-a", now),
+                    cancellationToken);
+                ownerStarted.SetResult();
+                await releaseOwner.Task.WaitAsync(cancellationToken);
+                if (ownerThrows)
+                    throw new InvalidOperationException("owner callback failed");
+                return new IdempotentResponse(
+                    StatusCodes.Status201Created,
+                    new EntitySyncJsonValue("{\"owner\":\"a\"}"));
+            },
+            default);
+        await ownerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using (var revoke = Database.CreateCommand(
+                         """
+                         UPDATE entitysync.api_idempotency_records
+                         SET execution_owner = @replacement_owner,
+                             execution_lease_expires_at = clock_timestamp() - interval '1 second'
+                         WHERE tenant_id = @tenant_id
+                           AND idempotency_key = @idempotency_key
+                         """))
+        {
+            revoke.Parameters.AddWithValue("replacement_owner", Guid.NewGuid());
+            revoke.Parameters.AddWithValue("tenant_id", tenantId);
+            revoke.Parameters.AddWithValue("idempotency_key", key);
+            Assert.Equal(1, await revoke.ExecuteNonQueryAsync());
+        }
+
+        var takeover = await executor.ExecuteAsync(
+            tenantId,
+            key,
+            hash,
+            IdempotencyExecutionMode.AtomicDatabase,
+            async (context, cancellationToken) =>
+            {
+                Assert.True(context.IsRecovery);
+                await connections.InsertAsync(
+                    tenantId,
+                    Connection(
+                        tenantId, "owner-b", "NetSuite", 1, "cipher-b", now),
+                    cancellationToken);
+                return new IdempotentResponse(
+                    StatusCodes.Status202Accepted,
+                    new EntitySyncJsonValue("{\"owner\":\"b\"}"));
+            },
+            default);
+        Assert.Equal(StatusCodes.Status202Accepted, takeover.StatusCode);
+
+        releaseOwner.SetResult();
+        var failure = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => owner);
+        Assert.Contains(
+            ownerThrows ? "callback failed" : "lease was lost",
+            failure.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Null(await connections.GetAsync(tenantId, "owner-a", default));
+        Assert.NotNull(await connections.GetAsync(tenantId, "owner-b", default));
+    }
+
+    [Fact]
+    public async Task Recoverable_external_command_holds_no_database_connection_while_blocked()
+    {
+        var executor = new PostgresIdempotencyRepository(Database);
+        var started = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var execution = executor.ExecuteAsync(
+            "external-idempotency-tenant",
+            "external-key",
+            new string('2', 64),
+            IdempotencyExecutionMode.Recoverable,
+            async (_, cancellationToken) =>
+            {
+                started.SetResult();
+                await release.Task.WaitAsync(cancellationToken);
+                return new IdempotentResponse(
+                    StatusCodes.Status200OK,
+                    new EntitySyncJsonValue("{}"));
+            },
+            default);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await using var command = Database.CreateCommand(
+            """
+            SELECT count(*)
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid <> pg_backend_pid()
+            """);
+        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+
+        release.SetResult();
+        Assert.Equal(StatusCodes.Status200OK, (await execution).StatusCode);
     }
 
     public async Task InitializeAsync()

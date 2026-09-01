@@ -386,13 +386,13 @@ public sealed class DurablePlanService(
         CancellationToken cancellationToken) =>
         ApproveCoreAsync(tenantId, planId, digest, actor, null, cancellationToken);
 
-    internal Task<EntitySyncDurablePlan?> GetControlPlanAsync(
+    public Task<EntitySyncDurablePlan?> GetControlPlanAsync(
         string tenantId,
         Guid planId,
         CancellationToken cancellationToken) =>
         plans.GetAsync(RequireTenant(tenantId), planId, cancellationToken);
 
-    internal async Task<DurablePlanApprovalResult?> RecoverControlApprovalAsync(
+    public async Task<DurablePlanApprovalResult?> RecoverControlApprovalAsync(
         string tenantId,
         Guid planId,
         string digest,
@@ -408,7 +408,7 @@ public sealed class DurablePlanService(
         return ToApprovalResult(approval);
     }
 
-    internal Task<DurablePlanApprovalResult> ApproveControlAsync(
+    public Task<DurablePlanApprovalResult> ApproveControlAsync(
         string tenantId,
         Guid planId,
         string digest,

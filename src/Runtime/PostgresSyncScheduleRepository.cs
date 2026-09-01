@@ -19,9 +19,12 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
                 @cron_expression, @time_zone, @enabled, @next_run_at, @last_run_at,
                 @created_at, @created_by)
             """;
-        await using var command = dataSource.CreateCommand(sql);
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(sql, lease.Connection, lease.Transaction);
         AddSchedule(command, schedule);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public Task<EntitySyncSchedule?> GetAsync(string tenantId, Guid scheduleId, int version, CancellationToken cancellationToken) =>
@@ -42,6 +45,46 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
             WHERE tenant_id = @tenant_id AND schedule_id = @schedule_id
             ORDER BY version DESC LIMIT 1
             """, tenantId, scheduleId, null, cancellationToken);
+
+    public async Task<IReadOnlyList<EntitySyncSchedule>> ListLatestAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (maximumRows is <= 0 or > 101)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows));
+        const string sql = """
+            SELECT latest.tenant_id, latest.schedule_id, latest.version, latest.name,
+                   latest.policy_id, latest.policy_version, latest.cron_expression,
+                   latest.time_zone, latest.enabled, latest.next_run_at,
+                   latest.last_run_at, latest.created_at, latest.created_by
+            FROM (
+                SELECT DISTINCT ON (schedule_id)
+                       tenant_id, schedule_id, version, name, policy_id, policy_version,
+                       cron_expression, time_zone, enabled, next_run_at, last_run_at,
+                       created_at, created_by
+                FROM entitysync.sync_schedules
+                WHERE tenant_id = @tenant_id
+                ORDER BY schedule_id, version DESC
+            ) latest
+            WHERE latest.tenant_id = @tenant_id
+            ORDER BY latest.schedule_id
+            LIMIT @maximum_rows OFFSET @offset
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var result = new List<EntitySyncSchedule>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(ReadSchedule(reader));
+        return result;
+    }
 
     public async Task<IReadOnlyList<EntitySyncSchedule>> ListDueAsync(
         string tenantId, DateTimeOffset dueAt, int maximumRows, CancellationToken cancellationToken)

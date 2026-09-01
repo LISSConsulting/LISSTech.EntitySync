@@ -26,6 +26,13 @@ public interface ISyncScheduleRepository
         int maximumRows,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<EntitySyncSchedule>> ListLatestAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<EntitySyncSchedule>>([]);
+
     Task InsertChangeEventAsync(
         string tenantId,
         EntitySyncCanonicalChangeEvent changeEvent,

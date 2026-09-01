@@ -1,4 +1,8 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization.Policy;
+using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi.Writers;
+using Swashbuckle.AspNetCore.Swagger;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,8 +12,11 @@ using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Server;
 
+using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp;
+using LISSTech.EntitySync.Mcp.ControlApi;
 
 var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio").Trim().ToLowerInvariant();
 
@@ -119,14 +126,49 @@ static async Task RunHttpAsync(string[] args)
             };
         });
 
-    builder.Services.AddAuthorization(options => McpAuthorization.AddPolicy(options, requiredScope));
+    builder.Services.AddAuthorization(options =>
+    {
+        McpAuthorization.AddPolicy(options, requiredScope);
+        ControlAuthorization.AddPolicies(
+            options, ControlAuthorization.ReadWorkloadAllowlist());
+    });
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<McpRequestContext>();
+    builder.Services.AddScoped(provider => ControlRequestContext.Create(
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext?.User
+        ?? throw new InvalidOperationException("The current HTTP context is unavailable.")));
+    builder.Services.AddScoped<IControlApiQueries, ControlApiQueries>();
+    builder.Services.AddScoped<IdempotencyEndpointFilter>();
+    builder.Services.AddSingleton<ControlCursorProtector>();
+    builder.Services.AddSingleton<IControlReadinessProbe, ControlReadinessProbe>();
+    builder.Services.AddSingleton<
+        Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler,
+        ControlAuthorizationResultHandler>();
+    builder.Services.AddProblemDetails();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new OpenApiInfo
+        {
+            Title = "LISSTech EntitySync Control API",
+            Version = "v1"
+        });
+        options.CustomOperationIds(description =>
+            description.ActionDescriptor.EndpointMetadata
+                .OfType<Microsoft.AspNetCore.Routing.EndpointNameMetadata>()
+                .SingleOrDefault()?.EndpointName);
+    });
 
     builder.Services.AddEntitySyncPlatform(
         Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
         EntitySyncHostMode.Http);
     builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
+    builder.Services.AddSingleton<ControlCanonicalChangeRepository>();
+    builder.Services.AddSingleton<ICanonicalChangeRepository>(provider =>
+        provider.GetRequiredService<ControlCanonicalChangeRepository>());
+    builder.Services.AddSingleton<IEntitySyncWorkSignal>(provider =>
+        provider.GetRequiredService<ControlCanonicalChangeRepository>());
+    builder.Services.AddSingleton<CanonicalChangeService>();
 
     builder.Services
         .AddMcpServer()
@@ -134,6 +176,7 @@ static async Task RunHttpAsync(string[] args)
         .WithToolsFromAssembly();
 
     var app = builder.Build();
+    app.UseControlApiErrors();
     app.Logger.LogInformation("Logfire logging configured: {LogfireConfiguration}", logfireSettings);
     if (oauthChallengeHints is not null)
     {
@@ -160,8 +203,36 @@ static async Task RunHttpAsync(string[] args)
     app.UseAuthentication();
     app.UseAuthorization();
 
-    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
-    app.MapMcp("/mcp").RequireAuthorization("mcp");
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+        .ExcludeFromDescription();
+    app.MapGet("/health/ready", async (
+        IControlReadinessProbe readiness,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await readiness.CheckAsync(cancellationToken).ConfigureAwait(false);
+        return Results.Json(
+            new
+            {
+                status = result.Ready ? "ready" : "unready",
+                result.DatabaseMigrations,
+                result.KeyRing,
+                result.WorkerHeartbeat
+            },
+            statusCode: result.Ready
+                ? StatusCodes.Status200OK
+                : StatusCodes.Status503ServiceUnavailable);
+    }).ExcludeFromDescription();
+    app.MapGet("/openapi/v1.json", (ISwaggerProvider swagger) =>
+    {
+        var document = swagger.GetSwagger("v1");
+        using var text = new StringWriter();
+        var writer = new OpenApiJsonWriter(text);
+        document.SerializeAsV3(writer);
+        writer.Flush();
+        return Results.Text(text.ToString(), "application/json");
+    }).RequireAuthorization(ControlPolicies.Read).ExcludeFromDescription();
+    app.MapControlApi();
+    app.MapMcp("/mcp").RequireAuthorization("mcp").ExcludeFromDescription();
 
     await app.RunAsync();
 }
@@ -295,3 +366,5 @@ internal sealed class OAuthChallengeHints
         return trimmed;
     }
 }
+
+public partial class Program;

@@ -82,6 +82,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<EntitySyncOperationWorker>();
         services.AddSingleton<SyncScheduleService>();
         services.AddSingleton<EntityExclusionService>();
+        services.AddSingleton<ExpertOperationService>();
         services.AddScoped<ConnectionDefinitionService>();
         services.AddScoped<SyncPolicyService>();
         services.AddHostedService<EntitySyncDatabaseMigrationHostedService>();

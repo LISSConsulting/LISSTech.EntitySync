@@ -210,3 +210,27 @@ public interface IEntityAdapter
         });
     Task<bool> TestConnectionAsync(CancellationToken cancellationToken);
 }
+
+public interface ISuiteQlExpertAdapter
+{
+    Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> InvokeSuiteQlAsync(
+        string suiteQl,
+        int maximumRows,
+        CancellationToken cancellationToken);
+}
+
+public sealed record CustomPropertyReadResult(bool Found, string? Value);
+
+public interface ICustomPropertyExpertAdapter
+{
+    Task<EntityWriteResult> SetOrganizationCustomPropertyAsync(
+        string customerId,
+        string label,
+        string value,
+        CancellationToken cancellationToken);
+
+    Task<CustomPropertyReadResult> GetOrganizationCustomPropertyAsync(
+        string customerId,
+        string label,
+        CancellationToken cancellationToken);
+}

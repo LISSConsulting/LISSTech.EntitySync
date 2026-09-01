@@ -100,6 +100,42 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadOperation(reader) : null;
     }
 
+    public async Task<IReadOnlyList<EntitySyncOperation>> ListAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        ValidatePage(offset, maximumRows);
+        const string sql = """
+            SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.approval_id, operation.route_scope,
+                   plan.source_connection_id, operation.source_connection_generation,
+                   plan.target_connection_id, operation.target_connection_generation,
+                   operation.mode, operation.status, operation.idempotency_key,
+                   operation.lease_owner, operation.lease_expires_at, operation.attempt,
+                   operation.created_at, operation.queued_at, operation.started_at,
+                   operation.completed_at, operation.request_sha256,
+                   operation.total_count, operation.succeeded_count,
+                   operation.failed_count, operation.skipped_count, operation.unknown_count
+            FROM entitysync.sync_operations operation
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = operation.tenant_id
+             AND plan.plan_id = operation.plan_id
+            WHERE operation.tenant_id = @tenant_id
+            ORDER BY operation.queued_at DESC, operation.operation_id
+            LIMIT @maximum_rows OFFSET @offset
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddPage(command, tenantId, offset, maximumRows);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var result = new List<EntitySyncOperation>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(ReadOperation(reader));
+        return result;
+    }
+
     public async Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsAsync(
         string tenantId,
         Guid operationId,
@@ -124,6 +160,42 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<EntitySyncOperationItem>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(ReadItem(reader));
+        return result;
+    }
+
+    public async Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsPageAsync(
+        string tenantId,
+        Guid operationId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        ValidatePage(offset, maximumRows);
+        const string sql = """
+            SELECT tenant_id, operation_id, plan_id, item_id, source_vendor,
+                   source_connection_id, source_entity_type, source_entity_key,
+                   source_entity_id, target_vendor, target_connection_id,
+                   target_entity_type, target_entity_id, action, redacted_before::text,
+                   redacted_desired::text, before_payload_sha256,
+                   desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
+                   vendor_request_id, outcome, error_code, error_message, started_at,
+                   completed_at, dispatch_started_at, vendor_target_entity_id,
+                   safe_write_code
+            FROM entitysync.sync_operation_items
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+            ORDER BY item_id
+            LIMIT @maximum_rows OFFSET @offset
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var result = new List<EntitySyncOperationItem>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add(ReadItem(reader));
         return result;
     }
     public async Task<EntitySyncOperationItem?> GetItemAsync(
@@ -1770,6 +1842,25 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "encrypted_after_ciphertext", NpgsqlDbType.Text, snapshot.EncryptedAfterCiphertext);
         PostgresControlPersistence.Add(command, "expires_at", NpgsqlDbType.TimestampTz, snapshot.ExpiresAt);
     }
+    private static void ValidatePage(int offset, int maximumRows)
+    {
+        if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+        if (maximumRows is <= 0 or > 101)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows));
+    }
+
+    private static void AddPage(
+        NpgsqlCommand command,
+        string tenantId,
+        int offset,
+        int maximumRows)
+    {
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        PostgresControlPersistence.Add(command, "offset", NpgsqlDbType.Integer, offset);
+    }
+
 
     private static EntitySyncOperation ReadOperation(NpgsqlDataReader reader)
     {

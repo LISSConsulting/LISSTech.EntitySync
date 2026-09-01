@@ -8,7 +8,7 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.NCentral;
 
-public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
+public sealed class NCentralEntityAdapter : IEntityAdapter, ICustomPropertyExpertAdapter, IDisposable
 {
     private const int DefaultPageSize = 1000;
     private const int MaximumPagesPerQuery = 100;
@@ -141,6 +141,49 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         if (string.IsNullOrWhiteSpace(customerId)) throw new InvalidOperationException("N-central organization custom property update requires a customer ID.");
         if (string.IsNullOrWhiteSpace(label)) throw new InvalidOperationException("N-central organization custom property update requires a property name.");
         return await UpdateOrganizationPropertiesAsync(customerId, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [label.Trim()] = value ?? string.Empty }, "Customer", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CustomPropertyReadResult> GetOrganizationCustomPropertyAsync(
+        string customerId,
+        string label,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(customerId))
+            throw new InvalidOperationException(
+                "N-central organization custom-property readback requires a customer ID.");
+        if (string.IsNullOrWhiteSpace(label))
+            throw new InvalidOperationException(
+                "N-central organization custom-property readback requires a property name.");
+        EnsureSoapCredentials(
+            "N-central organization custom-property readback requires SOAP credentials.");
+        if (!int.TryParse(customerId, out var numericCustomerId))
+            throw new InvalidOperationException(
+                "N-central organization custom-property readback requires a numeric customer ID.");
+
+        XNamespace ns = options.SoapNamespace;
+        var method = new XElement(
+            ns + "organizationPropertyList",
+            new XElement(ns + "username", options.SoapUsername),
+            new XElement(ns + "password", options.SoapPassword),
+            new XElement(ns + "customerIds", numericCustomerId),
+            new XElement(ns + "reverseOrder", "false"));
+        var response = await InvokeEi2MethodAsync(
+            method, "organizationPropertyList", cancellationToken).ConfigureAwait(false);
+        foreach (var property in response.Descendants().Where(
+            element => element.Name.LocalName.Equals(
+                "properties", StringComparison.OrdinalIgnoreCase)))
+        {
+            var storedLabel = property.Elements().FirstOrDefault(
+                element => element.Name.LocalName.Equals(
+                    "label", StringComparison.OrdinalIgnoreCase))?.Value;
+            if (!string.Equals(storedLabel, label.Trim(), StringComparison.OrdinalIgnoreCase))
+                continue;
+            var value = property.Elements().FirstOrDefault(
+                element => element.Name.LocalName.Equals(
+                    "value", StringComparison.OrdinalIgnoreCase))?.Value;
+            return new CustomPropertyReadResult(true, value ?? string.Empty);
+        }
+        return new CustomPropertyReadResult(false, null);
     }
 
     private async Task<IReadOnlyList<EntitySyncLookup>> GetServiceOrganizationsAsync(CancellationToken cancellationToken)

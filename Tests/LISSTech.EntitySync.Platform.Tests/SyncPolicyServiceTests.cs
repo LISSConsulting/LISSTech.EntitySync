@@ -357,6 +357,8 @@ public sealed class SyncPolicyServiceTests
     {
         private readonly object gate = new();
         private readonly List<EntitySyncPolicy> rows = [];
+        private readonly Dictionary<(string TenantId, Guid PolicyId, string Token), EntitySyncPolicy>
+            byToken = [];
         public int RowCount { get { lock (gate) return rows.Count; } }
 
         public Task InsertAsync(string tenantId, EntitySyncPolicy policy, CancellationToken cancellationToken)
@@ -388,6 +390,36 @@ public sealed class SyncPolicyServiceTests
                 rows.Add(policy);
                 return true;
             }
+        }
+
+        public async Task<bool> TryInsertValidatedWithTokenAsync(
+            string tenantId,
+            EntitySyncPolicy policy,
+            string sourceConnectionId,
+            long sourceGeneration,
+            string targetConnectionId,
+            long targetGeneration,
+            string idempotencyToken,
+            CancellationToken cancellationToken)
+        {
+            if (!await TryInsertValidatedAsync(
+                    tenantId, policy, sourceConnectionId, sourceGeneration,
+                    targetConnectionId, targetGeneration, cancellationToken))
+                return false;
+            lock (gate)
+                byToken.Add((tenantId, policy.PolicyId, idempotencyToken), policy);
+            return true;
+        }
+
+        public Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(
+            string tenantId,
+            Guid policyId,
+            string idempotencyToken,
+            CancellationToken cancellationToken)
+        {
+            lock (gate)
+                return Task.FromResult(
+                    byToken.GetValueOrDefault((tenantId, policyId, idempotencyToken)));
         }
 
         public Task<EntitySyncPolicy?> GetAsync(string tenantId, Guid policyId, int version, CancellationToken cancellationToken)

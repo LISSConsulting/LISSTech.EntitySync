@@ -24,6 +24,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
     : ICanonicalChangeRepository, IEntitySyncWorkSignal
 {
     public static readonly TimeSpan DefaultLeaseDuration = TimeSpan.FromMinutes(5);
+    private readonly string heartbeatWorkerId =
+        $"{Environment.MachineName}:{Environment.ProcessId}";
 
     public async Task<CanonicalChangeReceipt> AcceptAsync(
         CanonicalChangeRequest request,
@@ -175,6 +177,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
         if (maximumRows <= 0) throw new ArgumentOutOfRangeException(nameof(maximumRows));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
+        await RecordHeartbeatAsync(connection, cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
         const string dueSql = """
@@ -537,6 +540,21 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             result.Add(reader.GetGuid(0));
         return result;
+    }
+
+    private async Task RecordHeartbeatAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO entitysync.control_worker_heartbeats (worker_id, observed_at)
+            VALUES (@worker_id, clock_timestamp())
+            ON CONFLICT (worker_id) DO UPDATE
+            SET observed_at = EXCLUDED.observed_at
+            """;
+        await using var command = new NpgsqlCommand(sql, connection);
+        Add(command, "worker_id", NpgsqlDbType.Text, heartbeatWorkerId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task NotifyInTransactionAsync(

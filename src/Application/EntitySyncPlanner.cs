@@ -90,8 +90,8 @@ public sealed class EntitySyncPlanner(
                 IncludeInactive = request.IncludeInactive,
                 Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
             };
-            sources = await sourceLease.Adapter.GetEntitiesAsync(
-                sourceQuery, cancellationToken).ConfigureAwait(false);
+            sources = await ReadEntitiesAsync(
+                sourceLease.Adapter, sourceQuery, cancellationToken).ConfigureAwait(false);
             if (request.SourceEntityId is not null)
             {
                 var expectedSourceId = request.SourceEntityId.Trim();
@@ -112,7 +112,8 @@ public sealed class EntitySyncPlanner(
         };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             targetQuery.RequiredCustomFieldName = customFieldName;
-        var targets = await targetLease.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
+        var targets = await ReadEntitiesAsync(
+            targetLease.Adapter, targetQuery, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, EntityExclusion> exclusionsBySourceId;
         if (request.CreateMissing)
@@ -388,4 +389,28 @@ public sealed class EntitySyncPlanner(
     private static string DefaultEntityType(string vendor) => vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(vendor) ? "Client" : "Customer";
     private static string DefaultExternalIdName(string vendor) => EntitySyncVendors.IsBillCom(vendor) ? "BillSpendClientId" : "NetSuiteInternalId";
     private static string DefaultCustomFieldName(string sourceVendor, string targetVendor) => EntitySyncVendors.IsBillCom(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) ? "CFBillSpendClientID" : "CFNetSuiteCustomerID";
+    private static async Task<IReadOnlyList<ExternalEntity>> ReadEntitiesAsync(
+        IEntityAdapter adapter,
+        EntityQuery query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await adapter.GetEntitiesAsync(query, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (EntitySyncDependencyUnavailableException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new EntitySyncDependencyUnavailableException(
+                "The entity adapter is unavailable.", exception);
+        }
+    }
+
 }

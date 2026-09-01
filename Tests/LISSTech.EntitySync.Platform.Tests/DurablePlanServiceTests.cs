@@ -240,6 +240,29 @@ public sealed class DurablePlanServiceTests
         Assert.Equal(2, fixture.SourceAdapter.GetEntitiesCalls);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Planner_adapter_read_failures_are_safe_and_release_creation_claim(
+        bool sourceFails)
+    {
+        using var fixture = new Fixture(1);
+        var adapter = sourceFails ? fixture.SourceAdapter : fixture.TargetAdapter;
+        adapter.ReadFailure = new InvalidOperationException(
+            "vendor-secret-response");
+
+        var failure = await Assert.ThrowsAsync<EntitySyncDependencyUnavailableException>(
+            () => fixture.Service.CreatePlanAsync(
+                fixture.Request("dependency-key"), fixture.Reviewer, default));
+
+        Assert.Equal("The entity adapter is unavailable.", failure.Message);
+        Assert.Null(fixture.DurableRepository.Manifest);
+        adapter.ReadFailure = null;
+        var retry = await fixture.Service.CreatePlanAsync(
+            fixture.Request("dependency-key"), fixture.Reviewer, default);
+        Assert.NotEqual(Guid.Empty, retry.PlanId);
+    }
+
     [Fact]
     public async Task Changed_exclusion_reclassifies_create_before_persistence()
     {
@@ -395,11 +418,12 @@ public sealed class DurablePlanServiceTests
                 ExternalIds = { ["MutableExternalReference"] = $"external-{index}" }
             }).ToList();
             SourceAdapter = new TestAdapter("NetSuite", Sources);
+            TargetAdapter = new TestAdapter("HaloPSA", []);
             Connections = new DefinitionAndRuntimeRepository(
                 Definition(SourceConnectionId, "NetSuite"),
                 SourceAdapter,
                 Definition(TargetConnectionId, "HaloPSA"),
-                new TestAdapter("HaloPSA", []));
+                TargetAdapter);
             var definition = new EntitySyncPolicyDefinition(
                 "NetSuite",
                 SourceConnectionId,
@@ -444,6 +468,7 @@ public sealed class DurablePlanServiceTests
 
         public List<ExternalEntity> Sources { get; }
         public TestAdapter SourceAdapter { get; }
+        public TestAdapter TargetAdapter { get; }
         public DefinitionAndRuntimeRepository Connections { get; }
         public MemoryPolicyRepository Policies { get; }
         public RecordingExclusionRepository Exclusions { get; }
@@ -588,12 +613,14 @@ public sealed class DurablePlanServiceTests
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
         public int GetEntitiesCalls { get; private set; }
+        public Exception? ReadFailure { get; set; }
 
         public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
             EntityQuery query,
             CancellationToken cancellationToken)
         {
             GetEntitiesCalls++;
+            if (ReadFailure is not null) throw ReadFailure;
             readStarted?.TrySetResult();
             if (releaseRead is not null)
                 await releaseRead.Task.WaitAsync(cancellationToken);
@@ -762,6 +789,7 @@ public sealed class DurablePlanServiceTests
     private sealed class MemoryPolicyRepository(EntitySyncPolicy initial) : ISyncPolicyRepository
     {
         private readonly List<EntitySyncPolicy> values = [initial];
+        private readonly Dictionary<(Guid PolicyId, string Token), EntitySyncPolicy> byToken = [];
 
         public Task InsertAsync(
             string tenantId,
@@ -784,6 +812,31 @@ public sealed class DurablePlanServiceTests
             await InsertAsync(tenantId, policy, cancellationToken);
             return true;
         }
+
+        public async Task<bool> TryInsertValidatedWithTokenAsync(
+            string tenantId,
+            EntitySyncPolicy policy,
+            string sourceConnectionId,
+            long sourceGeneration,
+            string targetConnectionId,
+            long targetGeneration,
+            string idempotencyToken,
+            CancellationToken cancellationToken)
+        {
+            if (!await TryInsertValidatedAsync(
+                    tenantId, policy, sourceConnectionId, sourceGeneration,
+                    targetConnectionId, targetGeneration, cancellationToken))
+                return false;
+            byToken.Add((policy.PolicyId, idempotencyToken), policy);
+            return true;
+        }
+
+        public Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(
+            string tenantId,
+            Guid policyId,
+            string idempotencyToken,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(byToken.GetValueOrDefault((policyId, idempotencyToken)));
 
         public Task<EntitySyncPolicy?> GetAsync(
             string tenantId,

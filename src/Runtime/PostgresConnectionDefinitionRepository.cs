@@ -17,10 +17,10 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             tenantId,
             definition.TenantId,
             nameof(definition));
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        var connection = lease.Connection;
+        var transaction = lease.Transaction;
         const string existingSql = """
             SELECT 1
             FROM entitysync.connection_definitions
@@ -70,7 +70,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             AddDefinition(insert, persisted);
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
         return persisted;
     }
 
@@ -137,10 +137,10 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             throw new ArgumentException(
                 "The replacement connection ID must match.",
                 nameof(nextGeneration));
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        var connection = lease.Connection;
+        var transaction = lease.Transaction;
         const string lockSql = """
             SELECT generation
             FROM entitysync.connection_definitions
@@ -154,7 +154,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
                 .ConfigureAwait(false);
             if (current is null || (long)current != expectedGeneration)
             {
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                await lease.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 return null;
             }
         }
@@ -203,7 +203,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
                 throw new InvalidOperationException(
                     "The locked connection generation changed unexpectedly.");
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
         return persisted;
     }
 
@@ -213,10 +213,10 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         long expectedGeneration,
         CancellationToken cancellationToken)
     {
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        var connection = lease.Connection;
+        var transaction = lease.Transaction;
         const string lockSql = """
             SELECT generation
             FROM entitysync.connection_definitions
@@ -229,12 +229,12 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             .ConfigureAwait(false);
         if (generationValue is null)
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await lease.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return ConnectionDefinitionDeleteResult.NotFound;
         }
         if ((long)generationValue != expectedGeneration)
         {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            await lease.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return ConnectionDefinitionDeleteResult.GenerationMismatch;
         }
 
@@ -265,7 +265,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
         if ((bool)(await referenceCommand.ExecuteScalarAsync(cancellationToken)
                 .ConfigureAwait(false))!)
         {
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
             return ConnectionDefinitionDeleteResult.Referenced;
         }
 
@@ -287,7 +287,7 @@ public sealed class PostgresConnectionDefinitionRepository(NpgsqlDataSource data
             expectedGeneration);
         var deleted = await deleteCommand.ExecuteNonQueryAsync(cancellationToken)
             .ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
         return deleted == 1
             ? ConnectionDefinitionDeleteResult.Deleted
             : ConnectionDefinitionDeleteResult.GenerationMismatch;

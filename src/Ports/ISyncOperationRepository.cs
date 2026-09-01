@@ -47,10 +47,25 @@ public interface ISyncOperationRepository
         Guid operationId,
         CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<EntitySyncOperation>> ListAsync(
+        string tenantId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<EntitySyncOperation>>([]);
+
     Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsAsync(
         string tenantId,
         Guid operationId,
         CancellationToken cancellationToken);
+    async Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsPageAsync(
+        string tenantId,
+        Guid operationId,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken) =>
+        (await GetItemsAsync(tenantId, operationId, cancellationToken)
+            .ConfigureAwait(false)).Skip(offset).Take(maximumRows).ToArray();
     Task<EntitySyncOperationItem?> GetItemAsync(
         string tenantId,
         Guid operationId,
