@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Commands;
 
@@ -16,16 +17,23 @@ internal static class PowerShellDurablePlanWorkbook
 
     internal static void Write(
         EntitySyncDurablePlanManifest manifest,
-        string path)
+        string path,
+        IEntitySyncDataProtector protector)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         var reviewerPlan = ToReviewerPlan(manifest);
         EntitySyncPlanWorkbook.Write(reviewerPlan, path);
         var payload = JsonSerializer.SerializeToUtf8Bytes(
-            new DurableArtifactPayload(manifest.Plan, manifest.Items), JsonOptions);
+            new DurableArtifactPayload(
+                manifest.Plan,
+                manifest.Items.Select(DurableArtifactItem.From).ToArray()), JsonOptions);
+        var protectedPayload = protector.Protect(
+            EntitySyncDataProtectionPurpose.DurablePlanArtifact,
+            Convert.ToBase64String(payload));
         var envelope = new DurableArtifactEnvelope(
-            Convert.ToBase64String(payload),
-            Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant());
+            manifest.Plan.TenantId,
+            manifest.Plan.PlanId,
+            protectedPayload);
         using var archive = ZipFile.Open(path, ZipArchiveMode.Update);
         archive.GetEntry(ArtifactEntryName)?.Delete();
         var entry = archive.CreateEntry(ArtifactEntryName, CompressionLevel.Optimal);
@@ -33,7 +41,17 @@ internal static class PowerShellDurablePlanWorkbook
         JsonSerializer.Serialize(stream, envelope, JsonOptions);
     }
 
-    internal static EntitySyncDurablePlanManifest Read(string path)
+    internal static bool HasDurableEnvelope(string path)
+    {
+        if (!path.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) return false;
+        using var archive = ZipFile.OpenRead(path);
+        return archive.GetEntry(ArtifactEntryName) is not null;
+    }
+
+    internal static EntitySyncDurablePlanManifest Read(
+        string path,
+        string expectedTenantId,
+        IEntitySyncDataProtector protector)
     {
         _ = EntitySyncPlanWorkbook.Read(path);
         using var archive = ZipFile.OpenRead(path);
@@ -49,32 +67,37 @@ internal static class PowerShellDurablePlanWorkbook
                     "Workbook durable plan artifact is invalid.");
         }
 
+        if (string.IsNullOrWhiteSpace(envelope.ProtectedPayload))
+            throw new InvalidOperationException(
+                "Workbook durable plan artifact authentication failed.");
+        if (!string.Equals(envelope.TenantId, expectedTenantId, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                "Workbook durable plan artifact authentication failed.");
         byte[] payload;
         try
         {
-            payload = Convert.FromBase64String(envelope.PayloadBase64);
+            var payloadBase64 = protector.Unprotect(
+                EntitySyncDataProtectionPurpose.DurablePlanArtifact,
+                envelope.ProtectedPayload);
+            payload = Convert.FromBase64String(payloadBase64);
         }
-        catch (FormatException exception)
+        catch (Exception exception)
+            when (exception is CryptographicException or FormatException)
         {
             throw new InvalidOperationException(
-                "Workbook durable plan artifact payload is invalid.", exception);
+                "Workbook durable plan artifact authentication failed.",
+                exception);
         }
-        var actualSha256 = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
-        if (!CryptographicOperations.FixedTimeEquals(
-                Encoding.ASCII.GetBytes(actualSha256),
-                Encoding.ASCII.GetBytes(envelope.ArtifactSha256)))
-            throw new InvalidOperationException(
-                "Workbook durable plan artifact digest does not match its payload.");
         var artifact = JsonSerializer.Deserialize<DurableArtifactPayload>(
                 payload, JsonOptions)
             ?? throw new InvalidOperationException(
                 "Workbook durable plan artifact payload is invalid.");
-        var manifest = EntitySyncDurablePlanManifest.Create(
-            artifact.Plan, artifact.Items);
-        if (manifest.Plan.PlanDigestSha256 != artifact.Plan.PlanDigestSha256)
+        if (artifact.Plan.TenantId != envelope.TenantId
+            || artifact.Plan.PlanId != envelope.PlanId)
             throw new InvalidOperationException(
-                "Workbook durable plan manifest digest is invalid.");
-        return manifest;
+                "Workbook durable plan artifact authentication failed.");
+        return EntitySyncDurablePlanManifest.LoadPersisted(
+            artifact.Plan, artifact.Items.Select(item => item.ToDomain()));
     }
 
     private static EntitySyncPlan ToReviewerPlan(
@@ -123,10 +146,95 @@ internal static class PowerShellDurablePlanWorkbook
     }
 
     private sealed record DurableArtifactEnvelope(
-        string PayloadBase64,
-        string ArtifactSha256);
-
+        string TenantId,
+        Guid PlanId,
+        string ProtectedPayload);
     private sealed record DurableArtifactPayload(
         EntitySyncDurablePlan Plan,
-        IReadOnlyList<EntitySyncDurablePlanItem> Items);
+        IReadOnlyList<DurableArtifactItem> Items);
+
+    private sealed record DurableArtifactItem(
+        string TenantId,
+        Guid PlanId,
+        Guid ItemId,
+        int ItemOrdinal,
+        string SourceVendor,
+        string SourceConnectionId,
+        string SourceEntityType,
+        string SourceEntityKey,
+        string SourceEntityId,
+        string TargetVendor,
+        string TargetConnectionId,
+        string TargetEntityType,
+        string? TargetEntityId,
+        string Action,
+        DurableArtifactMatchEvidence MatchEvidence,
+        EntitySyncJsonValue RedactedBefore,
+        EntitySyncJsonValue RedactedDesired,
+        EntitySyncSha256? BeforePayloadSha256,
+        EntitySyncSha256 DesiredPayloadSha256,
+        IReadOnlyList<EntityFieldChange> FieldDiffs,
+        EntityWriteParent? ResolvedTargetParent)
+    {
+        internal static DurableArtifactItem From(EntitySyncDurablePlanItem item) =>
+            new(
+                item.TenantId,
+                item.PlanId,
+                item.ItemId,
+                item.ItemOrdinal,
+                item.SourceVendor,
+                item.SourceConnectionId,
+                item.SourceEntityType,
+                item.SourceEntityKey,
+                item.SourceEntityId,
+                item.TargetVendor,
+                item.TargetConnectionId,
+                item.TargetEntityType,
+                item.TargetEntityId,
+                item.Action,
+                DurableArtifactMatchEvidence.From(item.MatchEvidence),
+                item.RedactedBefore,
+                item.RedactedDesired,
+                item.BeforePayloadSha256,
+                item.DesiredPayloadSha256,
+                item.FieldDiffs,
+                item.ResolvedTargetParent);
+
+        internal EntitySyncDurablePlanItem ToDomain() =>
+            new(
+                TenantId,
+                PlanId,
+                ItemId,
+                ItemOrdinal,
+                SourceVendor,
+                SourceConnectionId,
+                SourceEntityType,
+                SourceEntityKey,
+                SourceEntityId,
+                TargetVendor,
+                TargetConnectionId,
+                TargetEntityType,
+                TargetEntityId,
+                Action,
+                MatchEvidence.ToDomain(),
+                RedactedBefore,
+                RedactedDesired,
+                BeforePayloadSha256,
+                DesiredPayloadSha256,
+                FieldDiffs,
+                ResolvedTargetParent);
+    }
+    private sealed record DurableArtifactMatchEvidence(
+        int Score,
+        string MatchType,
+        IReadOnlyList<string> Reasons)
+    {
+        internal static DurableArtifactMatchEvidence From(
+            EntitySyncMatchEvidence value) =>
+            new(value.Score, value.MatchType, value.Reasons);
+
+        internal EntitySyncMatchEvidence ToDomain() =>
+            new(Score, MatchType, Reasons);
+    }
+
 }

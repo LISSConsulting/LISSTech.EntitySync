@@ -36,11 +36,26 @@ pwsh -NoProfile -Command "Invoke-Pester -Path Tests/LISSTech.EntitySync.Tests.ps
 
 Exit 1: 3 passed, 1 failed; the generation-pinned connection test reported missing `ConnectionId` (`artifact://2019`). The attribute was restored before final GREEN.
 
+### Fix-round behavioral RED
+
+The authenticated workbook round-trip test initially failed because direct JSON
+deserialization could not bind the immutable durable item constructor
+(`artifact://2042`, 8 passed/1 failed). The implementation now uses an explicit
+artifact DTO and rehydrates through the domain constructor.
+
+After adding the fail-closed Pester cases, the first named run was 3 passed/2
+failed: importing a durable envelope without control configuration attempted
+to resolve an ASP.NET implementation assembly at module load, and
+`Test-EntitySyncConnection -ConnectionId` fell through to the local registry.
+The workbook boundary was changed to the existing
+`IEntitySyncDataProtector` port with a dedicated artifact purpose, and the
+durable-only parameter is now rejected before local adapter resolution.
+
 ## GREEN evidence
 
-- Exact C# parity filter: **7 passed, 0 failed** (`artifact://2010`). Recording compares operation, tenant, resource ID, page bounds, digest/idempotency/approval input, and actor across MCP and HTTP.
-- Exact named Pester filter: **4 passed, 0 failed, 192 not run**. Cases prove exactly 16 exports/zero aliases, generation-pinned IDs/durable parameter sets, DPAPI profile locality, and full-artifact rejection before durable insert.
-- Minimal builds: `dotnet build src/LISSTech.EntitySync.csproj --no-restore` and `dotnet build mcp/LISSTech.EntitySync.Mcp.csproj --no-restore`: **0 errors** (`artifact://2016`). Existing version-conflict and nullable warnings remain.
+- Final focused C# command: **14 passed, 0 failed** (`artifact://2067`). Its **11 parity cases** include all seven MCP/direct-HTTP translations plus authenticated `WebApplicationFactory` requests for create/approve/dry-run/apply through authorization, `IdempotencyEndpointFilter`, and the real endpoint. The pass-through executor supplies a deliberately different internal execution token, so comparison proves the exact caller key—not the receipt token—reaches the shared Application command.
+- Exact named Pester filter: **5 passed, 0 failed, 192 not run**. Cases prove exactly 16 exports/zero aliases, generation-pinned IDs/durable parameter sets, DPAPI profile locality, fail-closed durable workbook handling, and durable-only parameter rejection before local fallback.
+- Minimal builds: `dotnet build src/LISSTech.EntitySync.csproj --no-restore` and `dotnet build mcp/LISSTech.EntitySync.Mcp.csproj --no-restore`: **0 errors** (`artifact://2071`). Existing version-conflict and nullable warnings remain.
 
 ## PostgreSQL restart/provider reconstruction
 
@@ -50,7 +65,7 @@ An isolated PostgreSQL 18 instance was exposed on port 5433. Command:
 DATABASE_URL='Host=127.0.0.1;Port=5433;Database=postgres;Username=entitysync;Password=entitysync;Pooling=false' dotnet test Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj --filter 'FullyQualifiedName~Connection_and_policy_repositories_are_tenant_isolated_and_lossless|FullyQualifiedName~Manifest_round_trips_and_item_failure_rolls_back_plan|FullyQualifiedName~Operation_graph_and_transitions_enforce_queue_identity_and_terminal_consistency' --no-restore
 ```
 
-**3 passed, 0 failed** (`artifact://2014`). Connection, plan/manifest, and operation item/status reads deliberately use newly constructed PostgreSQL repository instances and return identical durable IDs/state. No static repository participates.
+**3 passed, 0 failed** (`artifact://2069`). Connection, plan/manifest, and operation item/status reads deliberately use newly constructed PostgreSQL repository instances and return identical durable IDs/state. No static repository participates.
 
 The existing `Lost_response_crash_restart_and_checkpoint_failure_never_redispatch` test was run twice and failed at the same checkpoint-delay assertion (`artifact://2012`, `artifact://2023`). Task 10 did not change `VendorOutcomeReconciler`, `EntitySyncOperationWorker`, or this test method; `git diff` confirms the only fixture changes replace removed MCP coordinator wiring with the shared facade, and the failing test never invokes that facade (`artifact://2025`). This is therefore an independently exposed existing worker/reconciler issue, not hidden or claimed GREEN.
 
@@ -69,7 +84,7 @@ The existing `Lost_response_crash_restart_and_checkpoint_failure_never_redispatc
 
 ## Workbook durability
 
-`PowerShellDurablePlanWorkbook` stores a versioned Base64 durable-manifest payload and SHA-256 in the workbook package. Import checks container, entry, version, payload digest, manifest digest, item count, tenant, and plan identity before insertion. Export reconstructs the full manifest from bounded durable pages. File transport is absent from MCP/HTTP.
+`PowerShellDurablePlanWorkbook` stores a versioned, authenticated durable-manifest payload in the workbook package. Protection goes through `IEntitySyncDataProtector` with a purpose isolated from connection secrets and audit values; the protected payload contains the tenant and plan identity, and import verifies those authenticated values against the envelope and active control tenant. Import also checks container, entry, complete manifest digest/item count, Draft status, latest enabled policy version/hash/route/connection binding, and both connection generations before insertion. Exact same-plan replay returns the existing plan; same-ID/different-plan conflicts. Export reconstructs the full manifest and persisted status from bounded durable pages. File transport is absent from MCP/HTTP.
 
 ## Authority removal and changed areas
 
@@ -85,11 +100,11 @@ Changed areas: Application facade/planner/hosting; MCP connection/sync/exclusion
 - PowerShell connection output uses `EntitySyncControlConnectionInfo`; ciphertext is not emitted.
 - Adapter configuration is server-managed; MCP/HTTP accept no raw endpoints or credentials.
 - DPAPI profiles are absent from server DI and explicit profiles bypass durable mutation.
-- Workbook validation precedes insertion; file transport remains PowerShell-only.
+- Workbook authentication, tenant/plan identity, domain digest, Draft status, policy route/hash/version, and connection generations are verified before insertion; file transport remains PowerShell-only.
 - No synchronous I/O was added to MCP/HTTP/Application. PowerShell waits only at the synchronous cmdlet boundary over async services.
 
 ## Concerns
 
 1. The repeatable worker/reconciler assertion failure described above remains actionable outside Task 10; direct connection/plan/run reconstruction is GREEN.
 2. Minimal builds retain existing MSB3277 and nullable warnings, with no errors.
-3. Named Pester validates malformed workbook rejection before database access; it does not perform a successful live PowerShell/PostgreSQL import/export round-trip. Durable paging and repository reconstruction are covered in C#.
+3. Named Pester does not perform a successful live PowerShell/PostgreSQL import/export round-trip. Authenticated workbook success/tamper/key isolation/status preservation and Application import replay/conflict/policy/generation validation are covered in the focused C# run; durable paging and live PostgreSQL repository reconstruction are covered separately.

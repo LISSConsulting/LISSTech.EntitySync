@@ -11,40 +11,39 @@ public sealed class ImportEntitySyncPlanCommand : PSCmdlet
 {
     [Parameter(Mandatory = true, Position = 0)]
     public string Path { get; set; } = string.Empty;
+    [Parameter]
+    public string? IdempotencyKey { get; set; }
+
 
     protected override void EndProcessing()
     {
         var resolved = GetUnresolvedProviderPathFromPSPath(Path);
-        if (PowerShellControlRuntime.IsDurableConfigured)
+        var hasDurableEnvelope = PowerShellDurablePlanWorkbook.HasDurableEnvelope(resolved);
+        if (hasDurableEnvelope)
         {
-            if (!resolved.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+            if (!PowerShellControlRuntime.IsDurableConfigured)
                 throw new InvalidOperationException(
-                    "Durable plan import requires an .xlsx workbook.");
-            var manifest = PowerShellDurablePlanWorkbook.Read(resolved);
+                    "A durable workbook requires durable PowerShell control configuration.");
+            if (string.IsNullOrWhiteSpace(IdempotencyKey))
+                throw new InvalidOperationException(
+                    "-IdempotencyKey is required for durable plan import.");
             using var control = PowerShellControlRuntime.Open();
-            if (!manifest.Plan.TenantId.Equals(
-                    control.TenantId, StringComparison.Ordinal))
-                throw new InvalidOperationException(
-                    "Workbook durable plan tenant does not match the PowerShell control tenant.");
-            var existing = control.Plans.GetAsync(
+            var manifest = PowerShellDurablePlanWorkbook.Read(
+                resolved, control.TenantId, control.DataProtection);
+            var imported = control.Commands.ImportPlanAsync(
                     control.TenantId,
-                    manifest.Plan.PlanId,
+                    manifest,
+                    IdempotencyKey,
+                    control.Actor,
                     CancellationToken.None)
                 .GetAwaiter().GetResult();
-            if (existing is null)
-            {
-                control.Plans.InsertAsync(
-                        control.TenantId, manifest, CancellationToken.None)
-                    .GetAwaiter().GetResult();
-            }
-            else if (existing.PlanDigestSha256 != manifest.Plan.PlanDigestSha256)
-            {
-                throw new InvalidOperationException(
-                    "A different immutable durable plan already uses this plan ID.");
-            }
-            WriteObject(manifest.Plan);
+            WriteObject(imported);
             return;
         }
+        if (!string.IsNullOrWhiteSpace(IdempotencyKey))
+            throw new InvalidOperationException(
+                "-IdempotencyKey is valid only for a durable workbook.");
+
 
         if (resolved.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
         {

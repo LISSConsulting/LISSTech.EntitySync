@@ -25,6 +25,10 @@ public sealed class TestEntitySyncConnectionCommand : PSCmdlet
         try
         {
             Vendor = NormalizeVendorAlias(Vendor);
+            if (!string.IsNullOrWhiteSpace(ConnectionId)
+                && !PowerShellControlRuntime.IsDurableConfigured)
+                throw new InvalidOperationException(
+                    "ConnectionId requires durable PowerShell control configuration.");
             if (PowerShellControlRuntime.IsDurableConfigured)
             {
                 using var control = PowerShellControlRuntime.Open();

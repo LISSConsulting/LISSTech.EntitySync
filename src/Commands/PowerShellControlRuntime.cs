@@ -88,6 +88,8 @@ internal sealed class PowerShellControlLease(
         scope.ServiceProvider.GetRequiredService<IDurableSyncPlanRepository>();
     internal ISyncOperationRepository Operations =>
         scope.ServiceProvider.GetRequiredService<ISyncOperationRepository>();
+    internal IEntitySyncDataProtector DataProtection =>
+        scope.ServiceProvider.GetRequiredService<IEntitySyncDataProtector>();
 
     internal PowerShellConnectionLease AcquireConnection(
         string vendor,

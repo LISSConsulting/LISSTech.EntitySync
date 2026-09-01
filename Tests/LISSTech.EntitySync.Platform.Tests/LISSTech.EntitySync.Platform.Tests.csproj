@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\Application\LISSTech.EntitySync.Application.csproj" />
     <ProjectReference Include="..\..\src\Runtime\LISSTech.EntitySync.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Hosting\LISSTech.EntitySync.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\LISSTech.EntitySync.csproj" />
     <ProjectReference Include="..\..\scheduler\LISSTech.EntitySync.Scheduler.csproj" />
     <ProjectReference Include="..\..\mcp\LISSTech.EntitySync.Mcp.csproj">
       <Aliases>global,mcp</Aliases>

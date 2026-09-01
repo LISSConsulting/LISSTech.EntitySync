@@ -7,12 +7,14 @@ public sealed class EntitySyncDataProtector : IEntitySyncDataProtector
 {
     private readonly IDataProtector connectionSecretProtector;
     private readonly IDataProtector auditValueProtector;
-
+    private readonly IDataProtector durablePlanArtifactProtector;
     public EntitySyncDataProtector(IDataProtectionProvider provider)
     {
         ArgumentNullException.ThrowIfNull(provider);
         connectionSecretProtector = provider.CreateProtector("connection-secret-v1");
         auditValueProtector = provider.CreateProtector("audit-value-v1");
+        durablePlanArtifactProtector =
+            provider.CreateProtector("durable-plan-artifact-v1");
     }
 
     public string Protect(EntitySyncDataProtectionPurpose purpose, string plaintext)
@@ -33,6 +35,9 @@ public sealed class EntitySyncDataProtector : IEntitySyncDataProtector
     {
         EntitySyncDataProtectionPurpose.ConnectionSecret => connectionSecretProtector,
         EntitySyncDataProtectionPurpose.AuditValue => auditValueProtector,
-        _ => throw new ArgumentOutOfRangeException(nameof(purpose), purpose, "Unknown data-protection purpose.")
+        EntitySyncDataProtectionPurpose.DurablePlanArtifact =>
+            durablePlanArtifactProtector,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(purpose), purpose, "Unknown data-protection purpose.")
     };
 }

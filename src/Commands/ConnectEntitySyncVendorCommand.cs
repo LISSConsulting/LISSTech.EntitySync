@@ -145,6 +145,19 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     {
         try
         {
+            if (!string.IsNullOrWhiteSpace(ConnectionId))
+            {
+                if (!PowerShellControlRuntime.IsDurableConfigured)
+                    throw new InvalidOperationException(
+                        "-ConnectionId requires durable PowerShell control configuration.");
+                if (ParameterSetName.Equals("Profile", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(Profile)
+                    || SaveProfile
+                    || DefaultProfile)
+                    throw new InvalidOperationException(
+                        "-ConnectionId cannot be combined with Profile, SaveProfile, or DefaultProfile.");
+            }
+
             if (ParameterSetName.Equals("Profile", StringComparison.OrdinalIgnoreCase))
             {
                 foreach (var output in ConnectEntitySyncProfileCommand.ConnectProfile(Profile)) WriteObject(output);

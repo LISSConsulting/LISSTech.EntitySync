@@ -15,6 +15,7 @@ public sealed class IdempotencyEndpointFilter(
 {
     public const string HeaderName = "Idempotency-Key";
     private static readonly object ExecutionTokenKey = new();
+    private static readonly object CallerKeyKey = new();
     private static readonly object RecoveryKey = new();
 
     public async ValueTask<object?> InvokeAsync(
@@ -38,6 +39,7 @@ public sealed class IdempotencyEndpointFilter(
                 "IDEMPOTENCY_KEY_INVALID",
                 $"{HeaderName} cannot exceed 200 characters.");
 
+        http.Items[CallerKeyKey] = key;
         var requestHash = ComputeRequestHash(invocationContext);
         var control = http.RequestServices.GetRequiredService<ControlRequestContext>();
         var response = await executor.ExecuteAsync(
@@ -70,6 +72,12 @@ public sealed class IdempotencyEndpointFilter(
             ? token
             : throw new InvalidOperationException(
                 "The idempotent execution token is unavailable.");
+    public static string GetCallerKey(HttpContext context) =>
+        context.Items.TryGetValue(CallerKeyKey, out var value) && value is string key
+            ? key
+            : throw new InvalidOperationException(
+                "The caller idempotency key is unavailable.");
+
 
     public static bool IsRecovery(HttpContext context) =>
         context.Items.TryGetValue(RecoveryKey, out var value) && value is true;

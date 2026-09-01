@@ -451,44 +451,49 @@ namespace EntitySyncTests
     }
   }
 
-  It 'validates workbook artifacts before the durable control service insert' {
+  It 'fails closed on durable workbook envelopes without the durable control service' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
     $path = Join-Path ([System.IO.Path]::GetTempPath()) (
-      'entitysync-local-workbook-{0}.xlsx' -f [guid]::NewGuid())
+      'entitysync-durable-envelope-{0}.xlsx' -f [guid]::NewGuid())
     $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
-    $oldTenant = [Environment]::GetEnvironmentVariable('ENTITYSYNC_TENANT_ID')
-    $oldActor = [Environment]::GetEnvironmentVariable('ENTITYSYNC_ACTOR_ID')
-    $oldKeyPath = [Environment]::GetEnvironmentVariable(
-      'ENTITYSYNC_DATA_PROTECTION_KEY_PATH')
     try {
+      $archive = [System.IO.Compression.ZipFile]::Open(
+        $path, [System.IO.Compression.ZipArchiveMode]::Create)
+      try {
+        $entry = $archive.CreateEntry('entitysync/durable-plan.json')
+        $writer = [System.IO.StreamWriter]::new($entry.Open())
+        try { $writer.Write('{}') } finally { $writer.Dispose() }
+      }
+      finally { $archive.Dispose() }
       [Environment]::SetEnvironmentVariable('DATABASE_URL', $null)
-      $plan = [LISSTech.EntitySync.Core.EntitySyncPlan]::new()
-      $plan.TenantId = 'tenant-a'
-      $plan.SourceVendor = 'NetSuite'
-      $plan.SourceEntityType = 'Customer'
-      $plan.TargetVendor = 'HaloPSA'
-      $plan.TargetEntityType = 'Client'
-      $plan | Export-EntitySyncPlan -Path $path
-
-      [Environment]::SetEnvironmentVariable(
-        'DATABASE_URL',
-        'Host=127.0.0.1;Port=1;Database=must-not-connect;Username=unused;Password=unused')
-      [Environment]::SetEnvironmentVariable('ENTITYSYNC_TENANT_ID', 'tenant-a')
-      [Environment]::SetEnvironmentVariable('ENTITYSYNC_ACTOR_ID', 'actor-a')
-      [Environment]::SetEnvironmentVariable(
-        'ENTITYSYNC_DATA_PROTECTION_KEY_PATH',
-        [System.IO.Path]::GetTempPath())
       { Import-EntitySyncPlan -Path $path } |
-        Should -Throw '*durable EntitySync plan artifact*'
+        Should -Throw '*requires durable PowerShell control configuration*'
     }
     finally {
       [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
-      [Environment]::SetEnvironmentVariable('ENTITYSYNC_TENANT_ID', $oldTenant)
-      [Environment]::SetEnvironmentVariable('ENTITYSYNC_ACTOR_ID', $oldActor)
-      [Environment]::SetEnvironmentVariable(
-        'ENTITYSYNC_DATA_PROTECTION_KEY_PATH', $oldKeyPath)
       Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
     }
   }
+
+  It 'rejects durable-only parameters without the durable control service' {
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    try {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $null)
+      { Test-EntitySyncConnection -Vendor NetSuite -ConnectionId durable-source } |
+        Should -Throw '*ConnectionId requires durable PowerShell control configuration*'
+      {
+        New-EntitySyncPlan `
+          -SourceVendor NetSuite `
+          -TargetVendor HaloPSA `
+          -PolicyId ([guid]::NewGuid()) `
+          -IdempotencyKey durable-key
+      } | Should -Throw '*PolicyId and -IdempotencyKey require durable*'
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+    }
+  }
+
 
 
   It 'Saves DPAPI-protected connection profiles and reconnects from them' {

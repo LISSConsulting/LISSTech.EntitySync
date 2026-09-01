@@ -1,3 +1,5 @@
+using System.Net.Http.Headers;
+using System.Text;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mcp;
@@ -8,6 +10,7 @@ using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
 
+[Collection(nameof(ControlApiCollection))]
 public sealed class ControlSurfaceParityTests
 {
     private static readonly Guid PolicyId =
@@ -43,6 +46,62 @@ public sealed class ControlSurfaceParityTests
         Assert.Equal(mcp.Operations, http.Operations);
         Assert.Equal(mcp.Calls, http.Calls);
     }
+
+    [Theory]
+    [InlineData("plans.create", "/api/v1/control/plans")]
+    [InlineData("plans.approve", "/api/v1/control/plans/22222222-2222-2222-2222-222222222222/approvals")]
+    [InlineData("runs.dry-run", "/api/v1/control/plans/22222222-2222-2222-2222-222222222222/dry-run")]
+    [InlineData("runs.apply", "/api/v1/control/plans/22222222-2222-2222-2222-222222222222/apply")]
+    public async Task Authenticated_http_filter_preserves_the_caller_key_used_by_mcp(
+        string operation,
+        string path)
+    {
+        var mcp = new RecordingControlCommands();
+        await InvokeMcpAsync(operation, mcp);
+
+        var http = new RecordingControlCommands();
+        using var factory = new ControlApiFactory(http, executeControlCommands: true);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Test");
+        client.DefaultRequestHeaders.Add(
+            "X-Test-Claims",
+            operation is "plans.approve" or "runs.apply"
+                ? "tid=tenant-a;oid=tenant-a;scp=EntitySync.Approve"
+                : "tid=tenant-a;oid=tenant-a;scp=EntitySync.Operate");
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        request.Headers.Add(
+            IdempotencyEndpointFilter.HeaderName, CallerKey(operation));
+        var body = RequestBody(operation);
+        if (body is not null)
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(mcp.Operations, http.Operations);
+        Assert.Equal(mcp.Calls, http.Calls);
+    }
+
+    private static string CallerKey(string operation) =>
+        operation switch
+        {
+            "plans.create" => "create-key",
+            "plans.approve" => "approve-key",
+            "runs.dry-run" => "dry-key",
+            "runs.apply" => "apply-key",
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
+
+    private static string? RequestBody(string operation) =>
+        operation switch
+        {
+            "plans.create" =>
+                $$"""{"policyId":"{{PolicyId:D}}","planLifetimeMinutes":60}""",
+            "plans.approve" => $$"""{"digest":"{{new string('a', 64)}}"}""",
+            "runs.apply" => $$"""{"approvalId":"{{ApprovalId:D}}"}""",
+            "runs.dry-run" => null,
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
 
     private static async Task InvokeMcpAsync(
         string operation,
@@ -176,6 +235,14 @@ public sealed class ControlSurfaceParityTests
                 actor.ActorId));
             throw new RecordingCompleteException();
         }
+        public Task<EntitySyncDurablePlan> ImportPlanAsync(
+            string tenantId,
+            EntitySyncDurablePlanManifest manifest,
+            string idempotencyKey,
+            EntitySyncActor actor,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
 
         public Task<DurablePlanInspectionPage> InspectPlanAsync(
             string tenantId,

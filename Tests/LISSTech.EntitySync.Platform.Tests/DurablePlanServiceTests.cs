@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.IO.Compression;
 using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Commands;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
+using Microsoft.AspNetCore.DataProtection;
 using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
@@ -393,6 +396,145 @@ public sealed class DurablePlanServiceTests
         Assert.Equal(1, fixture.DurableRepository.ApprovalCount);
         Assert.Equal(1, fixture.DurableRepository.AuditCount);
     }
+    [Fact]
+    public async Task Durable_import_validates_exact_context_replays_and_conflicts()
+    {
+        using var source = new Fixture(1);
+        await source.Service.CreatePlanAsync(
+            source.Request("import-source"), source.Reviewer, default);
+        var manifest = source.DurableRepository.Manifest!;
+
+        using var target = new Fixture(1);
+        var imported = await target.Service.ImportManifestAsync(
+            Fixture.Tenant, manifest, "import-key", target.Reviewer, default);
+        var replay = await target.Service.ImportManifestAsync(
+            Fixture.Tenant, manifest, "import-key", target.Reviewer, default);
+        Assert.Equal(imported.PlanId, replay.PlanId);
+        Assert.Equal(manifest.Plan.PlanDigestSha256, replay.PlanDigestSha256);
+
+        var changedPlan = new EntitySyncDurablePlan(
+            manifest.Plan.TenantId,
+            manifest.Plan.PlanId,
+            manifest.Plan.PolicyId,
+            manifest.Plan.PolicyVersion,
+            manifest.Plan.PolicyDefinitionSha256,
+            manifest.Plan.RouteScope,
+            manifest.Plan.SourceConnectionId,
+            manifest.Plan.SourceConnectionGeneration,
+            manifest.Plan.TargetConnectionId,
+            manifest.Plan.TargetConnectionGeneration,
+            manifest.Plan.PlanDigestSha256,
+            EntitySyncDurablePlanStatus.Draft,
+            manifest.Plan.SelectionBounds,
+            manifest.Plan.ItemCount,
+            manifest.Plan.CreatedAt,
+            manifest.Plan.CreatedBy,
+            manifest.Plan.ExpiresAt.AddMinutes(1));
+        var conflicting = EntitySyncDurablePlanManifest.Create(
+            changedPlan, manifest.Items);
+        await Assert.ThrowsAsync<DurablePlanIdempotencyConflictException>(() =>
+            target.Service.ImportManifestAsync(
+                Fixture.Tenant, conflicting, "import-key", target.Reviewer, default));
+
+        var approved = manifest.Plan.TransitionTo(EntitySyncDurablePlanStatus.Approved);
+        var approvedManifest = EntitySyncDurablePlanManifest.LoadPersisted(
+            approved, manifest.Items);
+        Assert.Equal(EntitySyncDurablePlanStatus.Approved, approvedManifest.Plan.Status);
+        using var statusTarget = new Fixture(1);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            statusTarget.Service.ImportManifestAsync(
+                Fixture.Tenant, approvedManifest, "import-key", target.Reviewer, default));
+    }
+
+    [Fact]
+    public async Task Durable_import_rejects_changed_policy_and_rotated_connections()
+    {
+        using var source = new Fixture(1);
+        await source.Service.CreatePlanAsync(
+            source.Request("import-guards"), source.Reviewer, default);
+        var manifest = source.DurableRepository.Manifest!;
+
+        using var policyTarget = new Fixture(1);
+        await policyTarget.Policies.InsertAsync(
+            Fixture.Tenant,
+            policyTarget.Policy.NextVersion(
+                policyTarget.Reviewer,
+                policyTarget.Policy.Definition,
+                policyTarget.Time.GetUtcNow().AddMinutes(1)),
+            default);
+        await Assert.ThrowsAsync<DurablePlanPolicyChangedException>(() =>
+            policyTarget.Service.ImportManifestAsync(
+                Fixture.Tenant, manifest, "policy-guard",
+                policyTarget.Reviewer, default));
+
+        using var generationTarget = new Fixture(1);
+        generationTarget.Connections.Rotate(Fixture.SourceConnectionId);
+        await Assert.ThrowsAsync<DurablePlanConnectionChangedException>(() =>
+            generationTarget.Service.ImportManifestAsync(
+                Fixture.Tenant, manifest, "generation-guard",
+                generationTarget.Reviewer, default));
+    }
+
+    [Fact]
+    public async Task Durable_workbook_is_authenticated_and_preserves_persisted_status()
+    {
+        using var fixture = new Fixture(1);
+        await fixture.Service.CreatePlanAsync(
+            fixture.Request("workbook-crypto"), fixture.Reviewer, default);
+        var draft = fixture.DurableRepository.Manifest!;
+        var approved = EntitySyncDurablePlanManifest.LoadPersisted(
+            draft.Plan.TransitionTo(EntitySyncDurablePlanStatus.Approved),
+            draft.Items);
+        var root = Path.Combine(Path.GetTempPath(), $"entitysync-workbook-{Guid.NewGuid():N}");
+        var firstKeys = Directory.CreateDirectory(Path.Combine(root, "first"));
+        var secondKeys = Directory.CreateDirectory(Path.Combine(root, "second"));
+        var path = Path.Combine(root, "plan.xlsx");
+        try
+        {
+            var first = new EntitySyncDataProtector(
+                DataProtectionProvider.Create(firstKeys));
+            var second = new EntitySyncDataProtector(
+                DataProtectionProvider.Create(secondKeys));
+            PowerShellDurablePlanWorkbook.Write(approved, path, first);
+            var loaded = PowerShellDurablePlanWorkbook.Read(
+                path, Fixture.Tenant, first);
+            Assert.Equal(EntitySyncDurablePlanStatus.Approved, loaded.Plan.Status);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Task.Run(() =>
+                PowerShellDurablePlanWorkbook.Read(path, "other-tenant", first)));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Task.Run(() =>
+                PowerShellDurablePlanWorkbook.Read(path, Fixture.Tenant, second)));
+
+            using (var archive = ZipFile.Open(path, ZipArchiveMode.Update))
+            {
+                var entry = archive.GetEntry("entitysync/durable-plan.json")!;
+                string json;
+                using (var reader = new StreamReader(entry.Open()))
+                    json = reader.ReadToEnd();
+                using var document = JsonDocument.Parse(json);
+                var envelope = document.RootElement;
+                var protectedPayload = envelope.GetProperty(
+                    "protectedPayload").GetString()!;
+                entry.Delete();
+                var replacement = archive.CreateEntry("entitysync/durable-plan.json");
+                using var writer = new StreamWriter(replacement.Open());
+                writer.Write(JsonSerializer.Serialize(new
+                {
+                    tenantId = envelope.GetProperty("tenantId").GetString(),
+                    planId = envelope.GetProperty("planId").GetGuid(),
+                    protectedPayload =
+                        (protectedPayload[0] == 'A' ? "B" : "A")
+                        + protectedPayload[1..]
+                }));
+            }
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Task.Run(() =>
+                PowerShellDurablePlanWorkbook.Read(path, Fixture.Tenant, first)));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
 
     private sealed class Fixture : IDisposable
     {

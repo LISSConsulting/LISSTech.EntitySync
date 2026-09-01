@@ -103,6 +103,10 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         {
             TargetVendor = NormalizeVendorAlias(TargetVendor);
             SourceVendor = NormalizeVendorAlias(SourceVendor);
+            if (!PowerShellControlRuntime.IsDurableConfigured
+                && (PolicyId is not null || !string.IsNullOrWhiteSpace(IdempotencyKey)))
+                throw new InvalidOperationException(
+                    "-PolicyId and -IdempotencyKey require durable PowerShell control configuration.");
             if (PowerShellControlRuntime.IsDurableConfigured)
             {
                 if (pipelineSources.Count > 0)

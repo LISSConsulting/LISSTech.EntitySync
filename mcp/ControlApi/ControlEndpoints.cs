@@ -423,7 +423,7 @@ public static class ControlEndpoints
             commands,
             control,
             request,
-            IdempotencyEndpointFilter.GetExecutionToken(http),
+            IdempotencyEndpointFilter.GetCallerKey(http),
             cancellationToken).ConfigureAwait(false);
         var persisted = command.Plan;
         return Results.Json(PlanResponse.From(persisted), statusCode: StatusCodes.Status201Created);
@@ -497,7 +497,7 @@ public static class ControlEndpoints
             control,
             planId,
             request.Digest,
-            IdempotencyEndpointFilter.GetExecutionToken(http),
+            IdempotencyEndpointFilter.GetCallerKey(http),
             cancellationToken).ConfigureAwait(false);
         return Results.Ok(new ApprovalResponse(
             approval.PlanId,
@@ -519,7 +519,7 @@ public static class ControlEndpoints
             commands,
             control,
             planId,
-            IdempotencyEndpointFilter.GetExecutionToken(http),
+            IdempotencyEndpointFilter.GetCallerKey(http),
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,
@@ -542,7 +542,7 @@ public static class ControlEndpoints
             control,
             planId,
             request.ApprovalId,
-            IdempotencyEndpointFilter.GetExecutionToken(http),
+            IdempotencyEndpointFilter.GetCallerKey(http),
             cancellationToken).ConfigureAwait(false);
         return Results.Json(new QueuedRunResponse(
             operation.OperationId,

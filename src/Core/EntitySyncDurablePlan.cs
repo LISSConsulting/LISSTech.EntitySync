@@ -250,6 +250,37 @@ public sealed record EntitySyncDurablePlanManifest
             plan.BindManifest(digest, copiedItems.Count),
             copiedItems);
     }
+    public static EntitySyncDurablePlanManifest LoadPersisted(
+        EntitySyncDurablePlan plan,
+        IEnumerable<EntitySyncDurablePlanItem> items)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var draft = new EntitySyncDurablePlan(
+            plan.TenantId,
+            plan.PlanId,
+            plan.PolicyId,
+            plan.PolicyVersion,
+            plan.PolicyDefinitionSha256,
+            plan.RouteScope,
+            plan.SourceConnectionId,
+            plan.SourceConnectionGeneration,
+            plan.TargetConnectionId,
+            plan.TargetConnectionGeneration,
+            plan.PlanDigestSha256,
+            EntitySyncDurablePlanStatus.Draft,
+            plan.SelectionBounds,
+            plan.ItemCount,
+            plan.CreatedAt,
+            plan.CreatedBy,
+            plan.ExpiresAt);
+        var verified = Create(draft, items);
+        if (verified.Plan.PlanDigestSha256 != plan.PlanDigestSha256
+            || verified.Items.Count != plan.ItemCount)
+            throw new ArgumentException(
+                "Persisted durable manifest integrity validation failed.", nameof(plan));
+        return new EntitySyncDurablePlanManifest(plan, verified.Items);
+    }
+
 
     private static EntitySyncSha256 ComputeDigest(
         EntitySyncDurablePlan plan,

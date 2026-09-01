@@ -55,7 +55,7 @@ public sealed class ExportEntitySyncPlanCommand : PSCmdlet
                         "The durable plan item pages are incomplete.");
                 items.AddRange(result.Items);
             }
-            var manifest = EntitySyncDurablePlanManifest.Create(durablePlan, items);
+            var manifest = EntitySyncDurablePlanManifest.LoadPersisted(durablePlan, items);
             var first = manifest.Items.FirstOrDefault();
             var resolved = ResolveExportPath(
                 manifest.Plan.PlanId.ToString(),
@@ -66,7 +66,8 @@ public sealed class ExportEntitySyncPlanCommand : PSCmdlet
             if (!resolved.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
                     "Durable plan export requires an .xlsx workbook path.");
-            PowerShellDurablePlanWorkbook.Write(manifest, resolved);
+            PowerShellDurablePlanWorkbook.Write(
+                manifest, resolved, control.DataProtection);
             WriteExportResult(resolved);
             return;
         }

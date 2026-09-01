@@ -110,6 +110,67 @@ public sealed class DurablePlanService(
             }
         }
     }
+    public async Task<EntitySyncDurablePlan> ImportManifestAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        ArgumentNullException.ThrowIfNull(manifest);
+        if (string.IsNullOrWhiteSpace(idempotencyKey))
+            throw new ArgumentException("Idempotency key is required.", nameof(idempotencyKey));
+        ArgumentNullException.ThrowIfNull(actor);
+        tenantId = tenantId.Trim();
+        var verified = EntitySyncDurablePlanManifest.LoadPersisted(
+            manifest.Plan, manifest.Items);
+        var plan = verified.Plan;
+        if (plan.TenantId != tenantId)
+            throw new InvalidOperationException(
+                "Imported durable plan tenant does not match the control tenant.");
+        if (plan.Status != EntitySyncDurablePlanStatus.Draft)
+            throw new InvalidOperationException(
+                "Only immutable Draft durable plans can be imported.");
+
+        var policy = await policies.GetLatestAsync(
+                tenantId, plan.PolicyId, cancellationToken).ConfigureAwait(false);
+        if (policy is null
+            || !policy.Enabled
+            || policy.Version != plan.PolicyVersion
+            || policy.DefinitionSha256 != plan.PolicyDefinitionSha256
+            || policy.RouteScope != plan.RouteScope
+            || policy.Definition.SourceConnectionId != plan.SourceConnectionId
+            || policy.Definition.TargetConnectionId != plan.TargetConnectionId)
+            throw new DurablePlanPolicyChangedException(plan.PlanId);
+        await RequireCurrentConnectionAsync(
+            tenantId,
+            plan.SourceConnectionId,
+            plan.SourceConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
+        await RequireCurrentConnectionAsync(
+            tenantId,
+            plan.TargetConnectionId,
+            plan.TargetConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
+
+        var existing = await plans.GetAsync(
+            tenantId, plan.PlanId, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            if (existing != plan)
+                throw new DurablePlanIdempotencyConflictException(plan.PlanId);
+            return existing;
+        }
+        await plans.InsertAsync(tenantId, verified, cancellationToken)
+            .ConfigureAwait(false);
+        return await plans.GetAsync(tenantId, plan.PlanId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "The imported durable plan is unavailable.");
+    }
+
 
     private async Task<DurablePlanResult> RunWithCreationLeaseAsync(
         Func<CancellationToken, Task<DurablePlanResult>> create,

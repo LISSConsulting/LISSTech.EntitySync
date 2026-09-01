@@ -19,6 +19,13 @@ public interface IEntitySyncControlCommands
         CreateDurablePlanRequest request,
         EntitySyncActor actor,
         CancellationToken cancellationToken);
+    Task<EntitySyncDurablePlan> ImportPlanAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken);
+
 
     Task<DurablePlanInspectionPage> InspectPlanAsync(
         string tenantId,
@@ -80,6 +87,15 @@ public sealed class EntitySyncControlCommands(
             ?? throw new InvalidOperationException("The committed plan is unavailable.");
         return new DurablePlanCommandResult(result, persisted);
     }
+    public Task<EntitySyncDurablePlan> ImportPlanAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        plans.ImportManifestAsync(
+            tenantId, manifest, idempotencyKey, actor, cancellationToken);
+
 
     public Task<DurablePlanInspectionPage> InspectPlanAsync(
         string tenantId,

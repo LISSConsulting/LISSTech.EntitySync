@@ -380,13 +380,26 @@ public sealed class ControlApiTests(ControlApiFactory factory)
 
 public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
 {
-    private readonly string keyPath = Path.Combine(Path.GetTempPath(), $"entitysync-control-api-{Guid.NewGuid():N}");
-    private readonly Dictionary<string, string?> original = new(StringComparer.Ordinal);
+    private readonly string keyPath = Path.Combine(
+        Path.GetTempPath(), $"entitysync-control-api-{Guid.NewGuid():N}");
+    private readonly Dictionary<string, string?> original =
+        new(StringComparer.Ordinal);
+    private readonly IEntitySyncControlCommands? controlCommands;
+    private readonly bool executeControlCommands;
 
     public SensitiveLogRecorder LogRecorder { get; } = new();
 
     public ControlApiFactory()
+        : this(null, false)
     {
+    }
+
+    internal ControlApiFactory(
+        IEntitySyncControlCommands? controlCommands,
+        bool executeControlCommands)
+    {
+        this.controlCommands = controlCommands;
+        this.executeControlCommands = executeControlCommands;
         Directory.CreateDirectory(keyPath);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -423,7 +436,15 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
             services.RemoveAll<IControlReadinessProbe>();
             services.AddSingleton<IControlReadinessProbe>(new ReadyProbe());
             services.RemoveAll<IIdempotentCommandExecutor>();
-            services.AddSingleton<IIdempotentCommandExecutor, RecordingIdempotentExecutor>();
+            services.AddSingleton<IIdempotentCommandExecutor>(
+                executeControlCommands
+                    ? new PassThroughIdempotentExecutor()
+                    : new RecordingIdempotentExecutor());
+            if (controlCommands is not null)
+            {
+                services.RemoveAll<IEntitySyncControlCommands>();
+                services.AddSingleton(controlCommands);
+            }
         });
     }
 
@@ -445,6 +466,21 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
         public Task<ControlReadinessResult> CheckAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new ControlReadinessResult(true, true, true));
     }
+}
+
+public sealed class PassThroughIdempotentExecutor : IIdempotentCommandExecutor
+{
+    public Task<IdempotentResponse> ExecuteAsync(
+        string tenantId,
+        string key,
+        string requestHash,
+        IdempotencyExecutionMode mode,
+        Func<IdempotencyExecutionContext, CancellationToken, Task<IdempotentResponse>> command,
+        CancellationToken cancellationToken) =>
+        command(
+            new IdempotencyExecutionContext(
+                tenantId, key, $"endpoint-test:{key}"),
+            cancellationToken);
 }
 
 public sealed class RecordingIdempotentExecutor : IIdempotentCommandExecutor

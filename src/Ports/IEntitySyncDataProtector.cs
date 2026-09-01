@@ -5,7 +5,8 @@ namespace LISSTech.EntitySync.Ports;
 public enum EntitySyncDataProtectionPurpose
 {
     ConnectionSecret,
-    AuditValue
+    AuditValue,
+    DurablePlanArtifact
 }
 
 public interface IEntitySyncDataProtector
