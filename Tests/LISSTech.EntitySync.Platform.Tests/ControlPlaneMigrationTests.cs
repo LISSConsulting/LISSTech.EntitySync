@@ -105,9 +105,9 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
         await SetMigrationVersionAsync("001_entity_exclusions", present: true);
 
-        await SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: false);
+        await SetMigrationVersionAsync("020_operation_audit_correlation_hardening", present: false);
         Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
-        await SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: true);
+        await SetMigrationVersionAsync("020_operation_audit_correlation_hardening", present: true);
 
         await SetMigrationVersionAsync("999_unknown_rollback_drift", present: true);
         Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
@@ -115,7 +115,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.True((await probe.CheckAsync(default)).DatabaseMigrations);
 
         var duplicate = await Assert.ThrowsAsync<PostgresException>(() =>
-            SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: true));
+            SetMigrationVersionAsync("020_operation_audit_correlation_hardening", present: true));
         Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
     }
 
@@ -339,6 +339,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     [Fact]
     public async Task Operation_item_index_must_equal_the_plan_ordinal_and_is_immutable()
     {
+        await ApplyMigrationsThroughAsync("019_operation_audit_correlation");
         await MigrateAsync();
         await SeedPlansAndApprovalsAsync();
 
@@ -403,6 +404,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     [Fact]
     public async Task Operation_and_plan_ids_must_be_distinct_in_the_audit_tuple()
     {
+        await ApplyMigrationsThroughAsync("019_operation_audit_correlation");
         await MigrateAsync();
         await SeedPlansAndApprovalsAsync();
 
@@ -423,6 +425,88 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         var error = await Assert.ThrowsAsync<PostgresException>(
             () => command.ExecuteNonQueryAsync());
         Assert.Equal("23514", error.SqlState);
+    }
+
+    [Fact]
+    public async Task Migration_020_rejects_a_deployed_wrong_operation_item_ordinal()
+    {
+        await ApplyMigrationsThroughAsync("019_operation_audit_correlation");
+        await SeedPlansAndApprovalsAsync();
+
+        await using (var seed = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
+                'route-a', 'DryRun', 'Queued', 'deployed-wrong-ordinal',
+                7, 11, 0, now(), now());
+
+            INSERT INTO entitysync.sync_operation_items (
+                tenant_id, operation_id, plan_id, item_id, item_index,
+                source_vendor, source_connection_id, source_entity_type,
+                source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256,
+                snapshots_expires_at, outcome)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000302', 1,
+                'source', 'source-1', 'company', 'entity-1', 'ENTITY-1',
+                'target', 'target-1', 'account', 'TARGET-1', 'Update',
+                '{}', '{}', repeat('3', 64), now() + interval '364 days', 'Pending');
+            """))
+            Assert.Equal(2, await seed.ExecuteNonQueryAsync());
+
+        var error = await Assert.ThrowsAsync<PostgresException>(MigrateAsync);
+        Assert.Equal("23514", error.SqlState);
+        Assert.DoesNotContain(
+            "020_operation_audit_correlation_hardening",
+            await ListAppliedMigrationsAsync());
+        await using var preserved = Database.CreateCommand("""
+            SELECT item_index
+            FROM entitysync.sync_operation_items
+            WHERE tenant_id = 'tenant-a'
+              AND operation_id = '00000000-0000-0000-0000-000000000301'
+              AND item_id = '00000000-0000-0000-0000-000000000302';
+            """);
+        Assert.Equal(1, Assert.IsType<int>(await preserved.ExecuteScalarAsync()));
+    }
+
+    [Fact]
+    public async Task Migration_020_rejects_deployed_equal_operation_and_plan_ids()
+    {
+        await ApplyMigrationsThroughAsync("019_operation_audit_correlation");
+        await SeedPlansAndApprovalsAsync();
+
+        await using (var seed = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
+                'route-a', 'DryRun', 'Queued', 'deployed-equal-operation-plan',
+                7, 11, 0, now(), now());
+            """))
+            Assert.Equal(1, await seed.ExecuteNonQueryAsync());
+
+        var error = await Assert.ThrowsAsync<PostgresException>(MigrateAsync);
+        Assert.Equal("23514", error.SqlState);
+        Assert.DoesNotContain(
+            "020_operation_audit_correlation_hardening",
+            await ListAppliedMigrationsAsync());
+        Assert.Equal(1, await CountAsync("entitysync.sync_operations"));
     }
 
     [Fact]
@@ -1228,6 +1312,43 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "INSERT INTO entitysync.schema_migrations (version) VALUES (@version)");
             record.Parameters.AddWithValue("version", version);
             await record.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task ApplyMigrationsThroughAsync(string lastVersion)
+    {
+        var assembly = typeof(EntitySyncDatabaseMigrator).Assembly;
+        var applied = (await ListAppliedMigrationsAsync()).ToHashSet(StringComparer.Ordinal);
+        foreach (var resourceName in assembly.GetManifestResourceNames()
+                     .Where(name => name.Contains(".Migrations.", StringComparison.Ordinal)
+                                    && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(name => name, StringComparer.Ordinal))
+        {
+            var version = Path.GetFileNameWithoutExtension(
+                resourceName[(resourceName.LastIndexOf(
+                    ".Migrations.",
+                    StringComparison.Ordinal) + 12)..]);
+            if (StringComparer.Ordinal.Compare(version, lastVersion) > 0) break;
+            if (!applied.Add(version)) continue;
+
+            await using var connection = await Database.OpenConnectionAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var stream = assembly.GetManifestResourceStream(resourceName)
+                ?? throw new InvalidOperationException(
+                    $"Embedded migration '{resourceName}' was not found.");
+            using var reader = new StreamReader(stream);
+            var sql = await reader.ReadToEndAsync();
+            await using (var migration = new NpgsqlCommand(sql, connection, transaction))
+                await migration.ExecuteNonQueryAsync();
+            await using (var record = new NpgsqlCommand(
+                             "INSERT INTO entitysync.schema_migrations (version) VALUES (@version)",
+                             connection,
+                             transaction))
+            {
+                record.Parameters.AddWithValue("version", version);
+                await record.ExecuteNonQueryAsync();
+            }
+            await transaction.CommitAsync();
         }
     }
 

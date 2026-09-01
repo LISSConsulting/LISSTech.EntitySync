@@ -119,7 +119,15 @@ The focused tests use real asynchronous HTTP over a loopback socket. They do not
 ## Canonical audit-correlation fix round 3 — database tuple and ordinal authority
 
 - Live PostgreSQL RED proved migration `019` accepted an operation whose `operation_id` equalled its `plan_id`, and accepted an operation item whose `item_index` did not equal the referenced plan item's ordinal.
-- Migration `019` now replaces the operation-item binding function after adding `item_index`: inserts join the authoritative `sync_plan_items.item_ordinal`, while updates treat `item_index` as immutable. The audit tuple check is idempotently replaced and includes `operation_id <> plan_id` alongside every prior distinctness rule.
+- Round 3 initially placed the stricter binding function and tuple check in migration `019`; fix round 4 moves those invariants to a new forward migration so already-applied `019` databases receive them.
 - Repository graph validation retains the four-ID distinctness check and now requires operation item indexes to be the unique contiguous zero-based range; PostgreSQL remains authoritative for the item-to-plan ordinal join.
 - GREEN on live PostgreSQL: both raw regression cases passed with exact SQLSTATE `55000`/`23514`, the complete `ControlPlaneMigrationTests` class passed 25/25 including migration application/idempotency, and `DurableOperationTests` passed 14/14. Runtime and Platform.Tests Release builds succeeded; Runtime reported 0 warnings and 0 errors.
 - Security self-review: invalid audit joins now fail before durable dispatch, the migration never derives or rewrites correlation identity, and the change stores or logs no payload, credential, token, secret, or raw vendor value.
+
+## Canonical audit-correlation fix round 4 — deployed-schema hardening
+
+- Restored migration `019_operation_audit_correlation` byte-for-byte to its original committed content. New migration `020_operation_audit_correlation_hardening` preserves migration immutability and upgrades both fresh and already-deployed schema histories.
+- Before changing constraints, migration `020` fails with SQLSTATE `23514` if an existing operation item index differs from its authoritative plan ordinal or any existing operation reuses its plan UUID. The migration transaction leaves the version unrecorded and offending rows unchanged.
+- A clean schema stopped at original `019` upgrades through `020`, after which wrong-ordinal inserts and index updates fail with `55000` and operation/plan equality fails with `23514`. Readiness now exercises `020` as the required schema head; `ExpectedVersions` continues to derive from the embedded resource inventory.
+- GREEN on live PostgreSQL: focused clean-upgrade and unsafe-upgrade cases passed 4/4; the complete `ControlPlaneMigrationTests` class passed 27/27 including fresh 001–020 application, idempotency, clean 019 upgrade, and both preflight failures; `DurableOperationTests` passed 14/14. Runtime Release build passed with 0 warnings and 0 errors.
+- Security self-review: unsafe deployed data is rejected without mutation, schema history is immutable, and the hardening migration neither creates correlation values nor records payloads, credentials, tokens, secrets, or raw vendor values.
