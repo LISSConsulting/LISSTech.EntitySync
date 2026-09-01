@@ -48,7 +48,7 @@ public sealed class DurablePlanServiceTests
         Assert.Equal(684, fixture.DurableRepository.Manifest.Items.Select(item => item.ItemId).Distinct().Count());
         Assert.All(fixture.DurableRepository.Manifest.Items, item =>
         {
-            Assert.Matches("^[0-9a-f]{64}$", item.SourceEntityKey);
+            Assert.Equal($"source-{item.ItemOrdinal}", item.SourceEntityKey);
             Assert.Equal($"source-{item.ItemOrdinal}", item.SourceEntityId);
         });
         var completedRepeat = await fixture.Service.GetPageAsync(
@@ -72,12 +72,36 @@ public sealed class DurablePlanServiceTests
     public async Task Page_bounds_are_one_based_and_bounded(int page, int pageSize)
     {
         using var fixture = new Fixture(684);
-        var plan = await fixture.Service.CreatePlanAsync(fixture.Request(), fixture.Reviewer, default);
+        var plan = await fixture.Service.CreatePlanAsync(
+            fixture.Request(), fixture.Reviewer, default);
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             fixture.Service.GetPageAsync(
                 Fixture.Tenant, plan.PlanId, page, pageSize, fixture.Reviewer, default));
         Assert.Equal(0, fixture.DurableRepository.SessionCount);
+    }
+
+    [Fact]
+    public async Task Mixed_page_sizes_complete_the_overlapping_inspection_union()
+    {
+        using var fixture = new Fixture(684);
+        var plan = await fixture.Service.CreatePlanAsync(
+            fixture.Request("mixed-pages"), fixture.Reviewer, default);
+        await fixture.Service.GetPageAsync(
+            Fixture.Tenant, plan.PlanId, 1, 100, fixture.Reviewer, default);
+        await fixture.Service.GetPageAsync(
+            Fixture.Tenant, plan.PlanId, 2, 50, fixture.Reviewer, default);
+
+        DurablePlanInspectionPage? last = null;
+        for (var page = 3; page <= 14; page++)
+        {
+            last = await fixture.Service.GetPageAsync(
+                Fixture.Tenant, plan.PlanId, page, 50, fixture.Reviewer, default);
+        }
+
+        Assert.NotNull(last);
+        Assert.True(last!.InspectionComplete);
+        Assert.Equal([new DurableInspectionRange(0, 684)], last.Coverage);
     }
 
     [Fact]
@@ -111,17 +135,39 @@ public sealed class DurablePlanServiceTests
     }
 
     [Fact]
-    public async Task Identical_service_input_and_time_reuses_the_same_plan_identity_and_digest()
+    public async Task Concurrent_lost_response_retry_plans_once_and_changed_body_conflicts()
     {
         using var fixture = new Fixture(2);
+        fixture.SourceAdapter.BlockNextRead();
+        var firstTask = fixture.Service.CreatePlanAsync(
+            fixture.Request("stable-key"), fixture.Reviewer, default);
+        await fixture.SourceAdapter.WaitForReadAsync();
+        var retryTask = fixture.Service.CreatePlanAsync(
+            fixture.Request("stable-key"), fixture.Reviewer, default);
+        await Task.Delay(50);
+        Assert.False(retryTask.IsCompleted);
+        fixture.SourceAdapter.ReleaseRead();
 
-        var first = await fixture.Service.CreatePlanAsync(
-            fixture.Request(), fixture.Reviewer, default);
-        var second = await fixture.Service.CreatePlanAsync(
-            fixture.Request(), fixture.Reviewer, default);
-
-        Assert.Equal(first.PlanId, second.PlanId);
-        Assert.Equal(first.Digest, second.Digest);
+        var results = await Task.WhenAll(firstTask, retryTask);
+        Assert.Equal(results[0].PlanId, results[1].PlanId);
+        Assert.Equal(results[0].Digest, results[1].Digest);
+        Assert.Equal(1, fixture.SourceAdapter.GetEntitiesCalls);
+        fixture.Time.Advance(TimeSpan.FromHours(1));
+        var laterRetry = await fixture.Service.CreatePlanAsync(
+            fixture.Request("stable-key"), fixture.Reviewer, default);
+        Assert.Equal(results[0].PlanId, laterRetry.PlanId);
+        Assert.Equal(1, fixture.SourceAdapter.GetEntitiesCalls);
+        await Assert.ThrowsAsync<DurablePlanIdempotencyConflictException>(() =>
+            fixture.Service.CreatePlanAsync(
+                fixture.Request("stable-key", sourceCount: 1),
+                fixture.Reviewer,
+                default));
+        await Assert.ThrowsAsync<DurablePlanIdempotencyConflictException>(() =>
+            fixture.Service.CreatePlanAsync(
+                fixture.Request("stable-key", omitPolicyVersion: true),
+                fixture.Reviewer,
+                default));
+        Assert.Equal(1, fixture.SourceAdapter.GetEntitiesCalls);
     }
 
     [Fact]
@@ -148,16 +194,27 @@ public sealed class DurablePlanServiceTests
         var item = Assert.Single(fixture.DurableRepository.Manifest!.Items);
         Assert.DoesNotContain("blockedField", item.RedactedDesired.Json, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(Fixture.SecretValue, item.RedactedDesired.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.NestedSecretValue, item.RedactedDesired.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.ArraySecretValue, item.RedactedDesired.Json, StringComparison.Ordinal);
         Assert.Contains("[redacted]", item.RedactedDesired.Json, StringComparison.Ordinal);
-        Assert.Equal(["allowedField", "apiSecret", "name"], item.FieldDiffs.Select(change => change.Field));
+        Assert.Equal(
+            ["allowedField", "apiSecret", "name", "nested"],
+            item.FieldDiffs.Select(change => change.Field));
         var sensitive = Assert.Single(item.FieldDiffs, change => change.Field == "apiSecret");
         Assert.True(sensitive.Sensitive);
         Assert.DoesNotContain(Fixture.SecretValue, sensitive.Desired.Json, StringComparison.Ordinal);
+        var nested = Assert.Single(item.FieldDiffs, change => change.Field == "nested");
+        Assert.True(nested.Sensitive);
+        Assert.Contains("visible", nested.Desired.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.NestedSecretValue, nested.Desired.Json, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.ArraySecretValue, nested.Desired.Json, StringComparison.Ordinal);
         Assert.Matches("^[0-9a-f]{64}$", sensitive.DesiredSha256.Value);
-        Assert.DoesNotContain(
-            Fixture.SecretValue,
-            JsonSerializer.Serialize(fixture.DurableRepository.Manifest),
-            StringComparison.Ordinal);
+        var persisted = JsonSerializer.Serialize(fixture.DurableRepository.Manifest);
+        Assert.DoesNotContain(Fixture.SecretValue, persisted, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.NestedSecretValue, persisted, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.CredentialSecretValue, persisted, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.NestedBlockedValue, persisted, StringComparison.Ordinal);
+        Assert.DoesNotContain(Fixture.ArraySecretValue, persisted, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -250,6 +307,10 @@ public sealed class DurablePlanServiceTests
         internal const string SourceConnectionId = "source";
         internal const string TargetConnectionId = "target";
         internal const string SecretValue = "super-secret-value";
+        internal const string NestedSecretValue = "nested-secret-value";
+        internal const string ArraySecretValue = "array-secret-value";
+        internal const string CredentialSecretValue = "credential-secret-value";
+        internal const string NestedBlockedValue = "nested-blocked-value";
         private static readonly DateTimeOffset Instant =
             new(2026, 8, 31, 12, 0, 0, TimeSpan.Zero);
 
@@ -263,9 +324,10 @@ public sealed class DurablePlanServiceTests
                 Name = $"Source {index}",
                 ExternalIds = { ["MutableExternalReference"] = $"external-{index}" }
             }).ToList();
+            SourceAdapter = new TestAdapter("NetSuite", Sources);
             Connections = new DefinitionAndRuntimeRepository(
                 Definition(SourceConnectionId, "NetSuite"),
-                new TestAdapter("NetSuite", Sources),
+                SourceAdapter,
                 Definition(TargetConnectionId, "HaloPSA"),
                 new TestAdapter("HaloPSA", []));
             var definition = new EntitySyncPolicyDefinition(
@@ -282,7 +344,7 @@ public sealed class DurablePlanServiceTests
                 "NetSuiteInternalId",
                 "CFNetSuiteCustomerID",
                 EntitySyncUpdatePolicy.Standard,
-                ["name", "allowedField", "apiSecret"],
+                ["name", "allowedField", "apiSecret", "nested"],
                 ["blockedField"],
                 false);
             Policy = EntitySyncPolicy.Create(
@@ -319,6 +381,7 @@ public sealed class DurablePlanServiceTests
         }
 
         public List<ExternalEntity> Sources { get; }
+        public TestAdapter SourceAdapter { get; }
         public DefinitionAndRuntimeRepository Connections { get; }
         public MemoryPolicyRepository Policies { get; }
         public RecordingExclusionRepository Exclusions { get; }
@@ -330,12 +393,16 @@ public sealed class DurablePlanServiceTests
         public DurablePlanService Service { get; }
         public EntitySyncPolicy Policy { get; }
         public EntitySyncActor Reviewer { get; } = new("reviewer");
-
-        public CreateDurablePlanRequest Request() => new()
+        public CreateDurablePlanRequest Request(
+            string idempotencyKey = "plan-key",
+            int? sourceCount = null,
+            bool omitPolicyVersion = false) => new()
         {
             TenantId = Tenant,
+            IdempotencyKey = idempotencyKey,
             PolicyId = Policy.PolicyId,
-            PolicyVersion = Policy.Version,
+            PolicyVersion = omitPolicyVersion ? null : Policy.Version,
+            SourceCount = sourceCount,
             PlanLifetime = TimeSpan.FromHours(4)
         };
 
@@ -417,28 +484,77 @@ public sealed class DurablePlanServiceTests
                 ["a"] = null
             };
             request.Fields["apiSecret"] = Fixture.SecretValue;
+            request.Fields["nested"] = new Dictionary<string, object?>
+            {
+                ["visible"] = "retained",
+                ["authentication"] = new Dictionary<string, object?>
+                {
+                    ["apiToken"] = Fixture.NestedSecretValue
+                },
+                ["credentials"] = Fixture.CredentialSecretValue,
+                ["blockedField"] = Fixture.NestedBlockedValue,
+                ["items"] = new object?[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["password"] = Fixture.ArraySecretValue,
+                        ["label"] = "retained"
+                    }
+                }
+            };
             return request;
         }
     }
-
     private sealed class TestAdapter(string vendor, IReadOnlyList<ExternalEntity> entities)
         : IEntityAdapter
     {
+        private TaskCompletionSource? readStarted;
+        private TaskCompletionSource? releaseRead;
+
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
-        public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
+        public int GetEntitiesCalls { get; private set; }
+
+        public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
             EntityQuery query,
-            CancellationToken cancellationToken) => Task.FromResult(entities);
+            CancellationToken cancellationToken)
+        {
+            GetEntitiesCalls++;
+            readStarted?.TrySetResult();
+            if (releaseRead is not null)
+                await releaseRead.Task.WaitAsync(cancellationToken);
+            return entities;
+        }
+
+        public void BlockNextRead()
+        {
+            readStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            releaseRead = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public Task WaitForReadAsync() => readStarted?.Task
+            ?? throw new InvalidOperationException("The read was not blocked.");
+
+        public void ReleaseRead()
+        {
+            releaseRead?.TrySetResult();
+            releaseRead = null;
+        }
+
         public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(
             string type,
-            CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
         public Task<EntityWriteResult> CreateEntityAsync(
             EntityWriteRequest request,
             CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<EntityWriteResult> UpdateEntityAsync(
             EntityWriteRequest request,
             CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+        public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
     }
 
     private sealed class DefinitionAndRuntimeRepository :
@@ -662,6 +778,8 @@ public sealed class DurablePlanServiceTests
     private sealed class MemoryDurableRepository : IDurableSyncPlanRepository
     {
         private readonly SemaphoreSlim gate = new(1, 1);
+        private readonly ConcurrentDictionary<Guid, SemaphoreSlim> creationGates = [];
+        private readonly ConcurrentDictionary<Guid, EntitySyncSha256> creationClaims = [];
         private readonly Dictionary<Guid, EntitySyncInspectionSession> sessions = [];
         private readonly Dictionary<Guid, Dictionary<Guid, EntitySyncInspectionRange>> ranges = [];
         private EntitySyncDurablePlan? currentPlan;
@@ -671,6 +789,22 @@ public sealed class DurablePlanServiceTests
         public int RangeCount => ranges.Values.Sum(value => value.Count);
         public int ApprovalCount { get; private set; }
         public int AuditCount { get; private set; }
+
+        public async Task<IDurablePlanCreationLease> AcquireCreationAsync(
+            string tenantId,
+            Guid planId,
+            EntitySyncSha256 requestSha256,
+            CancellationToken cancellationToken)
+        {
+            var creationGate = creationGates.GetOrAdd(
+                planId,
+                static _ => new SemaphoreSlim(1, 1));
+            await creationGate.WaitAsync(cancellationToken);
+            var stored = creationClaims.GetOrAdd(planId, requestSha256);
+            return new MemoryCreationLease(
+                stored == requestSha256,
+                creationGate);
+        }
 
         public Task InsertAsync(
             string tenantId,
@@ -805,8 +939,8 @@ public sealed class DurablePlanServiceTests
                              .OrderBy(value => value.RangeStart)
                              .ThenBy(value => value.RangeEnd))
                 {
-                    if (range.RangeStart != next) throw new InvalidOperationException("Coverage gap.");
-                    next = range.RangeEnd + 1;
+                    if (range.RangeStart > next) throw new InvalidOperationException("Coverage gap.");
+                    next = Math.Max(next, range.RangeEnd + 1);
                 }
                 if (next != Manifest!.Items.Count) throw new InvalidOperationException("Coverage incomplete.");
                 session = session.Complete(completedAt);
@@ -891,6 +1025,21 @@ public sealed class DurablePlanServiceTests
             EntitySyncDurablePlanStatus expectedStatus,
             DateTimeOffset now,
             CancellationToken cancellationToken) => Task.FromResult(false);
+        private sealed class MemoryCreationLease(
+            bool requestMatches,
+            SemaphoreSlim gate) : IDurablePlanCreationLease
+        {
+            private SemaphoreSlim? heldGate = gate;
+
+            public bool RequestMatches { get; } = requestMatches;
+
+            public ValueTask DisposeAsync()
+            {
+                Interlocked.Exchange(ref heldGate, null)?.Release();
+                return ValueTask.CompletedTask;
+            }
+        }
+
     }
 
     private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider

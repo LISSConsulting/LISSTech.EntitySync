@@ -27,6 +27,7 @@ public sealed class CreateEntitySyncPlanRequest
 public sealed class CreateDurablePlanRequest
 {
     public string TenantId { get; init; } = string.Empty;
+    public string IdempotencyKey { get; init; } = string.Empty;
     public Guid PolicyId { get; init; }
     public int? PolicyVersion { get; init; }
     public string? SourceSearch { get; init; }

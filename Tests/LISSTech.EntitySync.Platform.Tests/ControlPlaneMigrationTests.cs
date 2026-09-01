@@ -21,7 +21,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         [
             "entity_exclusions", "entity_change_state", "connection_definitions",
             "connection_generation_counters", "sync_policies", "sync_plans",
-            "sync_plan_items", "sync_plan_inspections",
+            "sync_plan_creation_claims", "sync_plan_items", "sync_plan_inspections",
             "sync_plan_inspection_ranges", "sync_approvals", "sync_operations",
             "sync_operation_items", "sync_operation_item_snapshots", "sync_schedules",
             "canonical_change_events", "api_idempotency_records", "audit_events",
@@ -35,22 +35,25 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "004_control_plane",
                 "005_control_operations",
                 "006_control_audit_scheduler",
-                "007_connection_generation_ledger"
+                "007_connection_generation_ledger",
+                "008_plan_exclusion_serialization"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
         Assert.Equal(1, await CountAsync("entitysync.entity_change_state"));
 
         Assert.True(await HasPrimaryKeyAsync("entitysync", "sync_operations", "sync_operation_pkey"));
+
         Assert.True(await HasConstraintOrTriggerAsync("entitysync", "audit_events", "audit_events_immutable"));
 
         foreach (var table in new[]
                  {
-                     "connection_definitions", "sync_policies", "sync_plans", "sync_plan_items",
-                     "sync_plan_inspections", "sync_plan_inspection_ranges", "sync_approvals",
-                     "sync_operations", "sync_operation_items", "sync_operation_item_snapshots",
-                     "sync_schedules", "canonical_change_events", "api_idempotency_records",
-                     "audit_events", "audit_event_full_values"
+                     "connection_definitions", "sync_policies", "sync_plans",
+                     "sync_plan_creation_claims", "sync_plan_items", "sync_plan_inspections",
+                     "sync_plan_inspection_ranges", "sync_approvals", "sync_operations",
+                     "sync_operation_items", "sync_operation_item_snapshots", "sync_schedules",
+                     "canonical_change_events", "api_idempotency_records", "audit_events",
+                     "audit_event_full_values"
                  })
         {
             Assert.True(await PrimaryKeyContainsColumnAsync("entitysync", table, "tenant_id"),
@@ -69,6 +72,37 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.True(await HasUniqueIndexAsync("entitysync", "sync_approvals", "sync_approvals_tenant_id_plan_digest_sha256_key"));
 
         await AssertAuditMutationRejectedAsync();
+    }
+
+    [Fact]
+    public async Task Migration_008_reapplies_overlap_aware_inspection_completion_on_upgrade()
+    {
+        await MigrateAsync();
+        await using (var replace = Database.CreateCommand(
+                         """
+                         CREATE OR REPLACE FUNCTION entitysync.enforce_inspection_completion()
+                         RETURNS trigger
+                         LANGUAGE plpgsql
+                         AS $$
+                         BEGIN
+                             RAISE EXCEPTION 'legacy sentinel';
+                         END;
+                         $$;
+                         DELETE FROM entitysync.schema_migrations
+                         WHERE version = '008_plan_exclusion_serialization';
+                         """))
+            await replace.ExecuteNonQueryAsync();
+
+        await MigrateAsync();
+
+        await using var definition = Database.CreateCommand(
+            """
+            SELECT pg_get_functiondef(
+                'entitysync.enforce_inspection_completion()'::regprocedure)
+            """);
+        var sql = Assert.IsType<string>(await definition.ExecuteScalarAsync());
+        Assert.Contains("previous_max_end", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy sentinel", sql, StringComparison.Ordinal);
     }
 
     [Fact]

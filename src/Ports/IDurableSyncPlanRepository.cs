@@ -4,6 +4,12 @@ namespace LISSTech.EntitySync.Ports;
 
 public interface IDurableSyncPlanRepository
 {
+    Task<IDurablePlanCreationLease> AcquireCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        CancellationToken cancellationToken);
+
     Task InsertAsync(
         string tenantId,
         EntitySyncDurablePlanManifest manifest,
@@ -116,4 +122,9 @@ public interface IDurableSyncPlanRepository
         EntitySyncDurablePlanStatus expectedStatus,
         DateTimeOffset now,
         CancellationToken cancellationToken);
+}
+
+public interface IDurablePlanCreationLease : IAsyncDisposable
+{
+    bool RequestMatches { get; }
 }

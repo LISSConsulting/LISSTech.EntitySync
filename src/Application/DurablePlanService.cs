@@ -22,6 +22,22 @@ public sealed class DurablePlanService(
         ValidateCreateRequest(request);
         ArgumentNullException.ThrowIfNull(actor);
         var tenantId = request.TenantId.Trim();
+        var idempotencyKey = request.IdempotencyKey.Trim();
+        var planId = CreatePlanId(tenantId, idempotencyKey);
+        var selection = new EntitySyncSelectionBounds(
+            request.SourceSearch,
+            request.SourceCount,
+            request.SourceEntityId);
+        var requestSha256 = ComputeCreateRequestSha256(
+            request, tenantId, idempotencyKey, selection, actor);
+        await using var creation = await plans.AcquireCreationAsync(
+            tenantId, planId, requestSha256, cancellationToken).ConfigureAwait(false);
+        if (!creation.RequestMatches)
+            throw new DurablePlanIdempotencyConflictException(planId);
+        var existing = await plans.GetAsync(tenantId, planId, cancellationToken)
+            .ConfigureAwait(false);
+        if (existing is not null)
+            return ToResult(existing);
         var policy = await ResolveCurrentPolicyAsync(
             tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
@@ -57,13 +73,7 @@ public sealed class DurablePlanService(
         var activeExcludedSourceIds = await RecheckExclusionsAsync(
             policy, cancellationToken).ConfigureAwait(false);
         var now = timeProvider.GetUtcNow();
-        var selection = new EntitySyncSelectionBounds(
-            request.SourceSearch,
-            request.SourceCount,
-            request.SourceEntityId);
         var expiresAt = now.Add(request.PlanLifetime);
-        var planId = CreateStablePlanId(
-            plannerOutput, policy, selection, actor, now, expiresAt, activeExcludedSourceIds);
         var manifest = manifestBuilder.Build(
             plannerOutput,
             policy,
@@ -73,7 +83,17 @@ public sealed class DurablePlanService(
             expiresAt,
             selection,
             activeExcludedSourceIds);
-        await plans.InsertAsync(tenantId, manifest, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await plans.InsertAsync(tenantId, manifest, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            existing = await plans.GetAsync(tenantId, planId, cancellationToken)
+                .ConfigureAwait(false);
+            if (existing is null) throw;
+            return ToResult(existing);
+        }
         var persisted = await plans.GetAsync(
             tenantId, manifest.Plan.PlanId, cancellationToken).ConfigureAwait(false);
         if (persisted is null
@@ -433,76 +453,34 @@ public sealed class DurablePlanService(
         && ranges[0].StartInclusive == 0
         && ranges[0].EndExclusive == itemCount;
 
-    private static Guid CreateStablePlanId(
-        EntitySyncPlan plannerOutput,
-        EntitySyncPolicy policy,
-        EntitySyncSelectionBounds selection,
-        EntitySyncActor actor,
-        DateTimeOffset createdAt,
-        DateTimeOffset expiresAt,
-        IReadOnlySet<string> activeExcludedSourceIds) =>
+    private static Guid CreatePlanId(string tenantId, string idempotencyKey) =>
         StableGuid(EntitySyncCanonicalDigest.Compute(new
         {
-            policy.TenantId,
-            policy.PolicyId,
-            policy.Version,
-            PolicyDefinitionSha256 = policy.DefinitionSha256.Value,
-            plannerOutput.Execution.SourceConnectionId,
-            plannerOutput.Execution.SourceConnectionGeneration,
-            plannerOutput.Execution.TargetConnectionId,
-            plannerOutput.Execution.TargetConnectionGeneration,
+            Namespace = "entitysync-durable-plan-idempotency-v1",
+            TenantId = tenantId,
+            IdempotencyKey = idempotencyKey
+        }));
+
+    private static EntitySyncSha256 ComputeCreateRequestSha256(
+        CreateDurablePlanRequest request,
+        string tenantId,
+        string idempotencyKey,
+        EntitySyncSelectionBounds selection,
+        EntitySyncActor actor) =>
+        EntitySyncCanonicalDigest.Compute(new
+        {
+            SchemaVersion = 1,
+            TenantId = tenantId,
+            IdempotencyKey = idempotencyKey,
+            request.PolicyId,
+            PolicyVersionSpecified = request.PolicyVersion.HasValue,
+            request.PolicyVersion,
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
-            CreatedBy = actor.ActorId,
-            createdAt,
-            expiresAt,
-            ActiveExclusions = activeExcludedSourceIds
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ThenBy(value => value, StringComparer.Ordinal)
-                .ToArray(),
-            Items = plannerOutput.Items.Select(item => new
-            {
-                SourceSha256 = SnapshotEntity(item.Source),
-                TargetSha256 = SnapshotEntity(item.Target),
-                item.Action,
-                item.Score,
-                item.MatchType,
-                Reasons = item.Reasons.ToArray()
-            }).ToArray()
-        }));
-
-    private static string? SnapshotEntity(ExternalEntity? entity)
-    {
-        if (entity is null) return null;
-        return EntitySyncCanonicalDigest.Compute(new
-        {
-            entity.Vendor,
-            entity.EntityType,
-            entity.Id,
-            entity.Name,
-            entity.Email,
-            entity.Phone,
-            entity.Website,
-            entity.Domain,
-            entity.PrimarySiteId,
-            entity.PrimarySiteName,
-            entity.PrimaryAddress,
-            entity.BillingAddress,
-            entity.ShippingAddress,
-            entity.IsActive,
-            entity.CreatedAt,
-            entity.UpdatedAt,
-            ExternalIds = entity.ExternalIds
-                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => new { pair.Key, pair.Value })
-                .ToArray(),
-            CustomFields = entity.CustomFields
-                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => new { pair.Key, pair.Value })
-                .ToArray()
-        }).Value;
-    }
+            PlanLifetimeTicks = request.PlanLifetime.Ticks,
+            CreatedBy = actor.ActorId
+        });
 
     private static DurablePlanResult ToResult(EntitySyncDurablePlan plan) =>
         new(
@@ -534,6 +512,11 @@ public sealed class DurablePlanService(
     {
         ArgumentNullException.ThrowIfNull(request);
         RequireTenant(request.TenantId);
+        if (string.IsNullOrWhiteSpace(request.IdempotencyKey)
+            || request.IdempotencyKey.Trim().Length > 256)
+            throw new ArgumentException(
+                "A non-secret idempotency key of at most 256 characters is required.",
+                nameof(request.IdempotencyKey));
         if (request.PolicyId == Guid.Empty)
             throw new ArgumentException("Policy ID is required.", nameof(request));
         if (request.PolicyVersion is <= 0)
@@ -562,6 +545,10 @@ public sealed class DurablePlanPolicyChangedException(Guid planId)
 
 public sealed class DurablePlanConnectionChangedException(string connectionId)
     : InvalidOperationException($"Connection '{connectionId}' no longer matches the durable plan generation.");
+
+public sealed class DurablePlanIdempotencyConflictException(Guid planId)
+    : InvalidOperationException(
+        $"Durable plan idempotency identity '{planId}' is already bound to a different request.");
 
 public sealed class DurablePlanApprovalConflictException : InvalidOperationException
 {

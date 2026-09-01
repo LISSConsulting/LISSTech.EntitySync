@@ -10,8 +10,9 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
     private const string RedactedValue = "[redacted]";
     private static readonly string[] SensitiveTerms =
     [
-        "authorization", "bearer", "clientsecret", "client_secret", "password",
-        "secret", "token", "apikey", "api_key", "privatekey", "private_key"
+        "authorization", "authentication", "bearer", "clientsecret", "client_secret",
+        "credential", "password", "secret", "token", "apikey", "api_key",
+        "privatekey", "private_key"
     ];
     private static readonly JsonElement CanonicalNull = Canonicalize(null);
     private static readonly JsonElement CanonicalRedaction = Canonicalize(RedactedValue);
@@ -89,22 +90,19 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             : plannerItem.Reasons.Select(SanitizeReason).ToArray();
 
         var desired = BuildDesiredPayload(plannerOutput, policy, plannerItem, action);
-        var before = BuildBeforePayload(plannerItem.Target, desired.Keys);
+        var before = BuildBeforePayload(
+            plannerItem.Target,
+            desired.Keys,
+            policy.Definition.BlockedFields);
         var changes = BuildFieldChanges(before, desired);
         var redactedBefore = Redact(before);
         var redactedDesired = Redact(desired);
-        var sourceKey = EntitySyncCanonicalDigest.Compute(new
-        {
-            Vendor = plannerOutput.SourceVendor,
-            ConnectionId = plannerOutput.Execution.SourceConnectionId,
-            EntityType = plannerOutput.SourceEntityType,
-            EntityId = plannerItem.Source.Id
-        });
+        var sourceKey = plannerItem.Source.Id.Trim().ToLowerInvariant();
         var itemId = StableGuid(EntitySyncCanonicalDigest.Compute(new
         {
             planId,
             ordinal,
-            SourceKey = sourceKey.Value,
+            SourceKey = sourceKey,
             TargetId = plannerItem.Target?.Id,
             action,
             matchType
@@ -118,7 +116,7 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             plannerOutput.SourceVendor,
             plannerOutput.Execution.SourceConnectionId,
             plannerOutput.SourceEntityType,
-            sourceKey.Value,
+            sourceKey,
             plannerItem.Source.Id,
             plannerOutput.TargetVendor,
             plannerOutput.Execution.TargetConnectionId,
@@ -180,20 +178,27 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             if (policy.Definition.BlockedFields.Contains(allowedField))
                 continue;
             mapped.TryGetValue(allowedField, out var value);
-            desired.Add(allowedField, Canonicalize(value));
+            desired.Add(
+                allowedField,
+                RemoveBlockedProperties(Canonicalize(value), policy.Definition.BlockedFields));
         }
         return desired;
     }
 
     private static Dictionary<string, JsonElement> BuildBeforePayload(
         ExternalEntity? target,
-        IEnumerable<string> desiredFields)
+        IEnumerable<string> desiredFields,
+        IReadOnlySet<string> blockedFields)
     {
         var before = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
         if (target is null)
             return before;
         foreach (var field in desiredFields)
-            before.Add(field, Canonicalize(ReadTargetField(target, field)));
+            before.Add(
+                field,
+                RemoveBlockedProperties(
+                    Canonicalize(ReadTargetField(target, field)),
+                    blockedFields));
         return before;
     }
 
@@ -212,14 +217,16 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             var desiredHash = EntitySyncCanonicalDigest.Compute(pair.Value);
             if (beforeHash == desiredHash)
                 continue;
-            var sensitive = IsSensitiveField(pair.Key);
+            var redactWhole = IsSensitiveField(pair.Key);
+            var redactedBefore = RedactValue(beforeValue, redactWhole);
+            var redactedDesired = RedactValue(pair.Value, redactWhole);
             changes.Add(new EntityFieldChange(
                 pair.Key,
-                ToJsonValue(sensitive ? CanonicalRedaction : beforeValue),
-                ToJsonValue(sensitive ? CanonicalRedaction : pair.Value),
+                ToJsonValue(redactedBefore.Value),
+                ToJsonValue(redactedDesired.Value),
                 beforeHash,
                 desiredHash,
-                sensitive));
+                redactedBefore.Sensitive || redactedDesired.Sensitive));
         }
         return changes;
     }
@@ -229,10 +236,57 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
     {
         var redacted = new Dictionary<string, JsonElement>(payload.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in payload)
-            redacted.Add(
-                pair.Key,
-                IsSensitiveField(pair.Key) ? CanonicalRedaction : pair.Value);
+            redacted.Add(pair.Key, RedactValue(pair.Value, IsSensitiveField(pair.Key)).Value);
         return redacted;
+    }
+
+    private static RedactedJsonElement RedactValue(JsonElement value, bool redactWhole)
+    {
+        if (redactWhole)
+            return new RedactedJsonElement(CanonicalRedaction, true);
+        var buffer = new ArrayBufferWriter<byte>();
+        bool sensitive;
+        using (var writer = new Utf8JsonWriter(buffer))
+            sensitive = WriteRedactedCanonical(writer, value);
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return new RedactedJsonElement(document.RootElement.Clone(), sensitive);
+    }
+
+    private static bool WriteRedactedCanonical(Utf8JsonWriter writer, JsonElement value)
+    {
+        var sensitive = false;
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject().OrderBy(
+                             property => property.Name,
+                             StringComparer.Ordinal))
+                {
+                    writer.WritePropertyName(property.Name);
+                    if (IsSensitiveField(property.Name))
+                    {
+                        CanonicalRedaction.WriteTo(writer);
+                        sensitive = true;
+                    }
+                    else
+                    {
+                        sensitive |= WriteRedactedCanonical(writer, property.Value);
+                    }
+                }
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                    sensitive |= WriteRedactedCanonical(writer, item);
+                writer.WriteEndArray();
+                break;
+            default:
+                value.WriteTo(writer);
+                break;
+        }
+        return sensitive;
     }
 
     private static EntitySyncSha256 HashPayload(IReadOnlyDictionary<string, JsonElement> payload) =>
@@ -269,6 +323,48 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             WriteCanonical(writer, element);
         using var document = JsonDocument.Parse(buffer.WrittenMemory);
         return document.RootElement.Clone();
+    }
+
+    private static JsonElement RemoveBlockedProperties(
+        JsonElement value,
+        IReadOnlySet<string> blockedFields)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+            WriteWithoutBlockedProperties(writer, value, blockedFields);
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return document.RootElement.Clone();
+    }
+
+    private static void WriteWithoutBlockedProperties(
+        Utf8JsonWriter writer,
+        JsonElement value,
+        IReadOnlySet<string> blockedFields)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in value.EnumerateObject().OrderBy(
+                             property => property.Name,
+                             StringComparer.Ordinal))
+                {
+                    if (blockedFields.Contains(property.Name)) continue;
+                    writer.WritePropertyName(property.Name);
+                    WriteWithoutBlockedProperties(writer, property.Value, blockedFields);
+                }
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in value.EnumerateArray())
+                    WriteWithoutBlockedProperties(writer, item, blockedFields);
+                writer.WriteEndArray();
+                break;
+            default:
+                value.WriteTo(writer);
+                break;
+        }
     }
 
     private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value)
@@ -329,6 +425,8 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
 
     private static bool IsSensitiveField(string field) =>
         SensitiveTerms.Any(term => field.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+    private readonly record struct RedactedJsonElement(JsonElement Value, bool Sensitive);
 
     private static Guid StableGuid(EntitySyncSha256 digest)
     {

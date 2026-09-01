@@ -8,6 +8,65 @@ namespace LISSTech.EntitySync.Runtime;
 public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSource)
     : IDurableSyncPlanRepository
 {
+    public async Task<IDurablePlanCreationLease> AcquireCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        tenantId = tenantId.Trim();
+        if (planId == Guid.Empty)
+            throw new ArgumentException("Plan ID is required.", nameof(planId));
+        ArgumentNullException.ThrowIfNull(requestSha256);
+        var identity = $"{tenantId}:{planId:N}";
+        var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await using (var acquire = new NpgsqlCommand(
+                             "SELECT pg_advisory_lock(hashtextextended(@identity, 0))",
+                             connection))
+            {
+                PostgresControlPersistence.Add(
+                    acquire, "identity", NpgsqlDbType.Text, identity);
+                await acquire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            const string claimSql = """
+                INSERT INTO entitysync.sync_plan_creation_claims (
+                    tenant_id, plan_id, request_sha256)
+                VALUES (@tenant_id, @plan_id, @request_sha256)
+                ON CONFLICT (tenant_id, plan_id) DO NOTHING;
+
+                SELECT request_sha256
+                FROM entitysync.sync_plan_creation_claims
+                WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+                """;
+            await using var claim = new NpgsqlCommand(claimSql, connection);
+            AddPlanKey(claim, tenantId, planId);
+            PostgresControlPersistence.Add(
+                claim, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+            var stored = (string?)await claim.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    "The durable plan creation identity could not be claimed.");
+            return new CreationLease(
+                connection,
+                identity,
+                string.Equals(
+                    stored.Trim(),
+                    requestSha256.Value,
+                    StringComparison.Ordinal));
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
     public async Task InsertAsync(string tenantId, EntitySyncDurablePlanManifest manifest, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -1112,4 +1171,34 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         new EntitySyncJsonValue(reader.GetString(18)), new EntitySyncJsonValue(reader.GetString(19)),
         PostgresControlPersistence.NullableHash(reader, 20), new EntitySyncSha256(reader.GetString(21)),
         PostgresControlPersistence.DeserializeFieldDiffs(reader.GetString(17)));
+    private sealed class CreationLease(
+        NpgsqlConnection connection,
+        string identity,
+        bool requestMatches) : IDurablePlanCreationLease
+    {
+        private NpgsqlConnection? heldConnection = connection;
+
+        public bool RequestMatches { get; } = requestMatches;
+
+        public async ValueTask DisposeAsync()
+        {
+            var current = Interlocked.Exchange(ref heldConnection, null);
+            if (current is null) return;
+            try
+            {
+                await using var release = new NpgsqlCommand(
+                    "SELECT pg_advisory_unlock(hashtextextended(@identity, 0))",
+                    current);
+                PostgresControlPersistence.Add(
+                    release, "identity", NpgsqlDbType.Text, identity);
+                await release.ExecuteNonQueryAsync(CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                await current.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
 }

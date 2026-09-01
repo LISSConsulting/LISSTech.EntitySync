@@ -298,13 +298,15 @@ BEGIN
         SELECT range_start,
                range_end,
                row_number() OVER (ORDER BY range_start, range_end) AS position,
-               lag(range_end) OVER (ORDER BY range_start, range_end) AS previous_end
+               max(range_end) OVER (
+                   ORDER BY range_start, range_end
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS previous_max_end
           FROM entitysync.sync_plan_inspection_ranges
          WHERE tenant_id = NEW.tenant_id AND inspection_id = NEW.inspection_id
     )
     SELECT count(*) FILTER (
                WHERE (position = 1 AND range_start <> 0)
-                  OR (position > 1 AND range_start <> previous_end + 1)
+                  OR (position > 1 AND range_start > previous_max_end + 1)
                   OR range_end >= item_count),
            max(range_end)
       INTO invalid_ranges, final_covered_ordinal
@@ -316,7 +318,7 @@ BEGIN
         OR invalid_ranges <> 0
         OR final_covered_ordinal IS NULL
         OR final_covered_ordinal <> item_count - 1 THEN
-        RAISE EXCEPTION 'Inspection ranges must exactly cover every plan ordinal without gaps or overlaps'
+        RAISE EXCEPTION 'Inspection ranges must exactly cover every plan ordinal without gaps'
             USING ERRCODE = '55000';
     END IF;
 

@@ -291,6 +291,176 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Durable_plan_creation_claim_serializes_and_binds_the_exact_request()
+    {
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        const string tenantId = "claim-tenant";
+        var planId = Guid.NewGuid();
+        var firstRequest = new EntitySyncSha256(new string('a', 64));
+        var changedRequest = new EntitySyncSha256(new string('b', 64));
+        var first = await plans.AcquireCreationAsync(
+            tenantId, planId, firstRequest, default);
+        Assert.True(first.RequestMatches);
+        var concurrent = plans.AcquireCreationAsync(
+            tenantId, planId, firstRequest, default);
+        await AssertStillRunningAsync(concurrent);
+
+        await first.DisposeAsync();
+        var retry = await concurrent;
+        Assert.True(retry.RequestMatches);
+        await retry.DisposeAsync();
+        await using var conflict = await plans.AcquireCreationAsync(
+            tenantId, planId, changedRequest, default);
+        Assert.False(conflict.RequestMatches);
+    }
+
+    [Fact]
+    public async Task Exclusion_change_wins_a_route_race_with_plan_creation_atomically()
+    {
+        var context = await SeedControlContextAsync("exclusion-create-race");
+        var route = Route(context);
+        var exclusions = new PostgresEntityExclusionRepository(Database);
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var manifest = Manifest(context, itemCount: 1);
+        var (lockConnection, lockTransaction) = await AcquireRouteLockAsync(route);
+        await using (lockConnection)
+        await using (lockTransaction)
+        {
+            var add = exclusions.AddAsync(
+                route, "SOURCE-0", "Source", "operator exclusion", "operator", default);
+            await AssertStillRunningAsync(add);
+            var insert = plans.InsertAsync(context.TenantId, manifest, default);
+            await AssertStillRunningAsync(insert);
+
+            await lockTransaction.CommitAsync();
+            await add;
+            await Assert.ThrowsAnyAsync<Exception>(() => insert);
+        }
+
+        Assert.Null(await plans.GetAsync(
+            context.TenantId, manifest.Plan.PlanId, default));
+        Assert.Single(await exclusions.ListActiveAsync(route, default));
+    }
+
+    [Fact]
+    public async Task Exclusion_change_wins_a_route_race_with_approval_and_rolls_back_audit()
+    {
+        var context = await SeedControlContextAsync("exclusion-approval-race");
+        var route = Route(context);
+        var exclusions = new PostgresEntityExclusionRepository(Database);
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var manifest = Manifest(context, itemCount: 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var inspectionId = Guid.NewGuid();
+        var now = context.Now.AddMinutes(1);
+        await plans.GetOrOpenInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
+        await plans.RecordInspectionRangeAsync(
+            context.TenantId, inspectionId, Guid.NewGuid(), 0, 0, now, default);
+        await plans.CompleteInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, now, default);
+        var approvalId = Guid.NewGuid();
+        var (lockConnection, lockTransaction) = await AcquireRouteLockAsync(route);
+        await using (lockConnection)
+        await using (lockTransaction)
+        {
+            var add = exclusions.AddAsync(
+                route, "SOURCE-0", "Source", "operator exclusion", "operator", default);
+            await AssertStillRunningAsync(add);
+            var approve = plans.ApproveInspectionAsync(
+                context.TenantId, approvalId, inspectionId, manifest.Plan.PlanId,
+                manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+                context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+                now.AddMinutes(1), now.AddMinutes(10),
+                ApprovalAudit(
+                    context.TenantId,
+                    manifest.Plan.PlanId,
+                    approvalId,
+                    "reviewer",
+                    now.AddMinutes(1)),
+                default);
+            await AssertStillRunningAsync(approve);
+
+            await lockTransaction.CommitAsync();
+            await add;
+            await Assert.ThrowsAnyAsync<Exception>(() => approve);
+        }
+
+        Assert.Equal(
+            EntitySyncDurablePlanStatus.Draft,
+            (await plans.GetAsync(
+                context.TenantId, manifest.Plan.PlanId, default))!.Status);
+        var audit = await new PostgresSyncAuditRepository(Database).ListAsync(
+            context.TenantId, null, null, 10, default);
+        Assert.DoesNotContain(
+            audit.Events,
+            auditEvent => auditEvent.CorrelationId == approvalId.ToString("N"));
+
+        Assert.True(await exclusions.RevokeAsync(
+            route, "SOURCE-0", "operator", default));
+        var successfulApprovalId = Guid.NewGuid();
+        await plans.ApproveInspectionAsync(
+            context.TenantId, successfulApprovalId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            now.AddMinutes(2), now.AddMinutes(10),
+            ApprovalAudit(
+                context.TenantId,
+                manifest.Plan.PlanId,
+                successfulApprovalId,
+                "reviewer",
+                now.AddMinutes(2)),
+            default);
+        await Assert.ThrowsAnyAsync<Exception>(() => exclusions.AddAsync(
+            route, "SOURCE-0", "Source", "late exclusion", "operator", default));
+        Assert.Equal(
+            EntitySyncDurablePlanStatus.Approved,
+            (await plans.GetAsync(
+                context.TenantId, manifest.Plan.PlanId, default))!.Status);
+    }
+
+    [Fact]
+    public async Task Inspection_completion_uses_the_exact_union_of_overlapping_ranges()
+    {
+        var context = await SeedControlContextAsync("inspection-union");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var manifest = Manifest(context, itemCount: 684);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var inspectionId = Guid.NewGuid();
+        var now = context.Now.AddMinutes(1);
+        await plans.GetOrOpenInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
+
+        foreach (var range in new[] { (0, 99), (50, 149), (150, 399), (350, 683) })
+        {
+            await plans.RecordInspectionRangeAsync(
+                context.TenantId,
+                inspectionId,
+                Guid.NewGuid(),
+                range.Item1,
+                range.Item2,
+                now,
+                default);
+        }
+
+        var completed = await plans.CompleteInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, now, default);
+        Assert.Equal(EntitySyncInspectionStatus.Completed, completed.Status);
+        Assert.True(await plans.HasCompleteInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, default));
+    }
+
+    [Fact]
     public async Task Large_manifest_copy_round_trips_every_item_atomically()
     {
         var context = await SeedControlContextAsync("large-manifest");
@@ -1361,7 +1531,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var items = Enumerable.Range(0, itemCount).Select(index =>
             new EntitySyncDurablePlanItem(
                 context.TenantId, planId, Guid.NewGuid(), index, "NetSuite",
-                context.Source.ConnectionId, "Customer", $"key-{index}", $"SOURCE-{index}",
+                context.Source.ConnectionId, "Customer", $"legacy-key-{index}", $"SOURCE-{index}",
                 "HaloPSA", context.Target.ConnectionId, "Client", $"TARGET-{index}", "Update",
                 new EntitySyncMatchEvidence(95, "Exact", [reason]),
                 new EntitySyncJsonValue($"{{\"name\":\"before-{index}\"}}"),
@@ -1378,10 +1548,50 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
     }
 
+    private static EntityExclusionRoute Route(ControlContext context) =>
+        EntityExclusionRoute.Create(
+            context.TenantId,
+            "NetSuite",
+            context.Source.ConnectionId,
+            "Customer",
+            "HaloPSA",
+            context.Target.ConnectionId,
+            "Client");
+
+    private async Task<(NpgsqlConnection Connection, NpgsqlTransaction Transaction)>
+        AcquireRouteLockAsync(EntityExclusionRoute route)
+    {
+        var connection = await Database.OpenConnectionAsync();
+        var transaction = await connection.BeginTransactionAsync();
+        try
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                SELECT pg_advisory_xact_lock(entitysync.entity_route_lock_key(
+                    @tenant_id, @source_connection_id, @target_connection_id))
+                """,
+                connection,
+                transaction);
+            command.Parameters.AddWithValue("tenant_id", route.TenantId);
+            command.Parameters.AddWithValue("source_connection_id", route.SourceConnectionId);
+            command.Parameters.AddWithValue("target_connection_id", route.TargetConnectionId);
+            await command.ExecuteNonQueryAsync();
+            return (connection, transaction);
+        }
+        catch
+        {
+            await transaction.DisposeAsync();
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
     private static async Task AssertStillRunningAsync(Task task)
     {
         await Task.Delay(TimeSpan.FromMilliseconds(150));
-        Assert.False(task.IsCompleted, "The mutation did not wait for the conflicting row lock.");
+        Assert.False(
+            task.IsCompleted,
+            $"The mutation did not wait for the conflicting row lock: {task.Exception}");
     }
     private static EntitySyncAuditEvent ApprovalAudit(
         string tenantId,
