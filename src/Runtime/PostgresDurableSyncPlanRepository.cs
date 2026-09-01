@@ -8,66 +8,218 @@ namespace LISSTech.EntitySync.Runtime;
 public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSource)
     : IDurableSyncPlanRepository
 {
-    public async Task<IDurablePlanCreationLease> AcquireCreationAsync(
+    public async Task<DurablePlanCreationClaim> TryClaimCreationAsync(
         string tenantId,
         Guid planId,
         EntitySyncSha256 requestSha256,
+        Guid proposedOwnerToken,
+        DateTimeOffset now,
+        DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(tenantId))
-            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
-        tenantId = tenantId.Trim();
-        if (planId == Guid.Empty)
-            throw new ArgumentException("Plan ID is required.", nameof(planId));
-        ArgumentNullException.ThrowIfNull(requestSha256);
-        var identity = $"entitysync:durable-plan-creation:v1:{tenantId}:{planId:N}";
-        var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+        tenantId = ValidateCreationArguments(
+            tenantId, planId, requestSha256, proposedOwnerToken);
+        if (leaseExpiresAt <= now)
+            throw new ArgumentOutOfRangeException(
+                nameof(leaseExpiresAt), "The creation lease must expire after acquisition.");
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
-        try
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string insertSql = """
+            INSERT INTO entitysync.sync_plan_creation_claims (
+                tenant_id, plan_id, request_sha256, owner_token,
+                lease_expires_at, state, result_plan_id, created_at, updated_at)
+            VALUES (
+                @tenant_id, @plan_id, @request_sha256, @owner_token,
+                @lease_expires_at, 'InProgress', NULL, @now, @now)
+            ON CONFLICT (tenant_id, plan_id) DO NOTHING
+            """;
+        await using (var insert = new NpgsqlCommand(insertSql, connection, transaction))
         {
-            await using (var acquire = new NpgsqlCommand(
-                             "SELECT pg_advisory_lock(hashtextextended(@identity, 1))",
-                             connection))
-            {
-                PostgresControlPersistence.Add(
-                    acquire, "identity", NpgsqlDbType.Text, identity);
-                await acquire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
+            AddPlanKey(insert, tenantId, planId);
+            AddCreationParameters(
+                insert, requestSha256, proposedOwnerToken, now, leaseExpiresAt);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-            const string claimSql = """
-                INSERT INTO entitysync.sync_plan_creation_claims (
-                    tenant_id, plan_id, request_sha256)
-                VALUES (@tenant_id, @plan_id, @request_sha256)
-                ON CONFLICT (tenant_id, plan_id) DO NOTHING;
-
-                SELECT request_sha256
-                FROM entitysync.sync_plan_creation_claims
-                WHERE tenant_id = @tenant_id AND plan_id = @plan_id
-                """;
-            await using var claim = new NpgsqlCommand(claimSql, connection);
-            AddPlanKey(claim, tenantId, planId);
-            PostgresControlPersistence.Add(
-                claim, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
-            var stored = (string?)await claim.ExecuteScalarAsync(cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw new InvalidOperationException(
+        const string readSql = """
+            SELECT request_sha256, owner_token, lease_expires_at, state, result_plan_id
+            FROM entitysync.sync_plan_creation_claims
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+            FOR UPDATE
+            """;
+        string storedRequest;
+        Guid storedOwner;
+        DateTimeOffset storedLeaseExpiry;
+        string storedState;
+        Guid? resultPlanId;
+        await using (var read = new NpgsqlCommand(readSql, connection, transaction))
+        {
+            AddPlanKey(read, tenantId, planId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
                     "The durable plan creation identity could not be claimed.");
-            return new CreationLease(
-                connection,
-                identity,
-                string.Equals(
-                    stored.Trim(),
-                    requestSha256.Value,
-                    StringComparison.Ordinal));
+            storedRequest = reader.GetString(0).Trim();
+            storedOwner = reader.GetGuid(1);
+            storedLeaseExpiry = reader.GetFieldValue<DateTimeOffset>(2);
+            storedState = reader.GetString(3);
+            resultPlanId = PostgresControlPersistence.NullableGuid(reader, 4);
         }
-        catch
+
+        if (!string.Equals(storedRequest, requestSha256.Value, StringComparison.Ordinal))
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
-            throw;
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new DurablePlanCreationClaim(
+                DurablePlanCreationClaimState.Conflict,
+                null,
+                null,
+                null);
         }
+
+        if (storedState == "Completed")
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new DurablePlanCreationClaim(
+                DurablePlanCreationClaimState.Completed,
+                storedOwner,
+                storedLeaseExpiry,
+                resultPlanId);
+        }
+
+        if (storedOwner != proposedOwnerToken && storedLeaseExpiry > now)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new DurablePlanCreationClaim(
+                DurablePlanCreationClaimState.Waiting,
+                storedOwner,
+                storedLeaseExpiry,
+                null);
+        }
+
+        const string claimSql = """
+            UPDATE entitysync.sync_plan_creation_claims
+            SET owner_token = @owner_token,
+                lease_expires_at = @lease_expires_at,
+                updated_at = @now
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+            """;
+        await using (var claim = new NpgsqlCommand(claimSql, connection, transaction))
+        {
+            AddPlanKey(claim, tenantId, planId);
+            AddCreationParameters(
+                claim, requestSha256, proposedOwnerToken, now, leaseExpiresAt);
+            await claim.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new DurablePlanCreationClaim(
+            DurablePlanCreationClaimState.Owner,
+            proposedOwnerToken,
+            leaseExpiresAt,
+            null);
     }
 
-    public async Task InsertAsync(string tenantId, EntitySyncDurablePlanManifest manifest, CancellationToken cancellationToken)
+    public async Task<bool> CompleteCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        tenantId = ValidateCreationArguments(
+            tenantId, planId, requestSha256, ownerToken);
+        const string sql = """
+            UPDATE entitysync.sync_plan_creation_claims
+            SET state = 'Completed',
+                result_plan_id = @plan_id,
+                lease_expires_at = @completed_at,
+                updated_at = @completed_at
+            WHERE tenant_id = @tenant_id
+              AND plan_id = @plan_id
+              AND request_sha256 = @request_sha256
+              AND owner_token = @owner_token
+              AND state = 'InProgress'
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddPlanKey(command, tenantId, planId);
+        PostgresControlPersistence.Add(
+            command, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+        PostgresControlPersistence.Add(
+            command, "owner_token", NpgsqlDbType.Uuid, ownerToken);
+        PostgresControlPersistence.Add(
+            command, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    public async Task ReleaseCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset releasedAt,
+        CancellationToken cancellationToken)
+    {
+        tenantId = ValidateCreationArguments(
+            tenantId, planId, requestSha256, ownerToken);
+        const string sql = """
+            UPDATE entitysync.sync_plan_creation_claims
+            SET lease_expires_at = @released_at,
+                updated_at = @released_at
+            WHERE tenant_id = @tenant_id
+              AND plan_id = @plan_id
+              AND request_sha256 = @request_sha256
+              AND owner_token = @owner_token
+              AND state = 'InProgress'
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddPlanKey(command, tenantId, planId);
+        PostgresControlPersistence.Add(
+            command, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+        PostgresControlPersistence.Add(
+            command, "owner_token", NpgsqlDbType.Uuid, ownerToken);
+        PostgresControlPersistence.Add(
+            command, "released_at", NpgsqlDbType.TimestampTz, releasedAt);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task InsertAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        CancellationToken cancellationToken) =>
+        InsertCoreAsync(
+            tenantId, manifest, null, null, null, cancellationToken);
+
+    public Task InsertClaimedAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset insertedAt,
+        CancellationToken cancellationToken)
+    {
+        ValidateCreationArguments(
+            tenantId, manifest.Plan.PlanId, requestSha256, ownerToken);
+        return InsertCoreAsync(
+            tenantId,
+            manifest,
+            requestSha256,
+            ownerToken,
+            insertedAt,
+            cancellationToken);
+    }
+
+    private async Task InsertCoreAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        EntitySyncSha256? requestSha256,
+        Guid? ownerToken,
+        DateTimeOffset? insertedAt,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(manifest);
         PostgresControlPersistence.RequireTenant(tenantId, manifest.Plan.TenantId, nameof(manifest));
@@ -75,6 +227,16 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             throw new ArgumentException("Every manifest item must belong to the plan.", nameof(manifest));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (requestSha256 is not null)
+            await LockCreationOwnershipAsync(
+                connection,
+                transaction,
+                tenantId,
+                manifest.Plan.PlanId,
+                requestSha256,
+                ownerToken!.Value,
+                insertedAt!.Value,
+                cancellationToken).ConfigureAwait(false);
         const string identityLockSql = """
             SELECT pg_advisory_xact_lock(hashtextextended(@plan_identity, 0))
             """;
@@ -1149,6 +1311,73 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 $"Database timestamp has unsupported type '{value.GetType().Name}'.")
         };
 
+    private static async Task LockCreationOwnershipAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset insertedAt,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT 1
+            FROM entitysync.sync_plan_creation_claims
+            WHERE tenant_id = @tenant_id
+              AND plan_id = @plan_id
+              AND request_sha256 = @request_sha256
+              AND owner_token = @owner_token
+              AND state = 'InProgress'
+              AND lease_expires_at > @inserted_at
+            FOR UPDATE
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddPlanKey(command, tenantId, planId);
+        PostgresControlPersistence.Add(
+            command, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+        PostgresControlPersistence.Add(
+            command, "owner_token", NpgsqlDbType.Uuid, ownerToken);
+        PostgresControlPersistence.Add(
+            command, "inserted_at", NpgsqlDbType.TimestampTz, insertedAt);
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            throw new InvalidOperationException(
+                "Ownership of the durable creation claim was lost before persistence.");
+    }
+
+    private static string ValidateCreationArguments(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        if (planId == Guid.Empty)
+            throw new ArgumentException("Plan ID is required.", nameof(planId));
+        ArgumentNullException.ThrowIfNull(requestSha256);
+        if (ownerToken == Guid.Empty)
+            throw new ArgumentException("Owner token is required.", nameof(ownerToken));
+        return tenantId.Trim();
+    }
+
+    private static void AddCreationParameters(
+        NpgsqlCommand command,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset now,
+        DateTimeOffset leaseExpiresAt)
+    {
+        PostgresControlPersistence.Add(
+            command, "request_sha256", NpgsqlDbType.Char, requestSha256.Value);
+        PostgresControlPersistence.Add(
+            command, "owner_token", NpgsqlDbType.Uuid, ownerToken);
+        PostgresControlPersistence.Add(
+            command, "now", NpgsqlDbType.TimestampTz, now);
+        PostgresControlPersistence.Add(
+            command, "lease_expires_at", NpgsqlDbType.TimestampTz, leaseExpiresAt);
+    }
+
     private static EntitySyncDurablePlan ReadPlan(NpgsqlDataReader reader) => new(
         reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetInt32(3),
         new EntitySyncSha256(reader.GetString(4)), reader.GetString(5), reader.GetString(6),
@@ -1171,34 +1400,6 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         new EntitySyncJsonValue(reader.GetString(18)), new EntitySyncJsonValue(reader.GetString(19)),
         PostgresControlPersistence.NullableHash(reader, 20), new EntitySyncSha256(reader.GetString(21)),
         PostgresControlPersistence.DeserializeFieldDiffs(reader.GetString(17)));
-    private sealed class CreationLease(
-        NpgsqlConnection connection,
-        string identity,
-        bool requestMatches) : IDurablePlanCreationLease
-    {
-        private NpgsqlConnection? heldConnection = connection;
 
-        public bool RequestMatches { get; } = requestMatches;
-
-        public async ValueTask DisposeAsync()
-        {
-            var current = Interlocked.Exchange(ref heldConnection, null);
-            if (current is null) return;
-            try
-            {
-                await using var release = new NpgsqlCommand(
-                    "SELECT pg_advisory_unlock(hashtextextended(@identity, 1))",
-                    current);
-                PostgresControlPersistence.Add(
-                    release, "identity", NpgsqlDbType.Text, identity);
-                await release.ExecuteNonQueryAsync(CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                await current.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-    }
 
 }

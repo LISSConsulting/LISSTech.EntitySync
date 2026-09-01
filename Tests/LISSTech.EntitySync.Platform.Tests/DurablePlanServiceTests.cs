@@ -778,8 +778,8 @@ public sealed class DurablePlanServiceTests
     private sealed class MemoryDurableRepository : IDurableSyncPlanRepository
     {
         private readonly SemaphoreSlim gate = new(1, 1);
-        private readonly ConcurrentDictionary<Guid, SemaphoreSlim> creationGates = [];
-        private readonly ConcurrentDictionary<Guid, EntitySyncSha256> creationClaims = [];
+        private readonly Dictionary<(string TenantId, Guid PlanId), MemoryCreationClaim>
+            creationClaims = [];
         private readonly Dictionary<Guid, EntitySyncInspectionSession> sessions = [];
         private readonly Dictionary<Guid, Dictionary<Guid, EntitySyncInspectionRange>> ranges = [];
         private EntitySyncDurablePlan? currentPlan;
@@ -790,20 +790,132 @@ public sealed class DurablePlanServiceTests
         public int ApprovalCount { get; private set; }
         public int AuditCount { get; private set; }
 
-        public async Task<IDurablePlanCreationLease> AcquireCreationAsync(
+        public async Task<DurablePlanCreationClaim> TryClaimCreationAsync(
             string tenantId,
             Guid planId,
             EntitySyncSha256 requestSha256,
+            Guid proposedOwnerToken,
+            DateTimeOffset now,
+            DateTimeOffset leaseExpiresAt,
             CancellationToken cancellationToken)
         {
-            var creationGate = creationGates.GetOrAdd(
-                planId,
-                static _ => new SemaphoreSlim(1, 1));
-            await creationGate.WaitAsync(cancellationToken);
-            var stored = creationClaims.GetOrAdd(planId, requestSha256);
-            return new MemoryCreationLease(
-                stored == requestSha256,
-                creationGate);
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var key = (tenantId, planId);
+                if (!creationClaims.TryGetValue(key, out var stored))
+                {
+                    stored = new MemoryCreationClaim(
+                        requestSha256,
+                        proposedOwnerToken,
+                        leaseExpiresAt,
+                        false,
+                        null);
+                    creationClaims.Add(key, stored);
+                    return ToClaim(DurablePlanCreationClaimState.Owner, stored);
+                }
+                if (stored.RequestSha256 != requestSha256)
+                    return new DurablePlanCreationClaim(
+                        DurablePlanCreationClaimState.Conflict, null, null, null);
+                if (stored.Completed)
+                    return ToClaim(DurablePlanCreationClaimState.Completed, stored);
+                if (stored.OwnerToken != proposedOwnerToken && stored.LeaseExpiresAt > now)
+                    return ToClaim(DurablePlanCreationClaimState.Waiting, stored);
+                stored = stored with
+                {
+                    OwnerToken = proposedOwnerToken,
+                    LeaseExpiresAt = leaseExpiresAt
+                };
+                creationClaims[key] = stored;
+                return ToClaim(DurablePlanCreationClaimState.Owner, stored);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task<bool> CompleteCreationAsync(
+            string tenantId,
+            Guid planId,
+            EntitySyncSha256 requestSha256,
+            Guid ownerToken,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var key = (tenantId, planId);
+                if (!creationClaims.TryGetValue(key, out var stored)
+                    || stored.RequestSha256 != requestSha256
+                    || stored.OwnerToken != ownerToken
+                    || stored.Completed)
+                    return false;
+                creationClaims[key] = stored with
+                {
+                    LeaseExpiresAt = completedAt,
+                    Completed = true,
+                    ResultPlanId = planId
+                };
+                return true;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task ReleaseCreationAsync(
+            string tenantId,
+            Guid planId,
+            EntitySyncSha256 requestSha256,
+            Guid ownerToken,
+            DateTimeOffset releasedAt,
+            CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var key = (tenantId, planId);
+                if (creationClaims.TryGetValue(key, out var stored)
+                    && stored.RequestSha256 == requestSha256
+                    && stored.OwnerToken == ownerToken
+                    && !stored.Completed)
+                    creationClaims[key] = stored with { LeaseExpiresAt = releasedAt };
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task InsertClaimedAsync(
+            string tenantId,
+            EntitySyncDurablePlanManifest manifest,
+            EntitySyncSha256 requestSha256,
+            Guid ownerToken,
+            DateTimeOffset insertedAt,
+            CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var key = (tenantId, manifest.Plan.PlanId);
+                if (!creationClaims.TryGetValue(key, out var stored)
+                    || stored.RequestSha256 != requestSha256
+                    || stored.OwnerToken != ownerToken
+                    || stored.Completed
+                    || stored.LeaseExpiresAt <= insertedAt)
+                    throw new InvalidOperationException(
+                        "Ownership of the durable creation claim was lost before persistence.");
+                Manifest = manifest;
+                currentPlan = manifest.Plan;
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
 
         public Task InsertAsync(
@@ -1025,20 +1137,21 @@ public sealed class DurablePlanServiceTests
             EntitySyncDurablePlanStatus expectedStatus,
             DateTimeOffset now,
             CancellationToken cancellationToken) => Task.FromResult(false);
-        private sealed class MemoryCreationLease(
-            bool requestMatches,
-            SemaphoreSlim gate) : IDurablePlanCreationLease
-        {
-            private SemaphoreSlim? heldGate = gate;
+        private static DurablePlanCreationClaim ToClaim(
+            DurablePlanCreationClaimState state,
+            MemoryCreationClaim claim) =>
+            new(
+                state,
+                claim.OwnerToken,
+                claim.LeaseExpiresAt,
+                claim.ResultPlanId);
 
-            public bool RequestMatches { get; } = requestMatches;
-
-            public ValueTask DisposeAsync()
-            {
-                Interlocked.Exchange(ref heldGate, null)?.Release();
-                return ValueTask.CompletedTask;
-            }
-        }
+        private sealed record MemoryCreationClaim(
+            EntitySyncSha256 RequestSha256,
+            Guid OwnerToken,
+            DateTimeOffset LeaseExpiresAt,
+            bool Completed,
+            Guid? ResultPlanId);
 
     }
 

@@ -301,20 +301,50 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var planId = Guid.NewGuid();
         var firstRequest = new EntitySyncSha256(new string('a', 64));
         var changedRequest = new EntitySyncSha256(new string('b', 64));
-        var first = await plans.AcquireCreationAsync(
-            tenantId, planId, firstRequest, default);
-        Assert.True(first.RequestMatches);
-        var concurrent = plans.AcquireCreationAsync(
-            tenantId, planId, firstRequest, default);
-        await AssertStillRunningAsync(concurrent);
+        var now = DateTimeOffset.UtcNow;
+        var firstOwner = Guid.NewGuid();
+        var first = await plans.TryClaimCreationAsync(
+            tenantId,
+            planId,
+            firstRequest,
+            firstOwner,
+            now,
+            now.AddMinutes(5),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Owner, first.State);
 
-        await first.DisposeAsync();
-        var retry = await concurrent;
-        Assert.True(retry.RequestMatches);
-        await retry.DisposeAsync();
-        await using var conflict = await plans.AcquireCreationAsync(
-            tenantId, planId, changedRequest, default);
-        Assert.False(conflict.RequestMatches);
+        var retryOwner = Guid.NewGuid();
+        var waiting = await plans.TryClaimCreationAsync(
+            tenantId,
+            planId,
+            firstRequest,
+            retryOwner,
+            now,
+            now.AddMinutes(5),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Waiting, waiting.State);
+
+        await plans.ReleaseCreationAsync(
+            tenantId, planId, firstRequest, firstOwner, now, default);
+        var retry = await plans.TryClaimCreationAsync(
+            tenantId,
+            planId,
+            firstRequest,
+            retryOwner,
+            now,
+            now.AddMinutes(5),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Owner, retry.State);
+
+        var conflict = await plans.TryClaimCreationAsync(
+            tenantId,
+            planId,
+            changedRequest,
+            Guid.NewGuid(),
+            now,
+            now.AddMinutes(5),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Conflict, conflict.State);
     }
 
 
@@ -322,6 +352,14 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     public async Task Postgres_composed_creation_completes_and_concurrent_retry_plans_once()
     {
         var context = await SeedControlContextAsync("composed-create");
+        var poolOptions = new NpgsqlConnectionStringBuilder(
+            Environment.GetEnvironmentVariable("DATABASE_URL"))
+        {
+            Database = databaseName,
+            Pooling = true,
+            MaxPoolSize = 2
+        };
+        await using var tinyPool = NpgsqlDataSource.Create(poolOptions.ConnectionString);
         var sourceAdapter = new BlockingReadAdapter(
             "NetSuite",
             [new ExternalEntity
@@ -337,8 +375,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             context.Target,
             new BlockingReadAdapter("HaloPSA", []));
         var mapper = new DefaultEntityMapper();
-        var exclusions = new PostgresEntityExclusionRepository(Database);
-        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var exclusions = new PostgresEntityExclusionRepository(tinyPool);
+        var plans = new PostgresDurableSyncPlanRepository(tinyPool);
         var planner = new EntitySyncPlanner(
             runtime,
             new InMemoryEntitySyncPlanRepository(),
@@ -349,8 +387,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var service = new DurablePlanService(
             planner,
             new PlanManifestBuilder(mapper),
-            new PostgresSyncPolicyRepository(Database),
-            new PostgresConnectionDefinitionRepository(Database),
+            new PostgresSyncPolicyRepository(tinyPool),
+            new PostgresConnectionDefinitionRepository(tinyPool),
             runtime,
             exclusions,
             plans,
@@ -367,16 +405,27 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var first = service.CreatePlanAsync(
             request, new EntitySyncActor("planner"), timeout.Token);
-        await sourceAdapter.WaitForReadAsync().WaitAsync(timeout.Token);
-        var retry = service.CreatePlanAsync(
-            request, new EntitySyncActor("planner"), timeout.Token);
+        var readStarted = sourceAdapter.WaitForReadAsync();
+        if (await Task.WhenAny(readStarted, first) == first)
+            await first;
+        await readStarted.WaitAsync(timeout.Token);
+        var retries = Enumerable.Range(0, 8)
+            .Select(_ => service.CreatePlanAsync(
+                request, new EntitySyncActor("planner"), timeout.Token))
+            .ToArray();
+        using var canceledWait = new CancellationTokenSource(TimeSpan.FromMilliseconds(75));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.CreatePlanAsync(
+                request,
+                new EntitySyncActor("planner"),
+                canceledWait.Token));
         await Task.Delay(50, timeout.Token);
         sourceAdapter.ReleaseRead();
 
-        var results = await Task.WhenAll(first, retry).WaitAsync(timeout.Token);
+        var results = await Task.WhenAll([first, .. retries]).WaitAsync(timeout.Token);
 
-        Assert.Equal(results[0].PlanId, results[1].PlanId);
-        Assert.Equal(results[0].Digest, results[1].Digest);
+        Assert.All(results, result => Assert.Equal(results[0].PlanId, result.PlanId));
+        Assert.All(results, result => Assert.Equal(results[0].Digest, result.Digest));
         Assert.Equal(1, sourceAdapter.GetEntitiesCalls);
         Assert.Equal(
             results[0].Digest,
@@ -385,6 +434,127 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 results[0].PlanId,
                 timeout.Token))!.PlanDigestSha256.Value);
     }
+    [Fact]
+    public async Task Expired_creation_claim_is_reclaimed_with_a_new_fencing_token()
+    {
+        var context = await SeedControlContextAsync("expired-claim");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var now = context.Now;
+        var planId = Guid.NewGuid();
+        var requestSha256 = new EntitySyncSha256(new string('c', 64));
+        var firstOwner = Guid.NewGuid();
+        Assert.Equal(
+            DurablePlanCreationClaimState.Owner,
+            (await plans.TryClaimCreationAsync(
+                context.TenantId,
+                planId,
+                requestSha256,
+                firstOwner,
+                now,
+                now.AddSeconds(1),
+                default)).State);
+
+        var replacementOwner = Guid.NewGuid();
+        var replacement = await plans.TryClaimCreationAsync(
+            context.TenantId,
+            planId,
+            requestSha256,
+            replacementOwner,
+            now.AddSeconds(2),
+            now.AddMinutes(5),
+            default);
+
+        Assert.Equal(DurablePlanCreationClaimState.Owner, replacement.State);
+        Assert.Equal(replacementOwner, replacement.OwnerToken);
+        var manifest = Manifest(context, itemCount: 1, planId: planId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            plans.InsertClaimedAsync(
+                context.TenantId,
+                manifest,
+                requestSha256,
+                firstOwner,
+                now.AddSeconds(2),
+                default));
+        await plans.InsertClaimedAsync(
+            context.TenantId,
+            manifest,
+            requestSha256,
+            replacementOwner,
+            now.AddSeconds(2),
+            default);
+        Assert.NotNull(await plans.GetAsync(context.TenantId, planId, default));
+    }
+
+    [Fact]
+    public async Task Committed_plan_recovers_after_owner_crash_before_claim_completion()
+    {
+        var context = await SeedControlContextAsync("creation-recovery");
+        var actor = new EntitySyncActor("planner");
+        var request = new CreateDurablePlanRequest
+        {
+            TenantId = context.TenantId,
+            IdempotencyKey = "recovery-key",
+            PolicyId = context.Policy.PolicyId,
+            PolicyVersion = context.Policy.Version,
+            PlanLifetime = TimeSpan.FromHours(1)
+        };
+        var planId = DurablePlanId(context.TenantId, request.IdempotencyKey);
+        var requestSha256 = DurableCreateRequestDigest(request, actor);
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var abandonedOwner = Guid.NewGuid();
+        var claim = await plans.TryClaimCreationAsync(
+            context.TenantId,
+            planId,
+            requestSha256,
+            abandonedOwner,
+            context.Now,
+            context.Now.AddMinutes(1),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Owner, claim.State);
+        await plans.InsertAsync(
+            context.TenantId,
+            Manifest(context, itemCount: 1, planId: planId),
+            default);
+
+        var sourceAdapter = new BlockingReadAdapter("NetSuite", []);
+        var runtime = new TestRuntimeFactory(
+            context.Source,
+            sourceAdapter,
+            context.Target,
+            new BlockingReadAdapter("HaloPSA", []));
+        var mapper = new DefaultEntityMapper();
+        var service = new DurablePlanService(
+            new EntitySyncPlanner(
+                runtime,
+                new InMemoryEntitySyncPlanRepository(),
+                new PostgresEntityExclusionRepository(Database),
+                new WeightedEntityMatcher(),
+                mapper,
+                new InMemoryEntitySyncChangeStateRepository()),
+            new PlanManifestBuilder(mapper),
+            new PostgresSyncPolicyRepository(Database),
+            new PostgresConnectionDefinitionRepository(Database),
+            runtime,
+            new PostgresEntityExclusionRepository(Database),
+            plans,
+            new FixedTimeProvider(context.Now.AddMinutes(2)));
+
+        var recovered = await service.CreatePlanAsync(request, actor, default);
+
+        Assert.Equal(planId, recovered.PlanId);
+        Assert.Equal(0, sourceAdapter.GetEntitiesCalls);
+        var completed = await plans.TryClaimCreationAsync(
+            context.TenantId,
+            planId,
+            requestSha256,
+            Guid.NewGuid(),
+            context.Now.AddMinutes(2),
+            context.Now.AddMinutes(7),
+            default);
+        Assert.Equal(DurablePlanCreationClaimState.Completed, completed.State);
+        Assert.Equal(planId, completed.ResultPlanId);
+    }
+
     [Fact]
     public async Task Exclusion_change_wins_a_route_race_with_plan_creation_atomically()
     {
@@ -1588,12 +1758,50 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly, ["name"], ["password"], true),
             true, now, new EntitySyncActor("creator"));
 
-    private static EntitySyncDurablePlanManifest Manifest(
-        ControlContext context, int itemCount, string reason = "exact-id")
+    private static Guid DurablePlanId(string tenantId, string idempotencyKey)
     {
-        var planId = Guid.NewGuid();
+        var digest = EntitySyncCanonicalDigest.Compute(new
+        {
+            Namespace = "entitysync-durable-plan-idempotency-v1",
+            TenantId = tenantId,
+            IdempotencyKey = idempotencyKey
+        });
+        return new Guid(Convert.FromHexString(digest.Value).AsSpan(0, 16));
+    }
+
+    private static EntitySyncSha256 DurableCreateRequestDigest(
+        CreateDurablePlanRequest request,
+        EntitySyncActor actor)
+    {
+        var selection = new EntitySyncSelectionBounds(
+            request.SourceSearch,
+            request.SourceCount,
+            request.SourceEntityId);
+        return EntitySyncCanonicalDigest.Compute(new
+        {
+            SchemaVersion = 1,
+            TenantId = request.TenantId.Trim(),
+            IdempotencyKey = request.IdempotencyKey.Trim(),
+            request.PolicyId,
+            PolicyVersionSpecified = request.PolicyVersion.HasValue,
+            request.PolicyVersion,
+            selection.SourceSearch,
+            selection.SourceCount,
+            selection.SourceEntityId,
+            PlanLifetimeTicks = request.PlanLifetime.Ticks,
+            CreatedBy = actor.ActorId
+        });
+    }
+
+    private static EntitySyncDurablePlanManifest Manifest(
+        ControlContext context,
+        int itemCount,
+        string reason = "exact-id",
+        Guid? planId = null)
+    {
+        var manifestPlanId = planId ?? Guid.NewGuid();
         var unsealedPlan = new EntitySyncDurablePlan(
-            context.TenantId, planId, context.Policy.PolicyId, context.Policy.Version,
+            context.TenantId, manifestPlanId, context.Policy.PolicyId, context.Policy.Version,
             context.Policy.DefinitionSha256, "route-a", context.Source.ConnectionId, 1,
             context.Target.ConnectionId, 1, new EntitySyncSha256(new string('0', 64)),
             EntitySyncDurablePlanStatus.Draft,
@@ -1601,7 +1809,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             context.Now, new EntitySyncActor("planner"), context.Now.AddDays(1));
         var items = Enumerable.Range(0, itemCount).Select(index =>
             new EntitySyncDurablePlanItem(
-                context.TenantId, planId, Guid.NewGuid(), index, "NetSuite",
+                context.TenantId, manifestPlanId, Guid.NewGuid(), index, "NetSuite",
                 context.Source.ConnectionId, "Customer", $"legacy-key-{index}", $"SOURCE-{index}",
                 "HaloPSA", context.Target.ConnectionId, "Client", $"TARGET-{index}", "Update",
                 new EntitySyncMatchEvidence(95, "Exact", [reason]),
@@ -1828,6 +2036,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
     private NpgsqlDataSource Database =>
         database ?? throw new InvalidOperationException("The test database is not initialized.");
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     private sealed record ControlContext(
         string TenantId,

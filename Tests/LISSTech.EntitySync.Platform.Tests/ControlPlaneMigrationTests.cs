@@ -36,7 +36,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "005_control_operations",
                 "006_control_audit_scheduler",
                 "007_connection_generation_ledger",
-                "008_plan_exclusion_serialization"
+                "008_plan_exclusion_serialization",
+                "009_durable_plan_creation_claims"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
@@ -66,8 +67,21 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
             "DryRun", "Apply"));
         Assert.True(await HasCheckAsync("entitysync", "sync_operations", "sync_operations_status_check",
             "Queued", "Leased", "Running", "Succeeded", "Partial", "Failed", "Cancelled"));
-        Assert.True(await HasCheckAsync("entitysync", "sync_operation_items", "sync_operation_items_outcome_check",
-            "Pending", "Succeeded", "Failed", "Skipped", "Unknown"));
+        Assert.True(await HasCheckAsync(
+            "entitysync",
+            "sync_operation_items",
+            "sync_operation_items_outcome_check",
+            "Pending",
+            "Succeeded",
+            "Failed",
+            "Skipped",
+            "Unknown"));
+        Assert.True(await HasCheckAsync(
+            "entitysync",
+            "sync_plan_creation_claims",
+            "sync_plan_creation_claims_state_check",
+            "InProgress",
+            "Completed"));
         Assert.True(await HasUniqueIndexAsync("entitysync", "sync_operations", "sync_operations_tenant_id_idempotency_key_key"));
         Assert.True(await HasUniqueIndexAsync("entitysync", "sync_approvals", "sync_approvals_tenant_id_plan_digest_sha256_key"));
 

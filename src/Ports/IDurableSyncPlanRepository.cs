@@ -4,11 +4,38 @@ namespace LISSTech.EntitySync.Ports;
 
 public interface IDurableSyncPlanRepository
 {
-    Task<IDurablePlanCreationLease> AcquireCreationAsync(
+    Task<DurablePlanCreationClaim> TryClaimCreationAsync(
         string tenantId,
         Guid planId,
         EntitySyncSha256 requestSha256,
+        Guid proposedOwnerToken,
+        DateTimeOffset now,
+        DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken);
+
+    Task<bool> CompleteCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken);
+
+    Task ReleaseCreationAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset releasedAt,
+        CancellationToken cancellationToken);
+    Task InsertClaimedAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        DateTimeOffset insertedAt,
+        CancellationToken cancellationToken);
+
 
     Task InsertAsync(
         string tenantId,
@@ -124,7 +151,16 @@ public interface IDurableSyncPlanRepository
         CancellationToken cancellationToken);
 }
 
-public interface IDurablePlanCreationLease : IAsyncDisposable
+public enum DurablePlanCreationClaimState
 {
-    bool RequestMatches { get; }
+    Owner,
+    Waiting,
+    Completed,
+    Conflict
 }
+
+public sealed record DurablePlanCreationClaim(
+    DurablePlanCreationClaimState State,
+    Guid? OwnerToken,
+    DateTimeOffset? LeaseExpiresAt,
+    Guid? ResultPlanId);
