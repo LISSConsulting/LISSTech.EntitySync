@@ -337,6 +337,95 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Operation_item_index_must_equal_the_plan_ordinal_and_is_immutable()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+
+        await using (var operation = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
+                'route-a', 'DryRun', 'Queued', 'operation-item-ordinal',
+                7, 11, 0, now(), now());
+            """))
+            Assert.Equal(1, await operation.ExecuteNonQueryAsync());
+
+        const string itemSql = """
+            INSERT INTO entitysync.sync_operation_items (
+                tenant_id, operation_id, plan_id, item_id, item_index,
+                source_vendor, source_connection_id, source_entity_type,
+                source_entity_key, source_entity_id, target_vendor,
+                target_connection_id, target_entity_type, target_entity_id, action,
+                redacted_before, redacted_desired, desired_payload_sha256,
+                snapshots_expires_at, outcome)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000301',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000302', @item_index,
+                'source', 'source-1', 'company', 'entity-1', 'ENTITY-1',
+                'target', 'target-1', 'account', 'TARGET-1', 'Update',
+                '{}', '{}', repeat('3', 64), now() + interval '364 days', 'Pending');
+            """;
+        await using (var wrongOrdinal = Database.CreateCommand(itemSql))
+        {
+            wrongOrdinal.Parameters.AddWithValue("item_index", 1);
+            var error = await Assert.ThrowsAsync<PostgresException>(
+                () => wrongOrdinal.ExecuteNonQueryAsync());
+            Assert.Equal("55000", error.SqlState);
+        }
+
+        await using (var correctOrdinal = Database.CreateCommand(itemSql))
+        {
+            correctOrdinal.Parameters.AddWithValue("item_index", 0);
+            Assert.Equal(1, await correctOrdinal.ExecuteNonQueryAsync());
+        }
+
+        await using var changeOrdinal = Database.CreateCommand("""
+            UPDATE entitysync.sync_operation_items
+            SET item_index = 1
+            WHERE tenant_id = 'tenant-a'
+              AND operation_id = '00000000-0000-0000-0000-000000000301'
+              AND item_id = '00000000-0000-0000-0000-000000000302';
+            """);
+        var updateError = await Assert.ThrowsAsync<PostgresException>(
+            () => changeOrdinal.ExecuteNonQueryAsync());
+        Assert.Equal("55000", updateError.SqlState);
+    }
+
+    [Fact]
+    public async Task Operation_and_plan_ids_must_be_distinct_in_the_audit_tuple()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+
+        await using var command = Database.CreateCommand("""
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
+                attempt, created_at, queued_at)
+            VALUES (
+                'tenant-a', '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
+                'route-a', 'DryRun', 'Queued', 'operation-plan-equality',
+                7, 11, 0, now(), now());
+            """);
+        var error = await Assert.ThrowsAsync<PostgresException>(
+            () => command.ExecuteNonQueryAsync());
+        Assert.Equal("23514", error.SqlState);
+    }
+
+    [Fact]
     public async Task Apply_operations_require_and_consume_one_approval()
     {
         await MigrateAsync();

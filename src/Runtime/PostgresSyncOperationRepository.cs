@@ -1717,10 +1717,10 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         }
         if (items.Select(item => item.ItemId).Distinct().Count() != items.Count)
             throw new ArgumentException("Operation item IDs must be unique.", nameof(items));
-        if (items.Any(item => item.ItemIndex < 0)
+        if (items.Any(item => item.ItemIndex < 0 || item.ItemIndex >= items.Count)
             || items.Select(item => item.ItemIndex).Distinct().Count() != items.Count)
             throw new ArgumentException(
-                "Operation item indexes must be unique and nonnegative.",
+                "Operation item indexes must be the unique contiguous range from zero.",
                 nameof(items));
     }
 
