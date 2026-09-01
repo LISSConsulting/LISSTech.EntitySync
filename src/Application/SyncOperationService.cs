@@ -154,21 +154,21 @@ public sealed class SyncOperationService(
             tenantId, plan, operationId, now + SnapshotRetention, cancellationToken)
             .ConfigureAwait(false);
 
-        if (mode == EntitySyncOperationMode.DryRun)
-        {
-            if (await operations.TryInsertAsync(tenantId, operation, items, cancellationToken)
-                    .ConfigureAwait(false))
-                return operation;
-        }
-        else if (await plans.TryConsumeApprovalAsync(
-                     tenantId, approval!.ApprovalId, approval.InspectionId, plan.PlanId,
-                     plan.PlanDigestSha256, plan.SourceConnectionId,
-                     plan.SourceConnectionGeneration, plan.TargetConnectionId,
-                     plan.TargetConnectionGeneration, operation, items, now,
-                     cancellationToken).ConfigureAwait(false))
-        {
-            return operation;
-        }
+        var inserted = mode == EntitySyncOperationMode.DryRun
+            ? await operations.TryInsertAsync(tenantId, operation, items, cancellationToken)
+                .ConfigureAwait(false)
+            : await plans.TryConsumeApprovalAsync(
+                    tenantId, approval!.ApprovalId, approval.InspectionId, plan.PlanId,
+                    plan.PlanDigestSha256, plan.SourceConnectionId,
+                    plan.SourceConnectionGeneration, plan.TargetConnectionId,
+                    plan.TargetConnectionGeneration, operation, items, now,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        if (inserted)
+            return await operations.GetAsync(tenantId, operation.OperationId, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    "The persisted operation could not be loaded.");
 
         var racedExisting = await operations.FindByIdempotencyKeyAsync(
             tenantId, idempotencyKey, cancellationToken).ConfigureAwait(false);

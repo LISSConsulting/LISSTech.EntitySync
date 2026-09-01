@@ -252,3 +252,23 @@ only first-page capture takes the brief exclusive barrier. The operational
 dependency is the already-required persistent Data Protection key ring; losing
 it invalidates outstanding cursors fail-closed. Existing nullable warnings
 remain in the Platform build.
+
+### Fix Round 1 — persisted queue response timestamps
+
+Review found that PostgreSQL correctly assigned immutable `queued_at` with
+`clock_timestamp()`, but `SyncOperationService` returned its pre-insert
+application-clock operation on the successful dry-run and apply paths. The
+service now reloads the operation after the insert/approval-consume transaction
+commits and returns that persisted object. Idempotent replay already returned
+the persisted record and is unchanged; the operation-create advisory barrier
+and approval transaction remain unchanged.
+
+Live RED used an application clock skewed seven days behind PostgreSQL and
+proved both `QueueDryRunAsync` and `QueueApplyAsync` returned the wrong
+`QueuedAt` (`artifact://3363`). Live GREEN proves each queue result now exactly
+matches both a fresh `GetAsync` and the database `queued_at` value
+(`artifact://3370`). Combined persisted-timestamp, keyset, cursor, endpoint, and
+OpenAPI coverage is 13 passed, 0 failed (`artifact://3372`). Exact affected
+builds are GREEN: Platform (`artifact://3379`), Hosting (`artifact://3377`), and
+MCP (`artifact://3378`). The HTTP/OpenAPI shape and authenticated OpenAPI digest
+are unchanged.

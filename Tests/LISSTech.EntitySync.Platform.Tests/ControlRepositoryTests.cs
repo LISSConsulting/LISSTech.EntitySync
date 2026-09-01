@@ -1298,6 +1298,127 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Queue_dry_run_returns_database_assigned_queued_at()
+    {
+        var context = await SeedControlContextAsync("queue-dry-run-db-time");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, itemCount: 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var applicationTime = context.Now.AddDays(-7);
+        var service = new SyncOperationService(
+            plans,
+            operations,
+            new PostgresSyncPolicyRepository(Database),
+            new PostgresConnectionDefinitionRepository(Database),
+            new FixedTimeProvider(applicationTime));
+
+        var queued = await service.QueueDryRunAsync(
+            context.TenantId,
+            manifest.Plan.PlanId,
+            "dry-run-db-time",
+            Guid.NewGuid(),
+            new EntitySyncActor("operator"),
+            default);
+
+        var stored = Assert.IsType<EntitySyncOperation>(
+            await operations.GetAsync(context.TenantId, queued.OperationId, default));
+        Assert.NotEqual(applicationTime, queued.QueuedAt);
+        Assert.Equal(stored.QueuedAt, queued.QueuedAt);
+        Assert.Equal(
+            await ReadQueuedAtAsync(context.TenantId, queued.OperationId),
+            queued.QueuedAt);
+    }
+
+    [Fact]
+    public async Task Queue_apply_returns_database_assigned_queued_at()
+    {
+        var context = await SeedControlContextAsync("queue-apply-db-time");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, itemCount: 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var inspectionId = Guid.NewGuid();
+        var reviewTime = context.Now.AddMinutes(1);
+        await plans.GetOrOpenInspectionAsync(
+            context.TenantId,
+            inspectionId,
+            manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256,
+            context.Source.ConnectionId,
+            context.Source.Generation,
+            context.Target.ConnectionId,
+            context.Target.Generation,
+            new EntitySyncActor("reviewer"),
+            reviewTime,
+            default);
+        await plans.RecordInspectionRangeAsync(
+            context.TenantId,
+            inspectionId,
+            Guid.NewGuid(),
+            0,
+            0,
+            reviewTime,
+            default);
+        await plans.CompleteInspectionAsync(
+            context.TenantId,
+            inspectionId,
+            manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256,
+            context.Source.ConnectionId,
+            context.Source.Generation,
+            context.Target.ConnectionId,
+            context.Target.Generation,
+            reviewTime.AddMinutes(1),
+            default);
+        var approvalId = Guid.NewGuid();
+        await plans.ApproveInspectionAsync(
+            context.TenantId,
+            approvalId,
+            inspectionId,
+            manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256,
+            context.Source.ConnectionId,
+            context.Source.Generation,
+            context.Target.ConnectionId,
+            context.Target.Generation,
+            new EntitySyncActor("reviewer"),
+            reviewTime.AddMinutes(2),
+            reviewTime.AddHours(1),
+            ApprovalAudit(
+                context.TenantId,
+                manifest.Plan.PlanId,
+                approvalId,
+                "reviewer",
+                reviewTime.AddMinutes(2)),
+            default);
+        var applicationTime = context.Now.AddDays(-7);
+        var service = new SyncOperationService(
+            plans,
+            operations,
+            new PostgresSyncPolicyRepository(Database),
+            new PostgresConnectionDefinitionRepository(Database),
+            new FixedTimeProvider(applicationTime));
+
+        var queued = await service.QueueApplyAsync(
+            context.TenantId,
+            manifest.Plan.PlanId,
+            approvalId,
+            "apply-db-time",
+            Guid.NewGuid(),
+            new EntitySyncActor("operator"),
+            default);
+
+        var stored = Assert.IsType<EntitySyncOperation>(
+            await operations.GetAsync(context.TenantId, queued.OperationId, default));
+        Assert.NotEqual(applicationTime, queued.QueuedAt);
+        Assert.Equal(stored.QueuedAt, queued.QueuedAt);
+        Assert.Equal(
+            await ReadQueuedAtAsync(context.TenantId, queued.OperationId),
+            queued.QueuedAt);
+    }
+
+    [Fact]
     public async Task Approval_and_audit_commit_or_roll_back_together()
     {
         var context = await SeedControlContextAsync("approval-audit-atomic");
@@ -2841,6 +2962,22 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Equal(StatusCodes.Status200OK, (await execution).StatusCode);
     }
 
+    private async Task<DateTimeOffset> ReadQueuedAtAsync(
+        string tenantId,
+        Guid operationId)
+    {
+        await using var command = Database.CreateCommand(
+            """
+            SELECT queued_at
+            FROM entitysync.sync_operations
+            WHERE tenant_id = @tenant_id
+              AND operation_id = @operation_id
+            """);
+        command.Parameters.AddWithValue("tenant_id", tenantId);
+        command.Parameters.AddWithValue("operation_id", operationId);
+        return new DateTimeOffset((DateTime)(await command.ExecuteScalarAsync())!);
+    }
+
     public async Task InitializeAsync()
     {
         var connectionString = Environment.GetEnvironmentVariable("DATABASE_URL");
@@ -3289,6 +3426,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         EntitySyncConnectionDefinition Source,
         EntitySyncConnectionDefinition Target,
         EntitySyncPolicy Policy);
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     private sealed class TemporaryDirectory : IDisposable
     {
