@@ -1663,6 +1663,64 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sparse_authoritative_plan_ordinal_persists_exactly_and_wrong_ordinal_reaches_database_guard()
+    {
+        var context = await SeedControlContextAsync("sparse-operation-ordinal");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, itemCount: 6);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var planItem = manifest.Items[5];
+
+        var correctOperation = EntitySyncOperation.QueueDryRun(
+            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId,
+            Guid.NewGuid(), Guid.NewGuid(), "sparse-correct", "route-a",
+            context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+            context.Now.AddMinutes(1));
+        var correctItem = Assert.Single(OperationItems(
+            correctOperation, [planItem], context.Now.AddDays(1)));
+        Assert.Equal(5, correctItem.ItemIndex);
+        await operations.InsertAsync(
+            context.TenantId, correctOperation, [correctItem], default);
+        var restarted = new PostgresSyncOperationRepository(Database);
+        var reloadedOperation = await restarted.GetAsync(
+            context.TenantId, correctOperation.OperationId, default);
+        Assert.NotNull(reloadedOperation);
+        var reloadedItem = Assert.Single(await restarted.GetItemsAsync(
+            context.TenantId, correctOperation.OperationId, default));
+        Assert.Equal(5, reloadedItem.ItemIndex);
+        Assert.Equal(
+            5,
+            EntitySyncOperationWorker.CreateCorrelation(
+                reloadedOperation!,
+                reloadedItem).ItemIndex);
+
+        var wrongOperation = EntitySyncOperation.QueueDryRun(
+            context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId,
+            Guid.NewGuid(), Guid.NewGuid(), "sparse-wrong", "route-a",
+            context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+            context.Now.AddMinutes(2));
+        var expected = Assert.Single(OperationItems(
+            wrongOperation, [planItem], context.Now.AddDays(1)));
+        var wrongItem = EntitySyncOperationItem.Rehydrate(
+            expected.TenantId, expected.OperationId, expected.PlanId, expected.ItemId, 4,
+            expected.SourceVendor, expected.SourceConnectionId, expected.SourceEntityType,
+            expected.SourceEntityKey, expected.SourceEntityId, expected.TargetVendor,
+            expected.TargetConnectionId, expected.TargetEntityType, expected.TargetEntityId,
+            expected.Action, expected.RedactedBefore, expected.RedactedDesired,
+            expected.BeforePayloadSha256, expected.DesiredPayloadSha256,
+            expected.AfterPayloadSha256, expected.SnapshotsExpireAt,
+            expected.VendorRequestId, expected.Outcome, expected.ErrorCode,
+            expected.ErrorMessage, expected.StartedAt, expected.CompletedAt,
+            expected.ResolvedTargetParent);
+        var error = await Assert.ThrowsAsync<PostgresException>(() =>
+            operations.InsertAsync(context.TenantId, wrongOperation, [wrongItem], default));
+        Assert.Equal("55000", error.SqlState);
+        Assert.Null(await operations.GetAsync(
+            context.TenantId, wrongOperation.OperationId, default));
+    }
+
+    [Fact]
     public async Task Configured_lease_reclaims_after_database_expiry_across_worker_reconstruction()
     {
         var context = await SeedControlContextAsync("lease");

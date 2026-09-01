@@ -97,12 +97,9 @@ public sealed class VendorOutcomeReconciler(
                 EntityType = claim.Item.TargetEntityType,
                 Id = claim.Item.VendorTargetEntityId ?? claim.Item.TargetEntityId,
                 VendorRequestId = claim.Item.VendorRequestId,
-                Correlation = new EntityWriteCorrelation(
-                    operation.OperationId,
-                    operation.PlanId,
-                    operation.RunId.Value,
-                    claim.Item.ItemIndex,
-                    operation.CorrelationId.Value),
+                Correlation = EntitySyncOperationWorker.CreateCorrelation(
+                    operation,
+                    claim.Item),
             };
             var requestLookup = claim.Item.VendorRequestId is null
                 ? null
