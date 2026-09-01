@@ -346,6 +346,9 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     public async Task Health_is_liveness_and_readiness_uses_control_dependencies()
     {
         using var client = factory.CreateClient();
+        Assert.Equal(
+            TimeSpan.FromSeconds(60),
+            factory.Services.GetRequiredService<EntitySyncOperationWorkerOptions>().LeaseDuration);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health")).StatusCode);
         using var ready = await client.GetAsync("/health/ready");
         Assert.Equal(HttpStatusCode.OK, ready.StatusCode);

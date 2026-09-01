@@ -89,7 +89,8 @@ static async Task RunHttpAsync(string[] args)
     if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
         throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
-    EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment();
+    EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment(
+        builder.Environment.EnvironmentName);
     var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
 
 
@@ -149,7 +150,6 @@ static async Task RunHttpAsync(string[] args)
     builder.Services.AddScoped<IControlApiQueries, ControlApiQueries>();
     builder.Services.AddScoped<IdempotencyEndpointFilter>();
     builder.Services.AddSingleton<ControlCursorProtector>();
-    builder.Services.AddSingleton(workerSettings);
     builder.Services.AddSingleton<IControlReadinessProbe, ControlReadinessProbe>();
     builder.Services.AddSingleton<
         Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler,
@@ -171,7 +171,8 @@ static async Task RunHttpAsync(string[] args)
 
     builder.Services.AddEntitySyncPlatform(
         Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
-        EntitySyncHostMode.Http);
+        EntitySyncHostMode.Http,
+        workerSettings);
     builder.Services.AddSingleton<ControlCanonicalChangeRepository>();
     builder.Services.AddSingleton<ICanonicalChangeRepository>(provider =>
         provider.GetRequiredService<ControlCanonicalChangeRepository>());

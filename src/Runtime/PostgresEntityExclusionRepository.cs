@@ -145,6 +145,25 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
 
 public static class EntitySyncDatabaseMigrator
 {
+    private sealed record EmbeddedMigration(string ResourceName, string Version);
+
+    private static readonly EmbeddedMigration[] Migrations =
+        typeof(EntitySyncDatabaseMigrator).Assembly.GetManifestResourceNames()
+            .Where(name =>
+                name.Contains(".Migrations.", StringComparison.Ordinal)
+                && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .Select(name => new EmbeddedMigration(
+                name,
+                Path.GetFileNameWithoutExtension(
+                    name[(name.LastIndexOf(
+                        ".Migrations.",
+                        StringComparison.Ordinal) + 12)..])))
+            .ToArray();
+
+    public static IReadOnlyList<string> ExpectedVersions { get; } =
+        Array.AsReadOnly(Migrations.Select(migration => migration.Version).ToArray());
+
     public static async Task ApplyAsync(NpgsqlDataSource dataSource, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
@@ -158,11 +177,10 @@ public static class EntitySyncDatabaseMigrator
             bootstrap.CommandText = "CREATE SCHEMA IF NOT EXISTS entitysync; CREATE TABLE IF NOT EXISTS entitysync.schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())";
             await bootstrap.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var resourceName in typeof(EntitySyncDatabaseMigrator).Assembly.GetManifestResourceNames()
-                         .Where(name => name.Contains(".Migrations.", StringComparison.Ordinal) && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
-                         .OrderBy(name => name, StringComparer.Ordinal))
+            foreach (var embeddedMigration in Migrations)
             {
-                var version = Path.GetFileNameWithoutExtension(resourceName[(resourceName.LastIndexOf(".Migrations.", StringComparison.Ordinal) + 12)..]);
+                var resourceName = embeddedMigration.ResourceName;
+                var version = embeddedMigration.Version;
                 await using var exists = advisoryConnection.CreateCommand();
                 exists.CommandText = "SELECT EXISTS (SELECT 1 FROM entitysync.schema_migrations WHERE version = @version)";
                 exists.Parameters.AddWithValue("version", version);

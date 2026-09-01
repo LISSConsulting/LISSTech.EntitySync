@@ -154,7 +154,7 @@ All requested commands were run from the Task 11 worktree against the verificati
 
 - The two DPAPI profile persistence tests are explicitly skipped on non-Windows platforms with `-Skip:(-not $IsWindows)`. Production DPAPI behavior was not changed.
 - ASP.NET Data Protection emits the expected warning that test key files are not additionally encrypted at rest. Production isolation is provided by the dedicated restricted key volume; platform backup/encryption controls remain an operator responsibility.
-- The signed process smoke uses a loopback test authority only with `ASPNETCORE_ENVIRONMENT=Testing` and `ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY=true`; Production rejects the same authority even when the flag is set. No test credential or generated RSA private key is persisted in the repository.
+- The signed process smoke uses loopback test authorities only with `ASPNETCORE_ENVIRONMENT=Testing`, `ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY=true`, and `ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA=true`; Production rejects the same authorities even when either flag is set. No test credential or generated RSA private key is persisted in the repository.
 
 ## Security Self-Review
 
@@ -171,3 +171,32 @@ All requested commands were run from the Task 11 worktree against the verificati
 ## Concerns
 
 No release-blocking concern remains. Operators must treat the PostgreSQL volume and data-protection key volume as one recovery set: restoring the database without the corresponding key ring leaves protected connection and evidence ciphertext unreadable. Base-image digests and the external telemetry endpoint must continue to be updated through normal dependency/security maintenance.
+
+## Fix Round 1
+
+Five Important post-commit review findings were reproduced and closed in a separate fix commit.
+
+### Corrections
+
+1. Both `ORCHESTRA_BASE_URL` and `ORCHESTRA_AUTHORITY` are HTTPS-only in Production. Loopback HTTP requires both a `Testing`/`Development` host environment and `ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA=true`. API and scheduler use the same validation path; the signed smoke supplies the explicit test gate.
+2. API and scheduler register `EntitySyncOperationWorkerOptions` from the already parsed `EntitySyncWorkerSettings.LeaseDuration`. The scheduler host test proves a configured 30-second lease reaches the operation worker; the durable operation worker and scheduler route/control work therefore use the same bounded `ENTITYSYNC_WORKER_LEASE_SECONDS`, and invalid interval bounds still fail configuration.
+3. Migration 018 permits fill-once snapshot enrichment only while `OLD.expires_at > clock_timestamp()`. Expired unsrubbed ciphertext cannot be populated, existing ciphertext remains immutable, and post-expiry scrub behavior is unchanged.
+4. `EntitySyncDatabaseMigrator.ExpectedVersions` is derived from the single embedded migration resource inventory used by the migrator. Readiness now compares the complete exact applied version set, rejecting a missing old/latest version or unknown version. The schema primary key rejects duplicates.
+5. The release image smoke adds `--cap-drop ALL` and `--security-opt no-new-privileges` to both containers and asserts both settings through Docker inspection before readiness can pass.
+
+### RED/GREEN and Verification
+
+- Focused RED exited `1` for the absent Orchestra matrix API and migrator expected-version contract. The first executable run reached `10` passes and one fixture-only composite-expiry mismatch; using transaction-stable `now()` for the matching foreign-key timestamps corrected the fixture.
+- Focused GREEN: `11` passed, `0` failed, `0` skipped. Coverage includes API/scheduler Orchestra matrices, API/scheduler operation lease injection, exact migration readiness, live PostgreSQL pre-expiry/expired fill boundaries, and reconstructed-worker DB-clock reclaim.
+- Signed actual-process restart smoke: `1` passed, `0` failed, `0` skipped with both explicit test-only loopback gates.
+- `just build`: exit `0`, zero warnings/errors.
+- `just test-load`: exit `0`, exact 16 exports.
+- `just test`: exit `0`; Pester `195` passed, `0` failed, `2` explicit non-Windows DPAPI skips; platform `460` passed, `0` failed, `0` skipped.
+- Direct full Release platform suite: exit `0`; `460` passed, `0` failed, `0` skipped.
+- Workflow YAML parse: exit `0`.
+- Corrected images built as API `sha256:007d503e53888382557f47282d0ba7067718708bcb05eaf60dc5d21a96126411` and scheduler `sha256:799832a23fd5954ebeb8d72b8b148be8a5073bbcb00358e171b35b1181b6cdda`.
+- Both built images ran as `1654:1654`, read-only root, `CapDrop=[ALL]`, `SecurityOpt=[no-new-privileges]`, bounded no-exec/no-suid/no-device `/tmp`, and only the shared key volume writable. `/health/ready` returned all database-migration, key-ring, and worker-heartbeat prerequisites true. Containers and temporary key volume were removed.
+
+### Fix-Round Security Review
+
+Production cannot opt into either cleartext OAuth or cleartext Orchestra trust roots. Readiness returns only prerequisite booleans and performs no vendor I/O. Migration-set drift and rollback now fail closed. Lease duration is consistent across the operation and scheduler layers, and database time remains authoritative for expiry/reclamation. No credentials, tokens, signing material, or secret endpoints were added.

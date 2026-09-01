@@ -1680,7 +1680,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Lease_reclamation_and_item_compare_and_set_fence_stale_workers()
+    public async Task Configured_lease_reclaims_after_database_expiry_across_worker_reconstruction()
     {
         var context = await SeedControlContextAsync("lease");
         var plans = new PostgresDurableSyncPlanRepository(Database);
@@ -1694,10 +1694,13 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var items = OperationItems(operation, manifest.Items, context.Now.AddDays(1));
         await operations.InsertAsync(context.TenantId, operation, items, default);
 
+        var configuredLease = TimeSpan.FromSeconds(30);
         var now = context.Now.AddMinutes(2);
         var firstRace = await Task.WhenAll(
-            operations.TryLeaseNextAsync(context.TenantId, "worker-a", now, now.AddMinutes(1), default),
-            operations.TryLeaseNextAsync(context.TenantId, "worker-b", now, now.AddMinutes(1), default));
+            operations.TryLeaseNextAsync(
+                context.TenantId, "worker-a", now, now + configuredLease, default),
+            operations.TryLeaseNextAsync(
+                context.TenantId, "worker-b", now, now + configuredLease, default));
         Assert.Single(firstRace, value => value is not null);
         var firstLease = firstRace.Single(value => value is not null)!;
         await using (var expireLease = Database.CreateCommand("""
@@ -1710,11 +1713,16 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             expireLease.Parameters.AddWithValue("operation_id", operation.OperationId);
             Assert.Equal(1, await expireLease.ExecuteNonQueryAsync());
         }
-        var reclaimed = await operations.TryLeaseNextAsync(
-            context.TenantId, "worker-c", now.AddMinutes(2), now.AddMinutes(3), default);
+        var restartedOperations = new PostgresSyncOperationRepository(Database);
+        var reclaimed = await restartedOperations.TryLeaseNextAsync(
+            context.TenantId,
+            "worker-after-restart",
+            now.AddMinutes(2),
+            now.AddMinutes(2) + configuredLease,
+            default);
         Assert.NotNull(reclaimed);
         Assert.Equal(2, reclaimed.Attempt);
-        Assert.Equal("worker-c", reclaimed.LeaseOwner);
+        Assert.Equal("worker-after-restart", reclaimed.LeaseOwner);
 
         var completed = EntitySyncOperationItem.Rehydrate(
             items[0].TenantId, items[0].OperationId, items[0].PlanId, items[0].ItemId,

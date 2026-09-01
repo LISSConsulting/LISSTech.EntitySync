@@ -128,6 +128,8 @@ jobs:
           docker run --detach --name "$scheduler_container" \
             --network host \
             --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
             --mount "type=volume,source=$key_volume,target=/var/lib/entitysync-dataprotection" \
             --env ASPNETCORE_URLS=http://127.0.0.1:18081 \
@@ -152,6 +154,8 @@ jobs:
           docker run --detach --name "$api_container" \
             --network host \
             --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
             --mount "type=volume,source=$key_volume,target=/var/lib/entitysync-dataprotection" \
             --env ASPNETCORE_URLS=http://127.0.0.1:18080 \
@@ -183,6 +187,10 @@ jobs:
           test "$(docker inspect --format '{{.Config.User}}' "$scheduler_container")" = '1654:1654'
           test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$api_container")" = 'true'
           test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$scheduler_container")" = 'true'
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$api_container")" = '["ALL"]'
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$scheduler_container")" = '["ALL"]'
+          test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$api_container")" = '["no-new-privileges"]'
+          test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$scheduler_container")" = '["no-new-privileges"]'
 
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error http://127.0.0.1:18081/health >/dev/null \

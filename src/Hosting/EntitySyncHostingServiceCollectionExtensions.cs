@@ -24,7 +24,8 @@ public static class EntitySyncHostingServiceCollectionExtensions
     public static IServiceCollection AddEntitySyncPlatform(
         this IServiceCollection services,
         string connectionString,
-        EntitySyncHostMode hostMode)
+        EntitySyncHostMode hostMode,
+        EntitySyncWorkerSettings? workerSettings = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -71,6 +72,12 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IServerManagedEntityAdapterFactory, ServerManagedEntityAdapterFactory>();
 
         services.AddSingleton(TimeProvider.System);
+        if (workerSettings is not null)
+        {
+            services.AddSingleton(workerSettings);
+            services.AddSingleton(
+                new EntitySyncOperationWorkerOptions(workerSettings.LeaseDuration));
+        }
         services.AddSingleton<EntitySyncPlanner>();
         services.AddSingleton<PlanManifestBuilder>();
         services.AddSingleton<DurablePlanService>();

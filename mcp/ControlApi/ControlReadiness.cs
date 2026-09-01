@@ -1,4 +1,5 @@
 using LISSTech.EntitySync.Hosting;
+using LISSTech.EntitySync.Runtime;
 using Microsoft.AspNetCore.DataProtection;
 using Npgsql;
 
@@ -32,21 +33,35 @@ public sealed class ControlReadinessProbe(
         var heartbeat = false;
         try
         {
-            await using var command = dataSource.CreateCommand(
-                "SELECT " +
-                "EXISTS (SELECT 1 FROM entitysync.schema_migrations WHERE version = '018_snapshot_evidence_enrichment'), " +
-                "COALESCE(max(observed_at) >= @minimum_heartbeat, false) " +
-                "FROM entitysync.control_worker_heartbeats");
-            command.Parameters.AddWithValue(
+            await using var connection = await dataSource
+                .OpenConnectionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await using (var migrationCommand = new NpgsqlCommand(
+                             "SELECT version FROM entitysync.schema_migrations",
+                             connection))
+            await using (var reader = await migrationCommand
+                             .ExecuteReaderAsync(cancellationToken)
+                             .ConfigureAwait(false))
+            {
+                var appliedVersions = new HashSet<string>(StringComparer.Ordinal);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    appliedVersions.Add(reader.GetString(0));
+                migrations =
+                    appliedVersions.Count == EntitySyncDatabaseMigrator.ExpectedVersions.Count
+                    && EntitySyncDatabaseMigrator.ExpectedVersions.All(
+                        appliedVersions.Contains);
+            }
+
+            await using var heartbeatCommand = new NpgsqlCommand(
+                "SELECT COALESCE(max(observed_at) >= @minimum_heartbeat, false) " +
+                "FROM entitysync.control_worker_heartbeats",
+                connection);
+            heartbeatCommand.Parameters.AddWithValue(
                 "minimum_heartbeat",
                 timeProvider.GetUtcNow() - workerSettings.MaximumHeartbeatAge);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                migrations = reader.GetBoolean(0);
-                heartbeat = reader.GetBoolean(1);
-            }
+            heartbeat = (bool)(await heartbeatCommand
+                .ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false) ?? false);
         }
         catch (OperationCanceledException)
         {

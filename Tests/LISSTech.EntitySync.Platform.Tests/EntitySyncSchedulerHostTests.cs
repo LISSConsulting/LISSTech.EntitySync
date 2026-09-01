@@ -29,6 +29,9 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.IsType<PostgresRouteLock>(
             app.Services.GetRequiredService<IEntitySyncRouteLock>());
         Assert.NotNull(app.Services.GetRequiredService<CanonicalChangeService>());
+        Assert.Equal(
+            TimeSpan.FromSeconds(30),
+            app.Services.GetRequiredService<EntitySyncOperationWorkerOptions>().LeaseDuration);
         var hosted = app.Services.GetServices<IHostedService>().ToArray();
         var migration = Array.FindIndex(
             hosted, service => service is EntitySyncDatabaseMigrationHostedService);
@@ -40,6 +43,50 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.True(control > migration);
         Assert.True(retention > control);
     }
+
+    [Theory]
+    [InlineData("Api", "ORCHESTRA_BASE_URL", "Production", "true", false)]
+    [InlineData("Scheduler", "ORCHESTRA_BASE_URL", "Testing", null, false)]
+    [InlineData("Api", "ORCHESTRA_BASE_URL", "Testing", "true", true)]
+    [InlineData("Scheduler", "ORCHESTRA_AUTHORITY", "Production", "true", false)]
+    [InlineData("Api", "ORCHESTRA_AUTHORITY", "Development", null, false)]
+    [InlineData("Scheduler", "ORCHESTRA_AUTHORITY", "Development", "true", true)]
+    public void Api_and_scheduler_gate_loopback_Orchestra_uris_for_tests_only(
+        string host,
+        string uriVariable,
+        string environmentName,
+        string? testOverride,
+        bool shouldPass)
+    {
+        var environment = ValidOrchestraEnvironment();
+        environment[uriVariable] = uriVariable == "ORCHESTRA_BASE_URL"
+            ? "http://127.0.0.1:18083/api/v1/internal/client-directory/"
+            : "http://127.0.0.1:18083/tenant";
+        environment["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = testOverride;
+
+        var error = Record.Exception(() =>
+            EntitySyncProductionConfiguration.ValidateOrchestra(
+                environment,
+                environmentName));
+
+        Assert.True(
+            shouldPass == (error is null),
+            $"{host} {uriVariable} validation differed in {environmentName}.");
+        if (error is not null)
+            Assert.Contains("ENTITYSYNC_CONFIG_URI_INVALID", error.Message, StringComparison.Ordinal);
+    }
+
+    private static Dictionary<string, string?> ValidOrchestraEnvironment() =>
+        new(StringComparer.Ordinal)
+        {
+            ["ORCHESTRA_BASE_URL"] =
+                "https://directory.example.test/api/v1/internal/client-directory/",
+            ["ORCHESTRA_AUTHORITY"] = "https://login.example.test/tenant",
+            ["ORCHESTRA_TENANT_ID"] = "tenant",
+            ["ORCHESTRA_CLIENT_ID"] = "client",
+            ["ORCHESTRA_RESOURCE"] = "api://orchestra-directory",
+            ["ORCHESTRA_CLIENT_SECRET"] = Guid.NewGuid().ToString("N")
+        };
 
     private static WebApplication BuildSchedulerApplication()
     {
@@ -73,7 +120,7 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["ORCHESTRA_TENANT_ID"] = "tenant",
             ["ORCHESTRA_CLIENT_ID"] = "scheduler-host-test",
             ["ORCHESTRA_RESOURCE"] = "api://orchestra-directory",
-            ["ENTITYSYNC_WORKER_LEASE_SECONDS"] = "60",
+            ["ENTITYSYNC_WORKER_LEASE_SECONDS"] = "30",
             ["ENTITYSYNC_WORKER_HEARTBEAT_SECONDS"] = "10",
             ["ENTITYSYNC_WORKER_RETRY_SECONDS"] = "5",
             ["ORCHESTRA_CLIENT_SECRET"] = Guid.NewGuid().ToString("N"),

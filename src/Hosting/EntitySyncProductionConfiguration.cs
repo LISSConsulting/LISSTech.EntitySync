@@ -76,18 +76,62 @@ public static class EntitySyncProductionConfiguration
         "ORCHESTRA_CLIENT_SECRET"
     ];
 
-    public static void ValidateOrchestraCurrentEnvironment()
+    public static void ValidateOrchestraCurrentEnvironment(string environmentName) =>
+        ValidateOrchestra(
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["ORCHESTRA_BASE_URL"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_BASE_URL"),
+                ["ORCHESTRA_AUTHORITY"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_AUTHORITY"),
+                ["ORCHESTRA_TENANT_ID"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_TENANT_ID"),
+                ["ORCHESTRA_CLIENT_ID"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_CLIENT_ID"),
+                ["ORCHESTRA_RESOURCE"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_RESOURCE"),
+                ["ORCHESTRA_CLIENT_SECRET"] =
+                    Environment.GetEnvironmentVariable("ORCHESTRA_CLIENT_SECRET"),
+                ["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] =
+                    Environment.GetEnvironmentVariable(
+                        "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA")
+            },
+            environmentName);
+
+    public static void ValidateOrchestra(
+        IReadOnlyDictionary<string, string?> environment,
+        string environmentName)
     {
-        var baseUrl = Require("ORCHESTRA_BASE_URL");
-        var authority = Require("ORCHESTRA_AUTHORITY");
-        foreach (var name in RequiredOrchestraValues) Require(name);
-        ValidateServiceUri(baseUrl, "ORCHESTRA_BASE_URL", requireDirectoryPath: true);
-        ValidateServiceUri(authority, "ORCHESTRA_AUTHORITY", requireDirectoryPath: false);
+        ArgumentNullException.ThrowIfNull(environment);
+        var baseUrl = Require(environment, "ORCHESTRA_BASE_URL");
+        var authority = Require(environment, "ORCHESTRA_AUTHORITY");
+        foreach (var name in RequiredOrchestraValues) Require(environment, name);
+        environment.TryGetValue(
+            "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA",
+            out var allowInsecureValue);
+        var allowLoopbackHttp =
+            (environmentName.Equals("Testing", StringComparison.OrdinalIgnoreCase)
+             || environmentName.Equals("Development", StringComparison.OrdinalIgnoreCase))
+            && bool.TryParse(allowInsecureValue, out var allowInsecure)
+            && allowInsecure;
+        ValidateServiceUri(
+            baseUrl,
+            "ORCHESTRA_BASE_URL",
+            requireDirectoryPath: true,
+            allowLoopbackHttp);
+        ValidateServiceUri(
+            authority,
+            "ORCHESTRA_AUTHORITY",
+            requireDirectoryPath: false,
+            allowLoopbackHttp);
     }
 
-    private static string Require(string name)
+    private static string Require(
+        IReadOnlyDictionary<string, string?> environment,
+        string name)
     {
-        var value = Environment.GetEnvironmentVariable(name)?.Trim();
+        environment.TryGetValue(name, out var configured);
+        var value = configured?.Trim();
         if (string.IsNullOrWhiteSpace(value))
         {
             throw new InvalidOperationException(
@@ -100,11 +144,13 @@ public static class EntitySyncProductionConfiguration
     private static void ValidateServiceUri(
         string value,
         string name,
-        bool requireDirectoryPath)
+        bool requireDirectoryPath,
+        bool allowLoopbackHttp)
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
             || (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-                && !(uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                && !(allowLoopbackHttp
+                     && uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
                      && IPAddress.TryParse(uri.Host, out var address)
                      && IPAddress.IsLoopback(address)))
             || !string.IsNullOrEmpty(uri.UserInfo)

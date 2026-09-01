@@ -1,4 +1,7 @@
+using LISSTech.EntitySync.Hosting;
+using LISSTech.EntitySync.Mcp.ControlApi;
 using LISSTech.EntitySync.Runtime;
+using Microsoft.AspNetCore.DataProtection;
 using Npgsql;
 using Xunit;
 
@@ -28,26 +31,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
             "plan_import_receipts", "audit_events", "audit_event_full_values"
         ]);
         Assert.Equal(
-            [
-                "001_entity_exclusions",
-                "002_entity_change_state",
-                "003_harden_entity_change_state_key",
-                "004_control_plane",
-                "005_control_operations",
-                "006_control_audit_scheduler",
-                "007_connection_generation_ledger",
-                "008_plan_exclusion_serialization",
-                "009_durable_plan_creation_claims",
-                "010_atomic_plan_creation_results",
-                "011_durable_operation_dispatch",
-                "012_durable_scheduler_control",
-                "013_control_api_readiness",
-                "014_idempotency_execution_leases",
-                "015_persist_resolved_target_parent",
-                "016_connection_platform_instance_id",
-                "017_plan_import_receipts",
-                "018_snapshot_evidence_enrichment"
-            ],
+            EntitySyncDatabaseMigrator.ExpectedVersions,
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
         Assert.Equal(1, await CountAsync("entitysync.entity_change_state"));
@@ -77,6 +61,7 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.True(await HasCheckAsync("entitysync", "sync_operations", "sync_operations_status_check",
             "Queued", "Leased", "Running", "Succeeded", "Partial", "Failed", "Cancelled"));
         Assert.True(await HasCheckAsync(
+
             "entitysync",
             "sync_operation_items",
             "sync_operation_items_outcome_check",
@@ -95,6 +80,43 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.True(await HasUniqueIndexAsync("entitysync", "sync_approvals", "sync_approvals_tenant_id_plan_digest_sha256_key"));
 
         await AssertAuditMutationRejectedAsync();
+    }
+    [Fact]
+    public async Task Readiness_requires_the_exact_embedded_migration_version_set()
+    {
+        await MigrateAsync();
+        await using (var heartbeat = Database.CreateCommand("""
+                         INSERT INTO entitysync.control_worker_heartbeats (worker_id, observed_at)
+                         VALUES ('readiness-test', clock_timestamp())
+                         """))
+            await heartbeat.ExecuteNonQueryAsync();
+
+        var probe = new ControlReadinessProbe(
+            Database,
+            new EphemeralDataProtectionProvider(),
+            TimeProvider.System,
+            new EntitySyncWorkerSettings(
+                TimeSpan.FromSeconds(60),
+                TimeSpan.FromSeconds(10),
+                TimeSpan.FromSeconds(5)));
+        Assert.True((await probe.CheckAsync(default)).DatabaseMigrations);
+
+        await SetMigrationVersionAsync("001_entity_exclusions", present: false);
+        Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
+        await SetMigrationVersionAsync("001_entity_exclusions", present: true);
+
+        await SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: false);
+        Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
+        await SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: true);
+
+        await SetMigrationVersionAsync("999_unknown_rollback_drift", present: true);
+        Assert.False((await probe.CheckAsync(default)).DatabaseMigrations);
+        await SetMigrationVersionAsync("999_unknown_rollback_drift", present: false);
+        Assert.True((await probe.CheckAsync(default)).DatabaseMigrations);
+
+        var duplicate = await Assert.ThrowsAsync<PostgresException>(() =>
+            SetMigrationVersionAsync("018_snapshot_evidence_enrichment", present: true));
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
     }
 
     [Fact]
@@ -540,6 +562,91 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         Assert.Equal(1, await CountAsync("entitysync.sync_operation_item_snapshots"));
         Assert.Equal(1, await CountAsync("entitysync.audit_events"));
         Assert.Equal(1, await CountAsync("entitysync.audit_event_full_values"));
+    }
+
+    [Fact]
+    public async Task Snapshot_enrichment_is_fill_once_and_requires_unexpired_database_time()
+    {
+        await MigrateAsync();
+        await SeedPlansAndApprovalsAsync();
+        await using (var seed = Database.CreateCommand("""
+                         INSERT INTO entitysync.sync_operations (
+                             tenant_id, operation_id, plan_id, route_scope, mode, status,
+                             idempotency_key, source_connection_generation,
+                             target_connection_generation, attempt, created_at, queued_at)
+                         VALUES
+                             ('tenant-a', '00000000-0000-0000-0000-000000000321',
+                              '00000000-0000-0000-0000-000000000101', 'route-a',
+                              'DryRun', 'Succeeded', 'live-enrichment', 7, 11, 1,
+                              clock_timestamp(), clock_timestamp()),
+                             ('tenant-a', '00000000-0000-0000-0000-000000000322',
+                              '00000000-0000-0000-0000-000000000101', 'route-a',
+                              'DryRun', 'Succeeded', 'expired-enrichment', 7, 11, 1,
+                              clock_timestamp(), clock_timestamp());
+
+                         INSERT INTO entitysync.sync_operation_items (
+                             tenant_id, operation_id, plan_id, item_id, source_vendor,
+                             source_connection_id, source_entity_type, source_entity_key,
+                             source_entity_id, target_vendor, target_connection_id,
+                             target_entity_type, target_entity_id, action, redacted_before,
+                             redacted_desired, desired_payload_sha256, snapshots_expires_at,
+                             outcome, completed_at)
+                         VALUES
+                             ('tenant-a', '00000000-0000-0000-0000-000000000321',
+                              '00000000-0000-0000-0000-000000000101',
+                              '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                              'company', 'entity-1', 'ENTITY-1', 'target', 'target-1',
+                              'account', 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
+                              now() + interval '1 day', 'Succeeded', clock_timestamp()),
+                             ('tenant-a', '00000000-0000-0000-0000-000000000322',
+                              '00000000-0000-0000-0000-000000000101',
+                              '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                              'company', 'entity-1', 'ENTITY-1', 'target', 'target-1',
+                              'account', 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
+                              now() - interval '1 day', 'Succeeded', clock_timestamp());
+
+                         INSERT INTO entitysync.sync_operation_item_snapshots (
+                             tenant_id, operation_id, item_id, encrypted_before_ciphertext,
+                             encrypted_after_ciphertext, expires_at)
+                         VALUES
+                             ('tenant-a', '00000000-0000-0000-0000-000000000321',
+                              '00000000-0000-0000-0000-000000000302',
+                              'live-before', NULL, now() + interval '1 day'),
+                             ('tenant-a', '00000000-0000-0000-0000-000000000322',
+                              '00000000-0000-0000-0000-000000000302',
+                              NULL, 'expired-after', now() - interval '1 day');
+                         """))
+            await seed.ExecuteNonQueryAsync();
+
+        await using (var enrichLive = Database.CreateCommand("""
+                         UPDATE entitysync.sync_operation_item_snapshots
+                         SET encrypted_after_ciphertext = 'live-after'
+                         WHERE tenant_id = 'tenant-a'
+                           AND operation_id = '00000000-0000-0000-0000-000000000321'
+                         """))
+            Assert.Equal(1, await enrichLive.ExecuteNonQueryAsync());
+
+        await using var replaceLive = Database.CreateCommand("""
+            UPDATE entitysync.sync_operation_item_snapshots
+            SET encrypted_after_ciphertext = 'replacement'
+            WHERE tenant_id = 'tenant-a'
+              AND operation_id = '00000000-0000-0000-0000-000000000321'
+            """);
+        Assert.Equal(
+            "55000",
+            (await Assert.ThrowsAsync<PostgresException>(
+                () => replaceLive.ExecuteNonQueryAsync())).SqlState);
+
+        await using var enrichExpired = Database.CreateCommand("""
+            UPDATE entitysync.sync_operation_item_snapshots
+            SET encrypted_before_ciphertext = 'too-late'
+            WHERE tenant_id = 'tenant-a'
+              AND operation_id = '00000000-0000-0000-0000-000000000322'
+            """);
+        Assert.Equal(
+            "55000",
+            (await Assert.ThrowsAsync<PostgresException>(
+                () => enrichExpired.ExecuteNonQueryAsync())).SqlState);
     }
 
     [Fact]
@@ -1249,6 +1356,16 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await using var command = Database.CreateCommand(
             "SELECT version FROM entitysync.schema_migrations ORDER BY version");
         return await ReadStringsAsync(command);
+    }
+
+    private async Task SetMigrationVersionAsync(string version, bool present)
+    {
+        await using var command = Database.CreateCommand(
+            present
+                ? "INSERT INTO entitysync.schema_migrations (version) VALUES (@version)"
+                : "DELETE FROM entitysync.schema_migrations WHERE version = @version");
+        command.Parameters.AddWithValue("version", version);
+        await command.ExecuteNonQueryAsync();
     }
 
     private async Task<int> CountAsync(string qualifiedTable)

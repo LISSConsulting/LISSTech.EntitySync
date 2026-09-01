@@ -40,7 +40,7 @@ Compose uses required interpolation for every credential; never add secret defau
 | Orchestra Client Directory | `ORCHESTRA_BASE_URL` ending `/api/v1/internal/client-directory/`, `ORCHESTRA_AUTHORITY`, `ORCHESTRA_TENANT_ID`, `ORCHESTRA_CLIENT_ID`, `ORCHESTRA_RESOURCE`, `ORCHESTRA_CLIENT_SECRET` |
 | Telemetry | official Logfire `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, secret `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` |
 
-Orchestra authority and Client Directory URLs must be safe HTTPS service URLs. `MCP_OAUTH_AUTHORITY` is HTTPS-only in Production. The executable smoke may use loopback HTTP only when the host environment is `Testing` or `Development` and `ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY=true`; either condition alone still fails closed. Other adapter credentials remain optional until a connection for that vendor is created.
+Orchestra authority and Client Directory URLs and `MCP_OAUTH_AUTHORITY` are HTTPS-only in Production. The executable smoke may use loopback HTTP only when the host environment is `Testing` or `Development` and the corresponding dedicated flag is true: `ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA` for both Orchestra URLs and `ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY` for OAuth. A flag or non-production environment alone still fails closed. Other adapter credentials remain optional until a connection for that vendor is created.
 
 Non-secret platform IDs such as Orchestra platform-instance IDs, `NCENTRAL_SERVICE_ORG_ID`, connection IDs, tenant IDs, policy IDs and route scopes may be stored in normal configuration. They are identity and fencing inputs, not credentials. Client secrets, tokens, passwords, signing keys and data-protection keys remain secret material.
 

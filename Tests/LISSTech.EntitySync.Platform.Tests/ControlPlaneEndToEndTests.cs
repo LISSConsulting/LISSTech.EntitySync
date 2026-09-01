@@ -353,6 +353,7 @@ public sealed class ControlPlaneEndToEndTests
         {
             ["ASPNETCORE_ENVIRONMENT"] = "Testing",
             ["ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY"] = "true",
+            ["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = "true",
             ["DATABASE_URL"] = database.ConnectionString,
             ["ENTITYSYNC_DATA_PROTECTION_KEY_PATH"] = keyPath,
             ["ENTITYSYNC_TENANT_IDS"] = Tenant,

@@ -78,7 +78,8 @@ BEGIN
     -- authoritative result after reconciliation. Existing ciphertext is
     -- immutable; only a previously-null half may be populated before expiry.
     IF TG_TABLE_NAME = 'sync_operation_item_snapshots' THEN
-        IF OLD.values_redacted_at IS NULL
+        IF OLD.expires_at > clock_timestamp()
+           AND OLD.values_redacted_at IS NULL
            AND NEW.values_redacted_at IS NULL
            AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id
            AND NEW.operation_id IS NOT DISTINCT FROM OLD.operation_id

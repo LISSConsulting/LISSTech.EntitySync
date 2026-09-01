@@ -1,5 +1,6 @@
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Ports;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,7 +16,8 @@ public sealed record EntitySyncControlOptions(
     TimeSpan HeartbeatInterval,
     TimeSpan RetryInterval)
 {
-    public static EntitySyncControlOptions FromEnvironment()
+    public static EntitySyncControlOptions FromEnvironment(
+        EntitySyncWorkerSettings? workerSettings = null)
     {
         var configured = Environment.GetEnvironmentVariable("ENTITYSYNC_TENANT_IDS");
         var tenants = string.IsNullOrWhiteSpace(configured)
@@ -39,8 +41,8 @@ public sealed record EntitySyncControlOptions(
                 "[ENTITYSYNC_CONFIG_TENANT_LIMIT].");
         }
 
-        var worker = LISSTech.EntitySync.Hosting.EntitySyncWorkerSettings
-            .FromCurrentEnvironment();
+        var worker = workerSettings
+            ?? EntitySyncWorkerSettings.FromCurrentEnvironment();
         return new EntitySyncControlOptions(
             tenants,
             worker.LeaseDuration,

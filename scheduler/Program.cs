@@ -22,9 +22,9 @@ namespace LISSTech.EntitySync.Scheduler
                     "lisstech-entitysync-scheduler");
             }
 
-            EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment();
-
             var builder = WebApplication.CreateBuilder(args);
+            EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment(
+                builder.Environment.EnvironmentName);
             builder.Host.UseDefaultServiceProvider(options =>
             {
                 options.ValidateOnBuild = true;
@@ -40,10 +40,13 @@ namespace LISSTech.EntitySync.Scheduler
                 serviceVersion);
             LogfireLogging.Configure(builder.Services, builder.Logging, logfireSettings);
 
+            var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
             builder.Services.AddEntitySyncPlatform(
                 Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
-                EntitySyncHostMode.Scheduler);
-            builder.Services.AddSingleton(EntitySyncControlOptions.FromEnvironment());
+                EntitySyncHostMode.Scheduler,
+                workerSettings);
+            builder.Services.AddSingleton(
+                EntitySyncControlOptions.FromEnvironment(workerSettings));
             builder.Services.AddSingleton<PostgresSyncWorkQueue>();
             builder.Services.AddSingleton<ICanonicalChangeRepository>(
                 services => services.GetRequiredService<PostgresSyncWorkQueue>());
