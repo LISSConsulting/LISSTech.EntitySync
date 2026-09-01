@@ -223,12 +223,15 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
 
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
                 '00000000-0000-0000-0000-000000000112',
                 'route-a', 'Apply', 'Queued', 'operation-mismatch', 7, 11, 0, now(), now());
             """);
@@ -243,25 +246,29 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await SeedPlansAndApprovalsAsync();
         await using (var seed = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
                 '00000000-0000-0000-0000-000000000111',
                 'route-a', 'Apply', 'Queued', 'operation-valid', 7, 11, 0, now(), now());
 
             INSERT INTO entitysync.sync_operation_items (
-                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
-                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                tenant_id, operation_id, plan_id, item_id, item_index,
+                source_vendor, source_connection_id, source_entity_type,
+                source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
                 redacted_before, redacted_desired, desired_payload_sha256,
                 snapshots_expires_at, outcome)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
-                '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                '00000000-0000-0000-0000-000000000302', 0, 'source', 'source-1',
                 'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
                 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
                 now() + interval '365 days', 'Pending');
@@ -298,25 +305,29 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
 
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
                 '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
                 'operation-item-mismatch', 7, 11, 0, now(), now());
 
             INSERT INTO entitysync.sync_operation_items (
-                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
-                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                tenant_id, operation_id, plan_id, item_id, item_index,
+                source_vendor, source_connection_id, source_entity_type,
+                source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
                 redacted_before, redacted_desired, desired_payload_sha256,
                 snapshots_expires_at, outcome)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
-                '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                '00000000-0000-0000-0000-000000000302', 0, 'source', 'source-1',
                 'company', 'entity-1', 'DIFFERENT-ENTITY', 'target', 'target-1', 'account',
                 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
                 now() + interval '365 days', 'Pending');
@@ -333,12 +344,16 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
 
         await using var missingApproval = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
-                '00000000-0000-0000-0000-000000000101', NULL, 'route-a', 'Apply', 'Queued',
+                '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
+                NULL, 'route-a', 'Apply', 'Queued',
                 'missing-approval', 7, 11, 0, now(), now());
             """);
         var missingError = await Assert.ThrowsAsync<PostgresException>(() => missingApproval.ExecuteNonQueryAsync());
@@ -346,16 +361,21 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
 
         await using var consume = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES
                 ('tenant-a', '00000000-0000-0000-0000-000000000302',
                  '00000000-0000-0000-0000-000000000101',
+                 '00000000-0000-0000-0000-000000000402',
+                 '00000000-0000-0000-0000-000000000502',
                  '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
                  'consume-approval-1', 7, 11, 0, now(), now()),
                 ('tenant-a', '00000000-0000-0000-0000-000000000303',
                  '00000000-0000-0000-0000-000000000101',
+                 '00000000-0000-0000-0000-000000000403',
+                 '00000000-0000-0000-0000-000000000503',
                  '00000000-0000-0000-0000-000000000111', 'route-a', 'Apply', 'Queued',
                  'consume-approval-2', 7, 11, 0, now(), now());
             """);
@@ -453,12 +473,15 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await SeedPlansAndApprovalsAsync();
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
                 '00000000-0000-0000-0000-000000000111',
                 'route-a', 'Apply', 'Queued', 'generation-mismatch', 13, 17, 0, now(), now());
             """);
@@ -496,26 +519,30 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await SeedPlansAndApprovalsAsync();
         await using var command = Database.CreateCommand("""
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, approval_id, route_scope, mode, status,
-                idempotency_key, source_connection_generation, target_connection_generation,
+                tenant_id, operation_id, plan_id, run_id, correlation_id,
+                approval_id, route_scope, mode, status, idempotency_key,
+                source_connection_generation, target_connection_generation,
                 attempt, created_at, queued_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
+                '00000000-0000-0000-0000-000000000401',
+                '00000000-0000-0000-0000-000000000501',
                 '00000000-0000-0000-0000-000000000111',
                 'route-a', 'Apply', 'Succeeded', 'retention-operation', 7, 11,
                 1, now() - interval '2 days', now() - interval '2 days');
 
             INSERT INTO entitysync.sync_operation_items (
-                tenant_id, operation_id, plan_id, item_id, source_vendor, source_connection_id,
-                source_entity_type, source_entity_key, source_entity_id, target_vendor,
+                tenant_id, operation_id, plan_id, item_id, item_index,
+                source_vendor, source_connection_id, source_entity_type,
+                source_entity_key, source_entity_id, target_vendor,
                 target_connection_id, target_entity_type, target_entity_id, action,
                 redacted_before, redacted_desired, desired_payload_sha256,
                 after_payload_sha256, snapshots_expires_at, outcome, completed_at)
             VALUES (
                 'tenant-a', '00000000-0000-0000-0000-000000000301',
                 '00000000-0000-0000-0000-000000000101',
-                '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
+                '00000000-0000-0000-0000-000000000302', 0, 'source', 'source-1',
                 'company', 'entity-1', 'ENTITY-1', 'target', 'target-1', 'account',
                 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64), repeat('5', 64),
                 now() - interval '1 day', 'Succeeded', now() - interval '2 days');
@@ -571,39 +598,47 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
         await SeedPlansAndApprovalsAsync();
         await using (var seed = Database.CreateCommand("""
                          INSERT INTO entitysync.sync_operations (
-                             tenant_id, operation_id, plan_id, route_scope, mode, status,
-                             idempotency_key, source_connection_generation,
-                             target_connection_generation, attempt, created_at, queued_at)
+                             tenant_id, operation_id, plan_id, run_id, correlation_id,
+                             route_scope, mode, status, idempotency_key,
+                             source_connection_generation, target_connection_generation,
+                             attempt, created_at, queued_at)
                          VALUES
                              ('tenant-a', '00000000-0000-0000-0000-000000000321',
-                              '00000000-0000-0000-0000-000000000101', 'route-a',
+                              '00000000-0000-0000-0000-000000000101',
+                              '00000000-0000-0000-0000-000000000421',
+                              '00000000-0000-0000-0000-000000000521', 'route-a',
                               'DryRun', 'Succeeded', 'live-enrichment', 7, 11, 1,
                               clock_timestamp(), clock_timestamp()),
                              ('tenant-a', '00000000-0000-0000-0000-000000000322',
-                              '00000000-0000-0000-0000-000000000101', 'route-a',
+                              '00000000-0000-0000-0000-000000000101',
+                              '00000000-0000-0000-0000-000000000422',
+                              '00000000-0000-0000-0000-000000000522', 'route-a',
                               'DryRun', 'Succeeded', 'expired-enrichment', 7, 11, 1,
                               clock_timestamp(), clock_timestamp());
 
                          INSERT INTO entitysync.sync_operation_items (
-                             tenant_id, operation_id, plan_id, item_id, source_vendor,
-                             source_connection_id, source_entity_type, source_entity_key,
-                             source_entity_id, target_vendor, target_connection_id,
-                             target_entity_type, target_entity_id, action, redacted_before,
-                             redacted_desired, desired_payload_sha256, snapshots_expires_at,
+                             tenant_id, operation_id, plan_id, item_id, item_index,
+                             source_vendor, source_connection_id, source_entity_type,
+                             source_entity_key, source_entity_id, target_vendor,
+                             target_connection_id, target_entity_type, target_entity_id,
+                             action, redacted_before, redacted_desired,
+                             desired_payload_sha256, snapshots_expires_at,
                              outcome, completed_at)
                          VALUES
                              ('tenant-a', '00000000-0000-0000-0000-000000000321',
                               '00000000-0000-0000-0000-000000000101',
-                              '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
-                              'company', 'entity-1', 'ENTITY-1', 'target', 'target-1',
-                              'account', 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
-                              now() + interval '1 day', 'Succeeded', clock_timestamp()),
+                              '00000000-0000-0000-0000-000000000302', 0, 'source',
+                              'source-1', 'company', 'entity-1', 'ENTITY-1', 'target',
+                              'target-1', 'account', 'TARGET-1', 'Update', '{}', '{}',
+                              repeat('3', 64), now() + interval '1 day',
+                              'Succeeded', clock_timestamp()),
                              ('tenant-a', '00000000-0000-0000-0000-000000000322',
                               '00000000-0000-0000-0000-000000000101',
-                              '00000000-0000-0000-0000-000000000302', 'source', 'source-1',
-                              'company', 'entity-1', 'ENTITY-1', 'target', 'target-1',
-                              'account', 'TARGET-1', 'Update', '{}', '{}', repeat('3', 64),
-                              now() - interval '1 day', 'Succeeded', clock_timestamp());
+                              '00000000-0000-0000-0000-000000000302', 0, 'source',
+                              'source-1', 'company', 'entity-1', 'ENTITY-1', 'target',
+                              'target-1', 'account', 'TARGET-1', 'Update', '{}', '{}',
+                              repeat('3', 64), now() - interval '1 day',
+                              'Succeeded', clock_timestamp());
 
                          INSERT INTO entitysync.sync_operation_item_snapshots (
                              tenant_id, operation_id, item_id, encrypted_before_ciphertext,
