@@ -513,22 +513,39 @@ public sealed class EntitySyncControlWorker : BackgroundService
         IEntitySyncRouteLease route,
         CancellationTokenSource ownership)
     {
-        var interval = TimeSpan.FromTicks(
-            Math.Min(PostgresSyncWorkQueue.DefaultLeaseDuration.Ticks,
-                RouteLeaseDuration.Ticks) / 3);
-        while (!ownership.IsCancellationRequested)
+        try
         {
-            await Task.Delay(interval, timeProvider, ownership.Token).ConfigureAwait(false);
-            var workRenewed = await queue.TryRenewAsync(
-                work, PostgresSyncWorkQueue.DefaultLeaseDuration, ownership.Token)
-                .ConfigureAwait(false);
-            var routeRenewed = await route.TryRenewAsync(
-                RouteLeaseDuration, ownership.Token).ConfigureAwait(false);
-            if (!workRenewed || !routeRenewed)
+            var interval = TimeSpan.FromTicks(
+                Math.Min(PostgresSyncWorkQueue.DefaultLeaseDuration.Ticks,
+                    RouteLeaseDuration.Ticks) / 3);
+            while (!ownership.IsCancellationRequested)
             {
-                await ownership.CancelAsync().ConfigureAwait(false);
-                return;
+                await Task.Delay(interval, timeProvider, ownership.Token).ConfigureAwait(false);
+                var workRenewed = await queue.TryRenewAsync(
+                    work, PostgresSyncWorkQueue.DefaultLeaseDuration, ownership.Token)
+                    .ConfigureAwait(false);
+                if (!workRenewed)
+                {
+                    await ownership.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
+                var routeRenewed = await route.TryRenewAsync(
+                    RouteLeaseDuration, ownership.Token).ConfigureAwait(false);
+                if (!routeRenewed)
+                {
+                    await ownership.CancelAsync().ConfigureAwait(false);
+                    return;
+                }
             }
+        }
+        catch (OperationCanceledException) when (ownership.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await ownership.CancelAsync().ConfigureAwait(false);
+            throw;
         }
     }
 

@@ -1,5 +1,6 @@
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using LISSTech.EntitySync.Scheduler;
 using Npgsql;
@@ -254,6 +255,75 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         Assert.Equal(SyncControlWorkState.Held, work.State);
         Assert.Equal("CONTROL_WORK_CHECKPOINT_CONFLICT", work.HoldReason);
         Assert.Equal(0, await CountAsync("entitysync.sync_operations", tenant));
+    }
+
+    [Theory]
+    [InlineData("route-throws")]
+    [InlineData("route-false")]
+    [InlineData("work-false")]
+    public async Task Control_heartbeat_loss_cancels_and_awaits_blocked_canonical_read(
+        string failure)
+    {
+        const string tenant = "control-renewal-exception";
+        var actor = new EntitySyncActor("admin");
+        var policy = Policy(tenant);
+        await new PostgresSyncPolicyRepository(Database).InsertAsync(tenant, policy, default);
+        var now = DateTimeOffset.UtcNow;
+        var source = new EntitySyncConnectionDefinition(
+            tenant, "source", "OrchestraMSP", "Source", 1, true,
+            new EntitySyncJsonValue("{}"), "ciphertext", now, actor, now, actor);
+        await new PostgresConnectionDefinitionRepository(Database).InsertAsync(
+            tenant, source, default);
+        var queue = new PostgresSyncWorkQueue(Database);
+        await queue.AcceptAsync(CanonicalRequest(tenant, "blocked-renewal"), now, default);
+        var adapter = new BlockingCanonicalAdapter();
+        var route = new ThrowingControlRouteLock(failure);
+        var time = new ManualTimeProvider(now);
+        var worker = new EntitySyncControlWorker(
+            queue, route, new PostgresSyncPolicyRepository(Database),
+            new PostgresConnectionDefinitionRepository(Database),
+            new SingleConnectionRuntime(source, adapter),
+            null!, null!, null!, time, new EntitySyncControlOptions([tenant]));
+        var execution = worker.ExecuteOneAsync(default);
+        await adapter.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        if (failure == "work-false")
+        {
+            await using var steal = Database.CreateCommand("""
+                UPDATE entitysync.sync_control_work
+                SET lease_owner = 'stolen'
+                WHERE tenant_id = @tenant
+                """);
+            steal.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+            Assert.Equal(1, await steal.ExecuteNonQueryAsync());
+        }
+
+        time.Advance(TimeSpan.FromMinutes(2));
+        if (failure != "work-false")
+            await route.RenewAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        if (failure == "route-throws")
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => execution.WaitAsync(TimeSpan.FromSeconds(1)));
+        else
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => execution.WaitAsync(TimeSpan.FromSeconds(1)));
+        await route.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(failure != "work-false", route.RenewAttempted.Task.IsCompleted);
+        Assert.Equal(0, await CountAsync("entitysync.sync_plans", tenant));
+        Assert.Equal(0, await CountAsync("entitysync.sync_approvals", tenant));
+        Assert.Equal(0, await CountAsync("entitysync.sync_operations", tenant));
+        await using var checkpoint = Database.CreateCommand("""
+            SELECT plan_id, approval_id, operation_id
+            FROM entitysync.sync_control_work
+            WHERE tenant_id = @tenant
+            """);
+        checkpoint.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        await using var reader = await checkpoint.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.True(reader.IsDBNull(0));
+        Assert.True(reader.IsDBNull(1));
+        Assert.True(reader.IsDBNull(2));
     }
 
     [Fact]
@@ -725,6 +795,181 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         DurablePlanApprovalResult Approval,
         SyncOperationService OperationService,
         EntitySyncControlWorker Worker);
+    private sealed class ThrowingControlRouteLock(string failure) : IEntitySyncRouteLock
+    {
+        internal TaskCompletionSource RenewAttempted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Disposed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<IEntitySyncRouteLease?> TryAcquireAsync(
+            string tenantId,
+            string routeScope,
+            string owner,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IEntitySyncRouteLease?>(
+                new Lease(RenewAttempted, Disposed, failure));
+
+        private sealed class Lease(
+            TaskCompletionSource renewAttempted,
+            TaskCompletionSource disposed,
+            string failure) : IEntitySyncRouteLease
+        {
+            public Task<bool> TryRenewAsync(
+                TimeSpan leaseDuration,
+                CancellationToken cancellationToken)
+            {
+                renewAttempted.TrySetResult();
+                if (failure == "route-throws")
+                    throw new InvalidOperationException("route renewal failed");
+                return Task.FromResult(failure != "route-false");
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                disposed.TrySetResult();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
+    private sealed class SingleConnectionRuntime(
+        EntitySyncConnectionDefinition definition,
+        IEntityAdapter adapter) : IConnectionRuntimeFactory
+    {
+        public Task<IConnectionRuntimeLease> AcquireAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IConnectionRuntimeLease>(new Lease(definition, adapter));
+
+        public Task<IConnectionRuntimeLease> AcquireCurrentAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken) =>
+            AcquireAsync(tenantId, definition.ConnectionId, definition.Generation, cancellationToken);
+
+        public Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(definition);
+
+        private sealed record Lease(
+            EntitySyncConnectionDefinition Definition,
+            IEntityAdapter Adapter) : IConnectionRuntimeLease
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingCanonicalAdapter
+        : IEntityAdapter, ICanonicalEntityVersionAdapter
+    {
+        internal TaskCompletionSource ReadStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string Vendor => "OrchestraMSP";
+        public IReadOnlyList<string> LookupTypes => [];
+
+        public async Task<CanonicalEntityVersion?> ReadCanonicalAsync(
+            string entityType,
+            Guid canonicalEntityId,
+            long assertedVersion,
+            CancellationToken cancellationToken)
+        {
+            ReadStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return null;
+        }
+
+        public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
+            EntityQuery query,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ExternalEntity>>([]);
+
+        public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(
+            string type,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
+        public Task<EntityWriteResult> CreateEntityAsync(
+            EntityWriteRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<EntityWriteResult> UpdateEntityAsync(
+            EntityWriteRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset initial) : TimeProvider
+    {
+        private readonly object sync = new();
+        private DateTimeOffset now = initial;
+        private readonly List<ManualTimer> timers = [];
+        public override DateTimeOffset GetUtcNow() { lock (sync) return now; }
+
+        internal void Advance(TimeSpan amount)
+        {
+            ManualTimer[] due;
+            lock (sync)
+            {
+                now += amount;
+                due = timers.Where(timer => timer.DueAt <= now).ToArray();
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state, GetUtcNow() + dueTime);
+            lock (sync) timers.Add(timer);
+            return timer;
+        }
+
+        private void Remove(ManualTimer timer) { lock (sync) timers.Remove(timer); }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            DateTimeOffset dueAt) : ITimer
+        {
+            private int disposed;
+            internal DateTimeOffset DueAt { get; } = dueAt;
+            public bool Change(TimeSpan dueTime, TimeSpan period) =>
+                throw new NotSupportedException();
+            internal void Fire()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) == 0)
+                {
+                    owner.Remove(this);
+                    callback(state);
+                }
+            }
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) == 0) owner.Remove(this);
+            }
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
 
     private async Task ExpireWorkLeaseAsync(string tenant, Guid workId)
     {

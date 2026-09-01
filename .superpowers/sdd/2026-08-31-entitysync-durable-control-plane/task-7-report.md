@@ -194,3 +194,36 @@
   0 skipped, 2 seconds (`artifact://1558`).
 - Minimal scheduler Release build passed (`artifact://1560`).
 - No formatter, linter, broad build, Pester, or project-wide test suite was run.
+
+## Fix Round 5
+
+### RED
+
+- A deterministic worker-level test blocked the generation-pinned canonical
+  adapter, advanced the injected clock to the ownership heartbeat, and made route
+  renewal throw. The renewal was observed, but the canonical read and worker
+  remained live until the assertion timed out (`artifact://1569`).
+- Extending the fixture to steal the work lease showed that the heartbeat still
+  called route renewal after work renewal returned `false` (`artifact://1580`).
+
+### Fix
+
+- `EntitySyncControlWorker` now handles heartbeat exceptions fail-closed: it
+  cancels the linked ownership token before rethrowing the renewal failure.
+  `ExecuteControlAsync` therefore interrupts in-flight vendor I/O, awaits the
+  heartbeat, disposes the route lease, and cannot continue through the stale
+  work/route fence.
+- Work renewal is now evaluated and fenced before route renewal. Once work
+  ownership is lost, route renewal is not attempted and the ownership token is
+  cancelled immediately.
+- The live-PostgreSQL worker test covers work-renewal `false`, route-renewal
+  `false`, and a thrown route-renewal exception. Each case cancels a blocked
+  canonical read, finishes the worker and route lease promptly, and writes no
+  plan, approval, operation, or work checkpoint (`artifact://1582`).
+
+### GREEN
+
+- Exact focused filter against isolated PostgreSQL 18: 34 passed, 0 failed,
+  0 skipped, 2 seconds (`artifact://1584`).
+- Minimal scheduler Release build passed (`artifact://1586`).
+- No formatter, linter, broad build, Pester, or project-wide test suite was run.
