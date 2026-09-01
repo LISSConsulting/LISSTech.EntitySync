@@ -42,7 +42,7 @@ internal static class PostgresControlPersistence
         JsonSerializer.Deserialize<string[]>(json)
         ?? throw new InvalidOperationException("Stored JSON string list is null.");
 
-    internal static string SerializeFieldDiffs(IReadOnlyList<EntitySyncFieldDiff> diffs)
+    internal static string SerializeFieldDiffs(IReadOnlyList<EntityFieldChange> diffs)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -51,11 +51,11 @@ internal static class PostgresControlPersistence
             foreach (var diff in diffs)
             {
                 writer.WriteStartObject();
-                writer.WriteString("fieldName", diff.FieldName);
-                writer.WritePropertyName("before");
-                using (var before = JsonDocument.Parse(diff.Before.Json)) before.RootElement.WriteTo(writer);
-                writer.WritePropertyName("desired");
-                using (var desired = JsonDocument.Parse(diff.Desired.Json)) desired.RootElement.WriteTo(writer);
+                writer.WriteString("fieldName", diff.Field);
+                WriteFieldValue(
+                    writer, "before", diff.Before, diff.BeforeSha256, diff.Sensitive);
+                WriteFieldValue(
+                    writer, "desired", diff.Desired, diff.DesiredSha256, diff.Sensitive);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -63,15 +63,46 @@ internal static class PostgresControlPersistence
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    internal static IReadOnlyList<EntitySyncFieldDiff> DeserializeFieldDiffs(string json)
+    internal static IReadOnlyList<EntityFieldChange> DeserializeFieldDiffs(string json)
     {
         using var document = JsonDocument.Parse(json);
         return document.RootElement.EnumerateArray()
-            .Select(element => new EntitySyncFieldDiff(
-                element.GetProperty("fieldName").GetString()
-                    ?? throw new InvalidOperationException("Stored field name is null."),
-                new EntitySyncJsonValue(element.GetProperty("before").GetRawText()),
-                new EntitySyncJsonValue(element.GetProperty("desired").GetRawText())))
+            .Select(element =>
+            {
+                var before = element.GetProperty("before");
+                var desired = element.GetProperty("desired");
+                var sensitive = before.GetProperty("sensitive").GetBoolean();
+                if (desired.GetProperty("sensitive").GetBoolean() != sensitive)
+                    throw new InvalidOperationException(
+                        "Stored field sensitivity differs between before and desired values.");
+                return new EntityFieldChange(
+                    element.GetProperty("fieldName").GetString()
+                        ?? throw new InvalidOperationException("Stored field name is null."),
+                    new EntitySyncJsonValue(before.GetProperty("value").GetRawText()),
+                    new EntitySyncJsonValue(desired.GetProperty("value").GetRawText()),
+                    new EntitySyncSha256(before.GetProperty("sha256").GetString()
+                        ?? throw new InvalidOperationException("Stored before hash is null.")),
+                    new EntitySyncSha256(desired.GetProperty("sha256").GetString()
+                        ?? throw new InvalidOperationException("Stored desired hash is null.")),
+                    sensitive);
+            })
             .ToArray();
+    }
+
+    private static void WriteFieldValue(
+        Utf8JsonWriter writer,
+        string propertyName,
+        EntitySyncJsonValue value,
+        EntitySyncSha256 sha256,
+        bool sensitive)
+    {
+        writer.WritePropertyName(propertyName);
+        writer.WriteStartObject();
+        writer.WritePropertyName("value");
+        using (var document = JsonDocument.Parse(value.Json))
+            document.RootElement.WriteTo(writer);
+        writer.WriteString("sha256", sha256.Value);
+        writer.WriteBoolean("sensitive", sensitive);
+        writer.WriteEndObject();
     }
 }

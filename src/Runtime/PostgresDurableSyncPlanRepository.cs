@@ -16,6 +16,55 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             throw new ArgumentException("Every manifest item must belong to the plan.", nameof(manifest));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        const string identityLockSql = """
+            SELECT pg_advisory_xact_lock(hashtextextended(@plan_identity, 0))
+            """;
+        await using (var identityLock = new NpgsqlCommand(
+                         identityLockSql, connection, transaction))
+        {
+            PostgresControlPersistence.Add(
+                identityLock,
+                "plan_identity",
+                NpgsqlDbType.Text,
+                $"{tenantId}:{manifest.Plan.PlanId:N}");
+            await identityLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        const string existingSql = """
+            SELECT plan_digest_sha256,
+                   (SELECT count(*)::integer
+                    FROM entitysync.sync_plan_items item
+                    WHERE item.tenant_id = plan.tenant_id
+                      AND item.plan_id = plan.plan_id)
+            FROM entitysync.sync_plans plan
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+            """;
+        await using (var existing = new NpgsqlCommand(
+                         existingSql, connection, transaction))
+        {
+            AddPlanKey(existing, tenantId, manifest.Plan.PlanId);
+            await using var reader = await existing.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var sameManifest =
+                    reader.GetString(0).Equals(
+                        manifest.Plan.PlanDigestSha256.Value,
+                        StringComparison.Ordinal)
+                    && reader.GetInt32(1) == manifest.Items.Count;
+                await reader.DisposeAsync().ConfigureAwait(false);
+                if (!sameManifest)
+                    throw new InvalidOperationException(
+                        "The deterministic plan identity already binds a different manifest.");
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+        }
+        await LockPolicyIdentityAsync(
+            connection,
+            transaction,
+            tenantId,
+            manifest.Plan.PolicyId,
+            cancellationToken).ConfigureAwait(false);
         if (!await LockCurrentConnectionGenerationsAsync(
                 connection,
                 transaction,
@@ -101,8 +150,8 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         return new EntitySyncDurablePlanPage(tenantId, planId, page, pageSize, totalItems, items);
     }
 
-    public async Task<EntitySyncInspectionSession> OpenInspectionAsync(
-        string tenantId, Guid inspectionId, Guid planId,
+    public async Task<EntitySyncInspectionSession> GetOrOpenInspectionAsync(
+        string tenantId, Guid proposedInspectionId, Guid planId,
         EntitySyncSha256 planDigestSha256, string sourceConnectionId,
         long sourceConnectionGeneration, string targetConnectionId,
         long targetConnectionGeneration, EntitySyncActor actor, DateTimeOffset now,
@@ -118,51 +167,146 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 targetConnectionGeneration, cancellationToken).ConfigureAwait(false))
             throw new InvalidOperationException(
                 "The plan connection generations are no longer current.");
-        const string sql = """
+
+        const string lockPlanSql = """
+            SELECT 1
+            FROM entitysync.sync_plans
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+              AND plan_digest_sha256 = @plan_digest_sha256
+              AND source_connection_id = @source_connection_id
+              AND source_connection_generation = @source_connection_generation
+              AND target_connection_id = @target_connection_id
+              AND target_connection_generation = @target_connection_generation
+              AND status = 'Draft' AND expires_at > @now
+            FOR UPDATE
+            """;
+        await using (var lockPlan = new NpgsqlCommand(lockPlanSql, connection, transaction))
+        {
+            AddInspectionIdentity(
+                lockPlan, tenantId, proposedInspectionId, planId, planDigestSha256,
+                sourceConnectionId, sourceConnectionGeneration,
+                targetConnectionId, targetConnectionGeneration);
+            PostgresControlPersistence.Add(lockPlan, "now", NpgsqlDbType.TimestampTz, now);
+            if (await lockPlan.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+                throw new InvalidOperationException(
+                    "The exact draft plan was not available for inspection.");
+        }
+
+        const string existingSql = """
+            SELECT inspection_id, status, inspected_at, inspected_by, completed_at
+            FROM entitysync.sync_plan_inspections
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+              AND plan_digest_sha256 = @plan_digest_sha256
+              AND source_connection_generation = @source_connection_generation
+              AND target_connection_generation = @target_connection_generation
+              AND inspected_by = @actor
+            ORDER BY inspected_at, inspection_id
+            LIMIT 1
+            """;
+        await using (var existing = new NpgsqlCommand(existingSql, connection, transaction))
+        {
+            AddInspectionIdentity(
+                existing, tenantId, proposedInspectionId, planId, planDigestSha256,
+                sourceConnectionId, sourceConnectionGeneration,
+                targetConnectionId, targetConnectionGeneration);
+            PostgresControlPersistence.Add(existing, "actor", NpgsqlDbType.Text, actor.ActorId);
+            await using var reader = await existing.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var session = ReadInspection(
+                    reader, tenantId, planId, planDigestSha256,
+                    sourceConnectionId, sourceConnectionGeneration,
+                    targetConnectionId, targetConnectionGeneration);
+                await reader.DisposeAsync().ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return session;
+            }
+        }
+
+        const string insertSql = """
             INSERT INTO entitysync.sync_plan_inspections (
                 tenant_id, inspection_id, plan_id, plan_digest_sha256,
                 source_connection_generation, target_connection_generation,
                 status, inspected_at, inspected_by, completed_at)
-            SELECT plan.tenant_id, @inspection_id, plan.plan_id, plan.plan_digest_sha256,
-                   plan.source_connection_generation, plan.target_connection_generation,
-                   'Open', @now, @actor, NULL
-            FROM entitysync.sync_plans plan
-            WHERE plan.tenant_id = @tenant_id AND plan.plan_id = @plan_id
-              AND plan.plan_digest_sha256 = @plan_digest_sha256
-              AND plan.source_connection_id = @source_connection_id
-              AND plan.source_connection_generation = @source_connection_generation
-              AND plan.target_connection_id = @target_connection_id
-              AND plan.target_connection_generation = @target_connection_generation
-              AND plan.status = 'Draft' AND plan.expires_at > @now
-            RETURNING inspected_at, inspected_by
+            VALUES (
+                @tenant_id, @inspection_id, @plan_id, @plan_digest_sha256,
+                @source_connection_generation, @target_connection_generation,
+                'Open', @now, @actor, NULL)
             """;
-        DateTimeOffset inspectedAt;
-        string inspectedBy;
-        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        await using (var insert = new NpgsqlCommand(insertSql, connection, transaction))
         {
             AddInspectionIdentity(
-                command, tenantId, inspectionId, planId, planDigestSha256,
+                insert, tenantId, proposedInspectionId, planId, planDigestSha256,
                 sourceConnectionId, sourceConnectionGeneration,
                 targetConnectionId, targetConnectionGeneration);
-            PostgresControlPersistence.Add(
-                command, "now", NpgsqlDbType.TimestampTz, now);
-            PostgresControlPersistence.Add(
-                command, "actor", NpgsqlDbType.Text, actor.ActorId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                throw new InvalidOperationException(
-                    "The exact draft plan was not available for inspection.");
-            inspectedAt = reader.GetFieldValue<DateTimeOffset>(0);
-            inspectedBy = reader.GetString(1);
+            PostgresControlPersistence.Add(insert, "now", NpgsqlDbType.TimestampTz, now);
+            PostgresControlPersistence.Add(insert, "actor", NpgsqlDbType.Text, actor.ActorId);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new EntitySyncInspectionSession(
-            tenantId, inspectionId, planId, planDigestSha256,
+            tenantId, proposedInspectionId, planId, planDigestSha256,
             sourceConnectionId, sourceConnectionGeneration,
             targetConnectionId, targetConnectionGeneration,
-            EntitySyncInspectionStatus.Open, inspectedAt,
-            new EntitySyncActor(inspectedBy), null);
+            EntitySyncInspectionStatus.Open, now, actor, null);
+    }
+
+    public async Task<EntitySyncInspectionSession?> FindInspectionAsync(
+        string tenantId, Guid planId, EntitySyncSha256 planDigestSha256,
+        EntitySyncActor actor, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT inspection.inspection_id, inspection.status,
+                   inspection.inspected_at, inspection.inspected_by,
+                   inspection.completed_at, plan.source_connection_id,
+                   plan.source_connection_generation, plan.target_connection_id,
+                   plan.target_connection_generation
+            FROM entitysync.sync_plan_inspections inspection
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = inspection.tenant_id
+             AND plan.plan_id = inspection.plan_id
+            WHERE inspection.tenant_id = @tenant_id
+              AND inspection.plan_id = @plan_id
+              AND inspection.plan_digest_sha256 = @plan_digest_sha256
+              AND inspection.inspected_by = @actor
+            ORDER BY inspection.inspected_at, inspection.inspection_id
+            LIMIT 1
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddPlanKey(command, tenantId, planId);
+        PostgresControlPersistence.Add(
+            command, "plan_digest_sha256", NpgsqlDbType.Char, planDigestSha256.Value);
+        PostgresControlPersistence.Add(command, "actor", NpgsqlDbType.Text, actor.ActorId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            return null;
+        return ReadInspection(
+            reader, tenantId, planId, planDigestSha256,
+            reader.GetString(5), reader.GetInt64(6), reader.GetString(7), reader.GetInt64(8));
+    }
+
+    public async Task<IReadOnlyList<EntitySyncInspectionRange>> ListInspectionRangesAsync(
+        string tenantId, Guid inspectionId, CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT range_id, range_start, range_end, inspected_at
+            FROM entitysync.sync_plan_inspection_ranges
+            WHERE tenant_id = @tenant_id AND inspection_id = @inspection_id
+            ORDER BY range_start, range_end, range_id
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "inspection_id", NpgsqlDbType.Uuid, inspectionId);
+        var ranges = new List<EntitySyncInspectionRange>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            ranges.Add(new EntitySyncInspectionRange(
+                tenantId, inspectionId, reader.GetGuid(0), reader.GetInt32(1),
+                reader.GetInt32(2), reader.GetFieldValue<DateTimeOffset>(3)));
+        return ranges;
     }
 
     public async Task<EntitySyncInspectionRange> RecordInspectionRangeAsync(
@@ -184,24 +328,41 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             VALUES (
                 @tenant_id, @inspection_id, @range_id, @range_start, @range_end,
                 @inspected_at)
+            ON CONFLICT (tenant_id, inspection_id, range_id) DO NOTHING
+            RETURNING inspected_at
             """;
-        await using var command = new NpgsqlCommand(sql, connection, transaction);
-        PostgresControlPersistence.Add(
-            command, "tenant_id", NpgsqlDbType.Text, tenantId);
-        PostgresControlPersistence.Add(
-            command, "inspection_id", NpgsqlDbType.Uuid, inspectionId);
-        PostgresControlPersistence.Add(command, "range_id", NpgsqlDbType.Uuid, rangeId);
-        PostgresControlPersistence.Add(
-            command, "range_start", NpgsqlDbType.Integer, rangeStart);
-        PostgresControlPersistence.Add(
-            command, "range_end", NpgsqlDbType.Integer, rangeEnd);
-        PostgresControlPersistence.Add(
-            command, "inspected_at", NpgsqlDbType.TimestampTz, inspectedAt);
-        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-            throw new InvalidOperationException(
-                "The exact inspection range could not be recorded.");
+        DateTimeOffset persistedInspectedAt;
+        await using (var command = new NpgsqlCommand(sql, connection, transaction))
+        {
+            AddRange(command, range);
+            var inserted = await command.ExecuteScalarAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (inserted is not null)
+            {
+                persistedInspectedAt = ToDateTimeOffset(inserted);
+            }
+            else
+            {
+                const string existingSql = """
+                    SELECT inspected_at
+                    FROM entitysync.sync_plan_inspection_ranges
+                    WHERE tenant_id = @tenant_id AND inspection_id = @inspection_id
+                      AND range_id = @range_id AND range_start = @range_start
+                      AND range_end = @range_end
+                    """;
+                await using var existing = new NpgsqlCommand(
+                    existingSql, connection, transaction);
+                AddRange(existing, range);
+                var persisted = await existing.ExecuteScalarAsync(cancellationToken)
+                    .ConfigureAwait(false)
+                    ?? throw new InvalidOperationException(
+                        "The persisted inspection range conflicts with the requested range.");
+                persistedInspectedAt = ToDateTimeOffset(persisted);
+            }
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return range;
+        return new EntitySyncInspectionRange(
+            tenantId, inspectionId, rangeId, rangeStart, rangeEnd, persistedInspectedAt);
     }
 
     public async Task<EntitySyncInspectionSession> CompleteInspectionAsync(
@@ -240,9 +401,9 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             RETURNING inspection.inspected_at, inspection.inspected_by,
                       inspection.completed_at
             """;
-        DateTimeOffset inspectedAt;
-        string inspectedBy;
-        DateTimeOffset persistedCompletedAt;
+        DateTimeOffset inspectedAt = default;
+        string? inspectedBy = null;
+        DateTimeOffset persistedCompletedAt = default;
         await using (var command = new NpgsqlCommand(sql, connection, transaction))
         {
             AddInspectionIdentity(
@@ -253,9 +414,36 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 command, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                inspectedAt = reader.GetFieldValue<DateTimeOffset>(0);
+                inspectedBy = reader.GetString(1);
+                persistedCompletedAt = reader.GetFieldValue<DateTimeOffset>(2);
+            }
+        }
+        if (inspectedBy is null)
+        {
+            const string completedSql = """
+                SELECT inspected_at, inspected_by, completed_at
+                FROM entitysync.sync_plan_inspections
+                WHERE tenant_id = @tenant_id AND inspection_id = @inspection_id
+                  AND plan_id = @plan_id
+                  AND plan_digest_sha256 = @plan_digest_sha256
+                  AND source_connection_generation = @source_connection_generation
+                  AND target_connection_generation = @target_connection_generation
+                  AND status = 'Completed' AND completed_at IS NOT NULL
+                """;
+            await using var completed = new NpgsqlCommand(
+                completedSql, connection, transaction);
+            AddInspectionIdentity(
+                completed, tenantId, inspectionId, planId, planDigestSha256,
+                sourceConnectionId, sourceConnectionGeneration,
+                targetConnectionId, targetConnectionGeneration);
+            await using var reader = await completed.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException(
-                    "The exact open inspection was not available for completion.");
+                    "The exact inspection was not available for completion.");
             inspectedAt = reader.GetFieldValue<DateTimeOffset>(0);
             inspectedBy = reader.GetString(1);
             persistedCompletedAt = reader.GetFieldValue<DateTimeOffset>(2);
@@ -298,13 +486,33 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         EntitySyncSha256 planDigestSha256, string sourceConnectionId,
         long sourceConnectionGeneration, string targetConnectionId, long targetConnectionGeneration,
         EntitySyncActor actor, DateTimeOffset approvedAt, DateTimeOffset? expiresAt,
-        CancellationToken cancellationToken)
+        EntitySyncAuditEvent auditEvent, CancellationToken cancellationToken)
     {
         var approval = new EntitySyncApproval(tenantId, approvalId, inspectionId, planId,
             planDigestSha256, sourceConnectionId, sourceConnectionGeneration, targetConnectionId,
             targetConnectionGeneration, approvedAt, actor, expiresAt);
+        ArgumentNullException.ThrowIfNull(auditEvent);
+        using var auditDocument = System.Text.Json.JsonDocument.Parse(
+            auditEvent.RedactedValues.Json);
+        var expectedAuditHash = EntitySyncCanonicalDigest.Compute(
+            auditDocument.RootElement);
+        if (auditEvent.TenantId != tenantId
+            || auditEvent.PlanId != planId
+            || auditEvent.Actor != actor
+            || auditEvent.OccurredAt != approvedAt
+            || auditEvent.EventType != "SyncPlanApproved"
+            || auditEvent.CorrelationId != approvalId.ToString("N")
+            || auditEvent.RedactedValuesSha256 != expectedAuditHash
+            || auditEvent.FullValuesSha256 is not null
+            || auditEvent.FullValuesExpiresAt is not null)
+            throw new ArgumentException(
+                "The approval audit event must be redacted, digest-valid, and match the approval identity.",
+                nameof(auditEvent));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockPlanPolicyIdentityAsync(
+            connection, transaction, tenantId, planId, cancellationToken)
+            .ConfigureAwait(false);
         if (!await LockCurrentConnectionGenerationsAsync(
                 connection, transaction, tenantId, sourceConnectionId,
                 sourceConnectionGeneration, targetConnectionId,
@@ -322,6 +530,25 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.status = 'Draft' AND plan.expires_at > @approved_at
               AND EXISTS (
+                    SELECT 1
+                    FROM entitysync.sync_policies policy
+                    WHERE policy.tenant_id = plan.tenant_id
+                      AND policy.policy_id = plan.policy_id
+                      AND policy.version = plan.policy_version
+                      AND policy.definition_sha256 = (
+                          SELECT latest.definition_sha256
+                          FROM entitysync.sync_policies latest
+                          WHERE latest.tenant_id = plan.tenant_id
+                            AND latest.policy_id = plan.policy_id
+                          ORDER BY latest.version DESC
+                          LIMIT 1)
+                      AND policy.version = (
+                          SELECT max(latest.version)
+                          FROM entitysync.sync_policies latest
+                          WHERE latest.tenant_id = plan.tenant_id
+                            AND latest.policy_id = plan.policy_id)
+                      AND policy.enabled)
+              AND EXISTS (
                     SELECT 1 FROM entitysync.connection_definitions source_connection
                     WHERE source_connection.tenant_id = @tenant_id
                       AND source_connection.connection_id = plan.source_connection_id
@@ -337,6 +564,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND inspection.source_connection_generation = plan.source_connection_generation
               AND inspection.target_connection_generation = plan.target_connection_generation
               AND inspection.status = 'Completed' AND inspection.completed_at IS NOT NULL
+              AND inspection.inspected_by = @approved_by
               AND inspection.tenant_id = @tenant_id
             """;
         await using (var advance = new NpgsqlCommand(advanceSql, connection, transaction))
@@ -344,6 +572,8 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             AddInspectionIdentity(advance, tenantId, inspectionId, planId, planDigestSha256,
                 sourceConnectionId, sourceConnectionGeneration, targetConnectionId, targetConnectionGeneration);
             PostgresControlPersistence.Add(advance, "approved_at", NpgsqlDbType.TimestampTz, approvedAt);
+            PostgresControlPersistence.Add(
+                advance, "approved_by", NpgsqlDbType.Text, actor.ActorId);
             if (await advance.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 throw new InvalidOperationException("The exact completed inspection could not be approved.");
         }
@@ -360,6 +590,25 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         {
             AddApproval(insert, approval);
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        const string auditSql = """
+            INSERT INTO entitysync.audit_events (
+                tenant_id, audit_event_id, occurred_at, event_type, actor_id,
+                operation_id, run_id, plan_id, item_id, correlation_id,
+                redacted_values, redacted_values_sha256, full_values_sha256,
+                full_values_expires_at)
+            VALUES (
+                @audit_tenant_id, @audit_event_id, @audit_occurred_at,
+                @audit_event_type, @audit_actor_id, NULL, NULL, @audit_plan_id,
+                NULL, @audit_correlation_id, @audit_redacted_values,
+                @audit_redacted_values_sha256, NULL, NULL)
+            """;
+        await using (var appendAudit = new NpgsqlCommand(
+                         auditSql, connection, transaction))
+        {
+            AddApprovalAudit(appendAudit, auditEvent);
+            await appendAudit.ExecuteNonQueryAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return approval;
@@ -461,6 +710,49 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         PostgresControlPersistence.Add(command, "expected_status", NpgsqlDbType.Text, expectedStatus.ToString());
         PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
+    private static async Task LockPlanPolicyIdentityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid planId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT policy_id
+            FROM entitysync.sync_plans
+            WHERE tenant_id = @tenant_id AND plan_id = @plan_id
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddPlanKey(command, tenantId, planId);
+        var policyId = await command.ExecuteScalarAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (policyId is not Guid value)
+            throw new InvalidOperationException(
+                "The durable plan policy identity was not available.");
+        await LockPolicyIdentityAsync(
+            connection, transaction, tenantId, value, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task LockPolicyIdentityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid policyId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT pg_advisory_xact_lock(hashtextextended(@policy_identity, 1))
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command,
+            "policy_identity",
+            NpgsqlDbType.Text,
+            $"{tenantId}:{policyId:N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task LockInspectionConnectionGenerationsAsync(
@@ -572,7 +864,14 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                    @plan_digest_sha256, @status, @created_at, @created_by, @expires_at
             FROM entitysync.sync_policies policy
             WHERE policy.tenant_id = @tenant_id AND policy.policy_id = @policy_id
-              AND policy.version = @policy_version AND policy.definition_sha256 = @policy_definition_sha256
+              AND policy.version = @policy_version
+              AND policy.definition_sha256 = @policy_definition_sha256
+              AND policy.enabled
+              AND policy.version = (
+                  SELECT max(latest.version)
+                  FROM entitysync.sync_policies latest
+                  WHERE latest.tenant_id = policy.tenant_id
+                    AND latest.policy_id = policy.policy_id)
             """;
         await using var command = new NpgsqlCommand(sql, connection, transaction);
         AddPlan(command, plan);
@@ -711,6 +1010,85 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         PostgresControlPersistence.Add(command, "approved_by", NpgsqlDbType.Text, approval.ApprovedBy.ActorId);
         PostgresControlPersistence.Add(command, "expires_at", NpgsqlDbType.TimestampTz, approval.ExpiresAt);
     }
+
+    private static void AddRange(
+        NpgsqlCommand command,
+        EntitySyncInspectionRange range)
+    {
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, range.TenantId);
+        PostgresControlPersistence.Add(
+            command, "inspection_id", NpgsqlDbType.Uuid, range.InspectionId);
+        PostgresControlPersistence.Add(
+            command, "range_id", NpgsqlDbType.Uuid, range.RangeId);
+        PostgresControlPersistence.Add(
+            command, "range_start", NpgsqlDbType.Integer, range.RangeStart);
+        PostgresControlPersistence.Add(
+            command, "range_end", NpgsqlDbType.Integer, range.RangeEnd);
+        PostgresControlPersistence.Add(
+            command, "inspected_at", NpgsqlDbType.TimestampTz, range.InspectedAt);
+    }
+
+    private static void AddApprovalAudit(
+        NpgsqlCommand command,
+        EntitySyncAuditEvent auditEvent)
+    {
+        PostgresControlPersistence.Add(
+            command, "audit_tenant_id", NpgsqlDbType.Text, auditEvent.TenantId);
+        PostgresControlPersistence.Add(
+            command, "audit_event_id", NpgsqlDbType.Uuid, auditEvent.AuditEventId);
+        PostgresControlPersistence.Add(
+            command, "audit_occurred_at", NpgsqlDbType.TimestampTz, auditEvent.OccurredAt);
+        PostgresControlPersistence.Add(
+            command, "audit_event_type", NpgsqlDbType.Text, auditEvent.EventType);
+        PostgresControlPersistence.Add(
+            command, "audit_actor_id", NpgsqlDbType.Text, auditEvent.Actor.ActorId);
+        PostgresControlPersistence.Add(
+            command, "audit_plan_id", NpgsqlDbType.Uuid, auditEvent.PlanId);
+        PostgresControlPersistence.Add(
+            command, "audit_correlation_id", NpgsqlDbType.Text, auditEvent.CorrelationId);
+        PostgresControlPersistence.Add(
+            command, "audit_redacted_values", NpgsqlDbType.Jsonb, auditEvent.RedactedValues.Json);
+        PostgresControlPersistence.Add(
+            command,
+            "audit_redacted_values_sha256",
+            NpgsqlDbType.Char,
+            auditEvent.RedactedValuesSha256.Value);
+    }
+
+    private static EntitySyncInspectionSession ReadInspection(
+        NpgsqlDataReader reader,
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        string sourceConnectionId,
+        long sourceConnectionGeneration,
+        string targetConnectionId,
+        long targetConnectionGeneration) =>
+        new(
+            tenantId,
+            reader.GetGuid(0),
+            planId,
+            planDigestSha256,
+            sourceConnectionId,
+            sourceConnectionGeneration,
+            targetConnectionId,
+            targetConnectionGeneration,
+            PostgresControlPersistence.ParseEnum<EntitySyncInspectionStatus>(
+                reader.GetString(1)),
+            reader.GetFieldValue<DateTimeOffset>(2),
+            new EntitySyncActor(reader.GetString(3)),
+            PostgresControlPersistence.NullableTime(reader, 4));
+
+    private static DateTimeOffset ToDateTimeOffset(object value) =>
+        value switch
+        {
+            DateTimeOffset dateTimeOffset => dateTimeOffset,
+            DateTime dateTime => new DateTimeOffset(
+                DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)),
+            _ => throw new InvalidOperationException(
+                $"Database timestamp has unsupported type '{value.GetType().Name}'.")
+        };
 
     private static EntitySyncDurablePlan ReadPlan(NpgsqlDataReader reader) => new(
         reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetInt32(3),

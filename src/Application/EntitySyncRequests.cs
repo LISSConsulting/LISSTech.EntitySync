@@ -24,6 +24,58 @@ public sealed class CreateEntitySyncPlanRequest
     public string? ChangeStateScope { get; init; }
 }
 
+public sealed class CreateDurablePlanRequest
+{
+    public string TenantId { get; init; } = string.Empty;
+    public Guid PolicyId { get; init; }
+    public int? PolicyVersion { get; init; }
+    public string? SourceSearch { get; init; }
+    public int? SourceCount { get; init; }
+    public string? SourceEntityId { get; init; }
+    public TimeSpan PlanLifetime { get; init; } = TimeSpan.FromHours(4);
+}
+
+public sealed record DurablePlanResult(
+    string TenantId,
+    Guid PlanId,
+    string Digest,
+    int ItemCount,
+    Guid PolicyId,
+    int PolicyVersion,
+    long SourceConnectionGeneration,
+    long TargetConnectionGeneration,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset ExpiresAt)
+{
+    public int PageCount(int pageSize)
+    {
+        if (pageSize is <= 0 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        return ItemCount == 0 ? 0 : checked((ItemCount + pageSize - 1) / pageSize);
+    }
+}
+
+public sealed record DurableInspectionRange(int StartInclusive, int EndExclusive);
+
+public sealed record DurablePlanInspectionPage(
+    DurablePlanResult Plan,
+    int Page,
+    int PageSize,
+    IReadOnlyList<EntitySyncDurablePlanItem> Items,
+    Guid InspectionId,
+    IReadOnlyList<DurableInspectionRange> Coverage,
+    int CoveredItemCount,
+    bool InspectionComplete);
+
+public sealed record DurablePlanApprovalResult(
+    string TenantId,
+    Guid PlanId,
+    Guid ApprovalId,
+    Guid InspectionId,
+    string Digest,
+    DateTimeOffset ApprovedAt,
+    DateTimeOffset? ExpiresAt);
+
 public sealed record EntitySyncPlanPage(
     string PlanId,
     string Status,

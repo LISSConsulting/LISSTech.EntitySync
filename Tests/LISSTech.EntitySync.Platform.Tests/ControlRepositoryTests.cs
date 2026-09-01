@@ -255,6 +255,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var manifest = Manifest(context, itemCount: 2);
 
         await repository.InsertAsync(context.TenantId, manifest, default);
+        await repository.InsertAsync(context.TenantId, manifest, default);
 
         Assert.Equal(manifest.Plan, await repository.GetAsync(context.TenantId, manifest.Plan.PlanId, default));
         Assert.Null(await repository.GetAsync("other-tenant", manifest.Plan.PlanId, default));
@@ -273,9 +274,13 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             page.Items.SelectMany(item => item.MatchEvidence.Reasons));
         Assert.Equal(
             manifest.Items.SelectMany(item => item.FieldDiffs)
-                .Select(diff => (diff.FieldName, diff.Before.Json, diff.Desired.Json)),
+                .Select(diff => (
+                    diff.Field, diff.Before.Json, diff.Desired.Json,
+                    diff.BeforeSha256, diff.DesiredSha256, diff.Sensitive)),
             page.Items.SelectMany(item => item.FieldDiffs)
-                .Select(diff => (diff.FieldName, diff.Before.Json, diff.Desired.Json)));
+                .Select(diff => (
+                    diff.Field, diff.Before.Json, diff.Desired.Json,
+                    diff.BeforeSha256, diff.DesiredSha256, diff.Sensitive)));
         Assert.Equal(2, page.TotalItems);
 
         var badContext = await SeedControlContextAsync("rollback");
@@ -311,10 +316,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await plans.InsertAsync(context.TenantId, manifest, default);
         var inspectionId = Guid.NewGuid();
         var now = context.Now.AddMinutes(1);
-        await plans.OpenInspectionAsync(
-            context.TenantId, inspectionId, manifest.Plan.PlanId, manifest.Plan.PlanDigestSha256,
-            context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
-            new EntitySyncActor("reviewer"), now, default);
+        await plans.GetOrOpenInspectionAsync(context.TenantId, inspectionId, manifest.Plan.PlanId, manifest.Plan.PlanDigestSha256,
+        context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+        new EntitySyncActor("reviewer"), now, default);
         await plans.RecordInspectionRangeAsync(
             context.TenantId, inspectionId, Guid.NewGuid(), 0, 0, now, default);
         await Assert.ThrowsAnyAsync<Exception>(() => plans.CompleteInspectionAsync(
@@ -336,11 +340,21 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var approval = await plans.ApproveInspectionAsync(
             context.TenantId, approvalId, inspectionId, manifest.Plan.PlanId,
             manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, new EntitySyncActor("approver"),
-            now.AddMinutes(2), now.AddMinutes(10), default);
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            now.AddMinutes(2), now.AddMinutes(10),
+            ApprovalAudit(context.TenantId, manifest.Plan.PlanId, approvalId, "reviewer", now.AddMinutes(2)),
+            default);
         Assert.Equal(approvalId, approval.ApprovalId);
         Assert.Equal(EntitySyncDurablePlanStatus.Approved,
             (await plans.GetAsync(context.TenantId, manifest.Plan.PlanId, default))!.Status);
+        var approvalAudit = await new PostgresSyncAuditRepository(Database).ListAsync(
+            context.TenantId, null, null, 10, default);
+        var approvedEvent = Assert.Single(
+            approvalAudit.Events,
+            auditEvent => auditEvent.CorrelationId == approvalId.ToString("N"));
+        Assert.Equal("SyncPlanApproved", approvedEvent.EventType);
+        Assert.Equal(manifest.Plan.PlanId, approvedEvent.PlanId);
+
 
         var operation = EntitySyncOperation.QueueApply(
             context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, approvalId,
@@ -369,6 +383,67 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Approval_and_audit_commit_or_roll_back_together()
+    {
+        var context = await SeedControlContextAsync("approval-audit-atomic");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var audits = new PostgresSyncAuditRepository(Database);
+        var manifest = Manifest(context, itemCount: 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var now = context.Now.AddMinutes(1);
+        var inspectionId = Guid.NewGuid();
+        await plans.GetOrOpenInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
+        await plans.RecordInspectionRangeAsync(
+            context.TenantId, inspectionId, Guid.NewGuid(), 0, 0, now, default);
+        await plans.CompleteInspectionAsync(
+            context.TenantId, inspectionId, manifest.Plan.PlanId,
+            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+            context.Target.ConnectionId, 1, now.AddMinutes(1), default);
+
+        var conflictingApprovalId = Guid.NewGuid();
+        var conflictingAudit = ApprovalAudit(
+            context.TenantId,
+            manifest.Plan.PlanId,
+            conflictingApprovalId,
+            "reviewer",
+            now.AddMinutes(2));
+        await audits.AppendAsync(context.TenantId, conflictingAudit, null, default);
+        await Assert.ThrowsAsync<PostgresException>(() =>
+            plans.ApproveInspectionAsync(
+                context.TenantId, conflictingApprovalId, inspectionId,
+                manifest.Plan.PlanId, manifest.Plan.PlanDigestSha256,
+                context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+                new EntitySyncActor("reviewer"), now.AddMinutes(2),
+                now.AddMinutes(10), conflictingAudit, default));
+        Assert.Equal(
+            EntitySyncDurablePlanStatus.Draft,
+            (await plans.GetAsync(
+                context.TenantId, manifest.Plan.PlanId, default))!.Status);
+
+        var successfulApprovalId = Guid.NewGuid();
+        var successfulAudit = ApprovalAudit(
+            context.TenantId,
+            manifest.Plan.PlanId,
+            successfulApprovalId,
+            "reviewer",
+            now.AddMinutes(3));
+        var approval = await plans.ApproveInspectionAsync(
+            context.TenantId, successfulApprovalId, inspectionId,
+            manifest.Plan.PlanId, manifest.Plan.PlanDigestSha256,
+            context.Source.ConnectionId, 1, context.Target.ConnectionId, 1,
+            new EntitySyncActor("reviewer"), now.AddMinutes(3),
+            now.AddMinutes(10), successfulAudit, default);
+        Assert.Equal(successfulApprovalId, approval.ApprovalId);
+        Assert.Equal(
+            EntitySyncDurablePlanStatus.Approved,
+            (await plans.GetAsync(
+                context.TenantId, manifest.Plan.PlanId, default))!.Status);
+    }
+
+    [Fact]
     public async Task Expired_approval_cannot_be_consumed()
     {
         var context = await SeedControlContextAsync("expired-approval");
@@ -377,10 +452,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await plans.InsertAsync(context.TenantId, manifest, default);
         var now = context.Now.AddMinutes(1);
         var inspectionId = Guid.NewGuid();
-        await plans.OpenInspectionAsync(
-            context.TenantId, inspectionId, manifest.Plan.PlanId,
-            manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
+        await plans.GetOrOpenInspectionAsync(context.TenantId, inspectionId, manifest.Plan.PlanId,
+        manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
+        context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
         await plans.RecordInspectionRangeAsync(
             context.TenantId, inspectionId, Guid.NewGuid(), 0, 0, now, default);
         await plans.CompleteInspectionAsync(
@@ -391,8 +465,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await plans.ApproveInspectionAsync(
             context.TenantId, approvalId, inspectionId, manifest.Plan.PlanId,
             manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
-            context.Target.ConnectionId, 1, new EntitySyncActor("approver"),
-            now.AddMinutes(2), now.AddMinutes(3), default);
+            context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            now.AddMinutes(2), now.AddMinutes(3),
+            ApprovalAudit(context.TenantId, manifest.Plan.PlanId, approvalId, "reviewer", now.AddMinutes(2)),
+            default);
         var operation = EntitySyncOperation.QueueApply(
             context.TenantId, Guid.NewGuid(), manifest.Plan.PlanId, approvalId,
             "expired-apply", "route-a", context.Source.ConnectionId, 1,
@@ -419,22 +495,20 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var openManifest = Manifest(openContext, 1);
         await openPlans.InsertAsync(openContext.TenantId, openManifest, default);
         await BumpAsync(openContext, openContext.Source);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => openPlans.OpenInspectionAsync(
-            openContext.TenantId, Guid.NewGuid(), openManifest.Plan.PlanId,
-            openManifest.Plan.PlanDigestSha256, openContext.Source.ConnectionId, 1,
-            openContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            openContext.Now.AddMinutes(1), default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => openPlans.GetOrOpenInspectionAsync(openContext.TenantId, Guid.NewGuid(), openManifest.Plan.PlanId,
+        openManifest.Plan.PlanDigestSha256, openContext.Source.ConnectionId, 1,
+        openContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        openContext.Now.AddMinutes(1), default));
 
         var rangeContext = await SeedControlContextAsync("generation-range");
         var rangePlans = new PostgresDurableSyncPlanRepository(Database);
         var rangeManifest = Manifest(rangeContext, 1);
         await rangePlans.InsertAsync(rangeContext.TenantId, rangeManifest, default);
         var rangeInspectionId = Guid.NewGuid();
-        await rangePlans.OpenInspectionAsync(
-            rangeContext.TenantId, rangeInspectionId, rangeManifest.Plan.PlanId,
-            rangeManifest.Plan.PlanDigestSha256, rangeContext.Source.ConnectionId, 1,
-            rangeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            rangeContext.Now.AddMinutes(1), default);
+        await rangePlans.GetOrOpenInspectionAsync(rangeContext.TenantId, rangeInspectionId, rangeManifest.Plan.PlanId,
+        rangeManifest.Plan.PlanDigestSha256, rangeContext.Source.ConnectionId, 1,
+        rangeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        rangeContext.Now.AddMinutes(1), default);
         await BumpAsync(rangeContext, rangeContext.Target);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             rangePlans.RecordInspectionRangeAsync(
@@ -446,12 +520,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var completeManifest = Manifest(completeContext, 1);
         await completePlans.InsertAsync(completeContext.TenantId, completeManifest, default);
         var completeInspectionId = Guid.NewGuid();
-        await completePlans.OpenInspectionAsync(
-            completeContext.TenantId, completeInspectionId, completeManifest.Plan.PlanId,
-            completeManifest.Plan.PlanDigestSha256,
-            completeContext.Source.ConnectionId, 1,
-            completeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            completeContext.Now.AddMinutes(1), default);
+        await completePlans.GetOrOpenInspectionAsync(completeContext.TenantId, completeInspectionId, completeManifest.Plan.PlanId,
+        completeManifest.Plan.PlanDigestSha256,
+        completeContext.Source.ConnectionId, 1,
+        completeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        completeContext.Now.AddMinutes(1), default);
         await completePlans.RecordInspectionRangeAsync(
             completeContext.TenantId, completeInspectionId, Guid.NewGuid(), 0, 0,
             completeContext.Now.AddMinutes(1), default);
@@ -470,11 +543,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await approvePlans.InsertAsync(approveContext.TenantId, approveManifest, default);
         var approveInspectionId = Guid.NewGuid();
         var approveNow = approveContext.Now.AddMinutes(1);
-        await approvePlans.OpenInspectionAsync(
-            approveContext.TenantId, approveInspectionId, approveManifest.Plan.PlanId,
-            approveManifest.Plan.PlanDigestSha256, approveContext.Source.ConnectionId, 1,
-            approveContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            approveNow, default);
+        await approvePlans.GetOrOpenInspectionAsync(approveContext.TenantId, approveInspectionId, approveManifest.Plan.PlanId,
+        approveManifest.Plan.PlanDigestSha256, approveContext.Source.ConnectionId, 1,
+        approveContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        approveNow, default);
         await approvePlans.RecordInspectionRangeAsync(
             approveContext.TenantId, approveInspectionId, Guid.NewGuid(), 0, 0,
             approveNow, default);
@@ -483,13 +555,21 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             approveManifest.Plan.PlanDigestSha256, approveContext.Source.ConnectionId, 1,
             approveContext.Target.ConnectionId, 1, approveNow.AddMinutes(1), default);
         await BumpAsync(approveContext, approveContext.Source);
+        var approveApprovalId = Guid.NewGuid();
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             approvePlans.ApproveInspectionAsync(
-                approveContext.TenantId, Guid.NewGuid(), approveInspectionId,
+                approveContext.TenantId, approveApprovalId, approveInspectionId,
                 approveManifest.Plan.PlanId, approveManifest.Plan.PlanDigestSha256,
                 approveContext.Source.ConnectionId, 1, approveContext.Target.ConnectionId, 1,
-                new EntitySyncActor("approver"), approveNow.AddMinutes(2),
-                approveNow.AddMinutes(10), default));
+                new EntitySyncActor("reviewer"), approveNow.AddMinutes(2),
+                approveNow.AddMinutes(10),
+                ApprovalAudit(
+                    approveContext.TenantId,
+                    approveManifest.Plan.PlanId,
+                    approveApprovalId,
+                    "reviewer",
+                    approveNow.AddMinutes(2)),
+                default));
         Assert.Equal(EntitySyncDurablePlanStatus.Draft,
             (await approvePlans.GetAsync(
                 approveContext.TenantId, approveManifest.Plan.PlanId, default))!.Status);
@@ -500,11 +580,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await consumePlans.InsertAsync(consumeContext.TenantId, consumeManifest, default);
         var consumeInspectionId = Guid.NewGuid();
         var consumeNow = consumeContext.Now.AddMinutes(1);
-        await consumePlans.OpenInspectionAsync(
-            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
-            consumeManifest.Plan.PlanDigestSha256, consumeContext.Source.ConnectionId, 1,
-            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            consumeNow, default);
+        await consumePlans.GetOrOpenInspectionAsync(consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+        consumeManifest.Plan.PlanDigestSha256, consumeContext.Source.ConnectionId, 1,
+        consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        consumeNow, default);
         await consumePlans.RecordInspectionRangeAsync(
             consumeContext.TenantId, consumeInspectionId, Guid.NewGuid(), 0, 0,
             consumeNow, default);
@@ -517,8 +596,15 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
             consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
             consumeContext.Source.ConnectionId, 1, consumeContext.Target.ConnectionId, 1,
-            new EntitySyncActor("approver"), consumeNow.AddMinutes(2),
-            consumeNow.AddMinutes(10), default);
+            new EntitySyncActor("reviewer"), consumeNow.AddMinutes(2),
+            consumeNow.AddMinutes(10),
+            ApprovalAudit(
+                consumeContext.TenantId,
+                consumeManifest.Plan.PlanId,
+                consumeApprovalId,
+                "reviewer",
+                consumeNow.AddMinutes(2)),
+            default);
         await BumpAsync(consumeContext, consumeContext.Target);
         var apply = EntitySyncOperation.QueueApply(
             consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
@@ -554,12 +640,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await completionPlans.InsertAsync(
             completionContext.TenantId, completionManifest, default);
         var completionInspectionId = Guid.NewGuid();
-        await completionPlans.OpenInspectionAsync(
-            completionContext.TenantId, completionInspectionId,
-            completionManifest.Plan.PlanId, completionManifest.Plan.PlanDigestSha256,
-            completionContext.Source.ConnectionId, 1,
-            completionContext.Target.ConnectionId, 1,
-            new EntitySyncActor("reviewer"), completionContext.Now.AddMinutes(1), default);
+        await completionPlans.GetOrOpenInspectionAsync(completionContext.TenantId, completionInspectionId,
+        completionManifest.Plan.PlanId, completionManifest.Plan.PlanDigestSha256,
+        completionContext.Source.ConnectionId, 1,
+        completionContext.Target.ConnectionId, 1,
+        new EntitySyncActor("reviewer"), completionContext.Now.AddMinutes(1), default);
         await completionPlans.RecordInspectionRangeAsync(
             completionContext.TenantId, completionInspectionId, Guid.NewGuid(), 0, 0,
             completionContext.Now.AddMinutes(1), default);
@@ -595,12 +680,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var consumeManifest = Manifest(consumeContext, 1);
         await consumePlans.InsertAsync(consumeContext.TenantId, consumeManifest, default);
         var consumeInspectionId = Guid.NewGuid();
-        await consumePlans.OpenInspectionAsync(
-            consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
-            consumeManifest.Plan.PlanDigestSha256,
-            consumeContext.Source.ConnectionId, 1,
-            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
-            consumeContext.Now.AddMinutes(1), default);
+        await consumePlans.GetOrOpenInspectionAsync(consumeContext.TenantId, consumeInspectionId, consumeManifest.Plan.PlanId,
+        consumeManifest.Plan.PlanDigestSha256,
+        consumeContext.Source.ConnectionId, 1,
+        consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+        consumeContext.Now.AddMinutes(1), default);
         await consumePlans.RecordInspectionRangeAsync(
             consumeContext.TenantId, consumeInspectionId, Guid.NewGuid(), 0, 0,
             consumeContext.Now.AddMinutes(1), default);
@@ -615,8 +699,15 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             consumeContext.TenantId, consumeApprovalId, consumeInspectionId,
             consumeManifest.Plan.PlanId, consumeManifest.Plan.PlanDigestSha256,
             consumeContext.Source.ConnectionId, 1,
-            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("approver"),
-            consumeContext.Now.AddMinutes(3), consumeContext.Now.AddMinutes(20), default);
+            consumeContext.Target.ConnectionId, 1, new EntitySyncActor("reviewer"),
+            consumeContext.Now.AddMinutes(3), consumeContext.Now.AddMinutes(20),
+            ApprovalAudit(
+                consumeContext.TenantId,
+                consumeManifest.Plan.PlanId,
+                consumeApprovalId,
+                "reviewer",
+                consumeContext.Now.AddMinutes(3)),
+            default);
         var apply = EntitySyncOperation.QueueApply(
             consumeContext.TenantId, Guid.NewGuid(), consumeManifest.Plan.PlanId,
             consumeApprovalId, "rotation-consume", "route-a",
@@ -1277,8 +1368,13 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 new EntitySyncJsonValue($"{{\"name\":\"desired-{index}\"}}"),
                 new EntitySyncSha256(new string('a', 64)),
                 new EntitySyncSha256(new string('b', 64)),
-                [new EntitySyncFieldDiff("name", new EntitySyncJsonValue("\"before\""),
-                    new EntitySyncJsonValue("\"desired\""))])).ToArray();
+                [new EntityFieldChange(
+                    "name",
+                    new EntitySyncJsonValue("\"before\""),
+                    new EntitySyncJsonValue("\"desired\""),
+                    new EntitySyncSha256(new string('a', 64)),
+                    new EntitySyncSha256(new string('b', 64)),
+                    false)])).ToArray();
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
     }
 
@@ -1287,6 +1383,31 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         await Task.Delay(TimeSpan.FromMilliseconds(150));
         Assert.False(task.IsCompleted, "The mutation did not wait for the conflicting row lock.");
     }
+    private static EntitySyncAuditEvent ApprovalAudit(
+        string tenantId,
+        Guid planId,
+        Guid approvalId,
+        string actorId,
+        DateTimeOffset occurredAt)
+    {
+        var values = new EntitySyncJsonValue("{}");
+        return new EntitySyncAuditEvent(
+            tenantId,
+            Guid.NewGuid(),
+            occurredAt,
+            "SyncPlanApproved",
+            new EntitySyncActor(actorId),
+            null,
+            null,
+            planId,
+            null,
+            approvalId.ToString("N"),
+            values,
+            EntitySyncCanonicalDigest.Compute(new { }),
+            null,
+            null);
+    }
+
 
     private static EntitySyncOperationItem CompleteItem(
         EntitySyncOperationItem item,

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Reflection;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
@@ -94,7 +95,7 @@ public sealed class ControlModelTests
     public void Plan_item_copies_ordered_match_reasons_and_field_diffs()
     {
         var reasons = new List<string> { "external id", "name" };
-        var diffs = new List<EntitySyncFieldDiff>
+        var diffs = new List<EntityFieldChange>
         {
             Diff("name", "\"Old\"", "\"Acme\""),
             Diff("phone", "\"1\"", "\"2\"")
@@ -105,7 +106,7 @@ public sealed class ControlModelTests
         diffs.Clear();
 
         Assert.Equal(["external id", "name"], item.MatchEvidence.Reasons);
-        Assert.Equal(["name", "phone"], item.FieldDiffs.Select(diff => diff.FieldName));
+        Assert.Equal(["name", "phone"], item.FieldDiffs.Select(diff => diff.Field));
     }
 
     [Fact]
@@ -306,7 +307,9 @@ public sealed class ControlModelTests
     {
         var methods = typeof(IDurableSyncPlanRepository).GetMethods().ToDictionary(method => method.Name);
 
-        AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.OpenInspectionAsync)]);
+        AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.GetOrOpenInspectionAsync)]);
+        AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.FindInspectionAsync)]);
+        AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.ListInspectionRangesAsync)]);
         AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.RecordInspectionRangeAsync)]);
         AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.CompleteInspectionAsync)]);
         AssertTenantFirstAsync(methods[nameof(IDurableSyncPlanRepository.HasCompleteInspectionAsync)]);
@@ -319,6 +322,7 @@ public sealed class ControlModelTests
         Assert.Contains(recordParameters, parameter => parameter.Name == "rangeEnd");
 
         var approveParameters = methods[nameof(IDurableSyncPlanRepository.ApproveInspectionAsync)].GetParameters();
+        Assert.Contains(approveParameters, parameter => parameter.Name == "auditEvent");
         Assert.Contains(approveParameters, parameter => parameter.Name == "inspectionId");
         Assert.Contains(approveParameters, parameter => parameter.Name == "planDigestSha256");
 
@@ -415,7 +419,7 @@ public sealed class ControlModelTests
     private static EntitySyncDurablePlanItem PlanItem(
         int ordinal,
         EntitySyncMatchEvidence? evidence = null,
-        IEnumerable<EntitySyncFieldDiff>? fieldDiffs = null,
+        IEnumerable<EntityFieldChange>? fieldDiffs = null,
         string tenantId = "tenant",
         Guid? itemId = null) =>
         new(
@@ -427,8 +431,14 @@ public sealed class ControlModelTests
             null, new EntitySyncSha256(HashB),
             fieldDiffs ?? [Diff("name", "\"Old\"", "\"Acme\"")]);
 
-    private static EntitySyncFieldDiff Diff(string fieldName, string before, string desired) =>
-        new(fieldName, new EntitySyncJsonValue(before), new EntitySyncJsonValue(desired));
+    private static EntityFieldChange Diff(string fieldName, string before, string desired) =>
+        new(
+            fieldName,
+            new EntitySyncJsonValue(before),
+            new EntitySyncJsonValue(desired),
+            EntitySyncCanonicalDigest.Compute(JsonDocument.Parse(before).RootElement),
+            EntitySyncCanonicalDigest.Compute(JsonDocument.Parse(desired).RootElement),
+            false);
 
     private static EntitySyncInspectionSession Inspection() =>
         new(

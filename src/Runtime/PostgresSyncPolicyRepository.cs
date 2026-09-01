@@ -22,9 +22,17 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
                 @tenant_id, @policy_id, @version, @name, @route_scope, @definition,
                 @definition_sha256, @enabled, @created_at, @created_by)
             """;
-        await using var command = dataSource.CreateCommand(sql);
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await LockPolicyIdentityAsync(
+            connection, transaction, tenantId, policy.PolicyId, cancellationToken)
+            .ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
         AddPolicy(command, policy);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> TryInsertValidatedAsync(
@@ -43,6 +51,9 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await LockPolicyIdentityAsync(
+            connection, transaction, tenantId, policy.PolicyId, cancellationToken)
             .ConfigureAwait(false);
         const string lockSql = """
             SELECT connection_id, generation, enabled
@@ -210,6 +221,25 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         PostgresControlPersistence.Add(command, "enabled", NpgsqlDbType.Boolean, policy.Enabled);
         PostgresControlPersistence.Add(command, "created_at", NpgsqlDbType.TimestampTz, policy.CreatedAt);
         PostgresControlPersistence.Add(command, "created_by", NpgsqlDbType.Text, policy.CreatedBy.ActorId);
+    }
+
+    private static async Task LockPolicyIdentityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid policyId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT pg_advisory_xact_lock(hashtextextended(@policy_identity, 1))
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command,
+            "policy_identity",
+            NpgsqlDbType.Text,
+            $"{tenantId}:{policyId:N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static EntitySyncPolicy Read(NpgsqlDataReader reader) =>

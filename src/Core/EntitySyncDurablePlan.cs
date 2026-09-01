@@ -47,19 +47,6 @@ public sealed record EntitySyncMatchEvidence
     public IReadOnlyList<string> Reasons { get; }
 }
 
-public sealed record EntitySyncFieldDiff
-{
-    public EntitySyncFieldDiff(string fieldName, EntitySyncJsonValue before, EntitySyncJsonValue desired)
-    {
-        FieldName = ControlModelGuard.Required(fieldName, nameof(fieldName));
-        Before = before ?? throw new ArgumentNullException(nameof(before));
-        Desired = desired ?? throw new ArgumentNullException(nameof(desired));
-    }
-
-    public string FieldName { get; }
-    public EntitySyncJsonValue Before { get; }
-    public EntitySyncJsonValue Desired { get; }
-}
 
 public sealed record EntitySyncDurablePlanItem
 {
@@ -83,7 +70,7 @@ public sealed record EntitySyncDurablePlanItem
         EntitySyncJsonValue redactedDesired,
         EntitySyncSha256? beforePayloadSha256,
         EntitySyncSha256 desiredPayloadSha256,
-        IEnumerable<EntitySyncFieldDiff> fieldDiffs)
+        IEnumerable<EntityFieldChange> fieldDiffs)
     {
         TenantId = ControlModelGuard.Required(tenantId, nameof(tenantId));
         PlanId = ControlModelGuard.NonEmpty(planId, nameof(planId));
@@ -107,7 +94,7 @@ public sealed record EntitySyncDurablePlanItem
         DesiredPayloadSha256 = desiredPayloadSha256 ?? throw new ArgumentNullException(nameof(desiredPayloadSha256));
         FieldDiffs = ControlModelGuard.ReadOnlyCopy(fieldDiffs, nameof(fieldDiffs));
         if (FieldDiffs.Any(diff => diff is null)) throw new ArgumentException("Field diffs cannot contain null entries.", nameof(fieldDiffs));
-        if (FieldDiffs.Select(diff => diff.FieldName).Distinct(StringComparer.OrdinalIgnoreCase).Count() != FieldDiffs.Count)
+        if (FieldDiffs.Select(diff => diff.Field).Distinct(StringComparer.OrdinalIgnoreCase).Count() != FieldDiffs.Count)
             throw new ArgumentException("Field diffs must have unique field names.", nameof(fieldDiffs));
     }
 
@@ -130,7 +117,7 @@ public sealed record EntitySyncDurablePlanItem
     public EntitySyncJsonValue RedactedDesired { get; }
     public EntitySyncSha256? BeforePayloadSha256 { get; }
     public EntitySyncSha256 DesiredPayloadSha256 { get; }
-    public IReadOnlyList<EntitySyncFieldDiff> FieldDiffs { get; }
+    public IReadOnlyList<EntityFieldChange> FieldDiffs { get; }
 }
 
 public sealed record EntitySyncDurablePlan
@@ -315,9 +302,12 @@ public sealed record EntitySyncDurablePlanManifest
                 DesiredPayloadSha256 = item.DesiredPayloadSha256.Value,
                 FieldDiffs = item.FieldDiffs.Select(diff => new
                 {
-                    diff.FieldName,
+                    diff.Field,
                     Before = diff.Before.Json,
-                    Desired = diff.Desired.Json
+                    Desired = diff.Desired.Json,
+                    BeforeSha256 = diff.BeforeSha256.Value,
+                    DesiredSha256 = diff.DesiredSha256.Value,
+                    diff.Sensitive
                 }).ToArray()
             }).ToArray()
         };

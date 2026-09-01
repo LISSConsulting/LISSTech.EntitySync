@@ -21,9 +21,9 @@ public interface IDurableSyncPlanRepository
         int pageSize,
         CancellationToken cancellationToken);
 
-    Task<EntitySyncInspectionSession> OpenInspectionAsync(
+    Task<EntitySyncInspectionSession> GetOrOpenInspectionAsync(
         string tenantId,
-        Guid inspectionId,
+        Guid proposedInspectionId,
         Guid planId,
         EntitySyncSha256 planDigestSha256,
         string sourceConnectionId,
@@ -32,6 +32,18 @@ public interface IDurableSyncPlanRepository
         long targetConnectionGeneration,
         EntitySyncActor actor,
         DateTimeOffset now,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncInspectionSession?> FindInspectionAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 planDigestSha256,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EntitySyncInspectionRange>> ListInspectionRangesAsync(
+        string tenantId,
+        Guid inspectionId,
         CancellationToken cancellationToken);
 
     Task<EntitySyncInspectionRange> RecordInspectionRangeAsync(
@@ -79,6 +91,7 @@ public interface IDurableSyncPlanRepository
         EntitySyncActor actor,
         DateTimeOffset approvedAt,
         DateTimeOffset? expiresAt,
+        EntitySyncAuditEvent auditEvent,
         CancellationToken cancellationToken);
 
     Task<bool> TryConsumeApprovalAsync(

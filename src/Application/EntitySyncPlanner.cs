@@ -14,8 +14,11 @@ public sealed class EntitySyncPlanner(
 {
     private const int MaxEntitiesPerPlanSide = 5000;
 
-    public async Task<EntitySyncPlan> CreateAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken)
+    public async Task<EntitySyncPlan> CreateAsync(
+        CreateEntitySyncPlanRequest request,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         Validate(request);
         var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
         var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
@@ -30,8 +33,34 @@ public sealed class EntitySyncPlanner(
             targetVendor,
             request.TargetConnectionId,
             cancellationToken).ConfigureAwait(false);
+        var plan = await CreateSnapshotAsync(
+            request,
+            sourceLease,
+            targetLease,
+            cancellationToken).ConfigureAwait(false);
+        plans.Add(plan);
+        return plan;
+    }
+
+    public async Task<EntitySyncPlan> CreateSnapshotAsync(
+        CreateEntitySyncPlanRequest request,
+        IConnectionRuntimeLease sourceLease,
+        IConnectionRuntimeLease targetLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(sourceLease);
+        ArgumentNullException.ThrowIfNull(targetLease);
+        Validate(request);
+        var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
+        var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
+        ValidateWorkflow(sourceVendor, targetVendor);
         var sourceConnection = sourceLease.Definition;
         var targetConnection = targetLease.Definition;
+        ValidatePinnedLease(
+            request, sourceVendor, request.SourceConnectionId, sourceConnection, nameof(sourceLease));
+        ValidatePinnedLease(
+            request, targetVendor, request.TargetConnectionId, targetConnection, nameof(targetLease));
         var sourceType = request.SourceEntityType ?? DefaultEntityType(sourceVendor);
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
@@ -173,7 +202,6 @@ public sealed class EntitySyncPlanner(
             if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
             plan.Items.Add(item);
         }
-        plans.Add(plan);
         return plan;
     }
 
@@ -268,6 +296,27 @@ public sealed class EntitySyncPlanner(
             item.MatchType = "Unchanged";
             item.Reasons.Add("Mapped update payload matches the last successful synchronization.");
         }
+    }
+
+    private static void ValidatePinnedLease(
+        CreateEntitySyncPlanRequest request,
+        string expectedVendor,
+        string? requestedConnectionId,
+        EntitySyncConnectionDefinition definition,
+        string parameterName)
+    {
+        if (!definition.Enabled
+            || !definition.TenantId.Equals(request.TenantId.Trim(), StringComparison.Ordinal)
+            || !definition.Vendor.Equals(expectedVendor, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                "The pinned connection lease does not match the requested tenant and vendor.",
+                parameterName);
+
+        if (requestedConnectionId is not null
+            && !definition.ConnectionId.Equals(requestedConnectionId.Trim(), StringComparison.Ordinal))
+            throw new ArgumentException(
+                "The pinned connection lease does not match the requested connection ID.",
+                parameterName);
     }
 
     private static void Validate(CreateEntitySyncPlanRequest request)
