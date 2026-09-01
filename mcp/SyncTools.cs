@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Core;
 using ModelContextProtocol.Server;
 
 namespace LISSTech.EntitySync.Mcp;
@@ -134,34 +135,37 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Dry-run a plan synchronously or start its approved apply in the background. apply=true returns the current snapshot immediately; poll get_sync_plan_apply until Applied or Failed. A plan starts at most once, so repeated starts return the existing operation and never retry writes.")]
+    [Description("Queue a durable read-only dry-run or an approved apply. Returns the durable operation ID; poll get_sync_plan_apply by operation ID.")]
     public static async Task<string> ApplySyncPlan(
-        EntitySyncService service,
         EntitySyncApplyCoordinator coordinator,
         McpRequestContext context,
         [Description("Plan ID returned from create_sync_plan")] string planId,
-        [Description("False performs a synchronous read-only dry run. True starts background writes and returns immediately.")] bool apply = false,
+        [Description("Stable caller-generated idempotency key for this exact request")] string idempotencyKey,
+        [Description("False queues a read-only dry-run. True queues the approved vendor writes.")] bool apply = false,
+        [Description("Exact approval ID; required once when apply=true")] string? approvalId = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            if (apply)
+            var operation = await coordinator.QueueAsync(
+                context.TenantId,
+                Guid.Parse(planId),
+                string.IsNullOrWhiteSpace(approvalId) ? null : Guid.Parse(approvalId),
+                idempotencyKey,
+                new EntitySyncActor(context.Actor),
+                apply,
+                cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
             {
-                var snapshot = coordinator.Start(context.TenantId, planId);
-                return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
-            }
-
-            var result = await service.ApplyAsync(context.TenantId, planId, false, cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.Serialize(new { success = result.Success, result }, JsonOptions);
+                success = true,
+                operationId = operation.OperationId,
+                status = operation.Status.ToString()
+            }, JsonOptions);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (EntityExclusionUnavailableException)
-        {
-            return Error("Permanent exclusions could not be obtained; create actions are blocked.");
-        }
         catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
         {
             return Error(ex.Message);
@@ -172,25 +176,30 @@ public static class SyncTools
         }
         catch
         {
-            return Error("Plan apply failed unexpectedly. Check the server logs for the correlated operation.");
+            return Error("Plan apply queueing failed unexpectedly. Check the server logs for the correlated operation.");
         }
     }
 
     [McpServerTool]
-    [Description("Read-only: get aggregate progress and terminal status for a sync-plan apply started by apply_sync_plan with apply=true.")]
-    public static string GetSyncPlanApply(
+    [Description("Read-only: get aggregate progress and terminal status for a durable operation returned by apply_sync_plan.")]
+    public static async Task<string> GetSyncPlanApply(
         EntitySyncApplyCoordinator coordinator,
         McpRequestContext context,
-        [Description("Plan ID returned from create_sync_plan and started with apply_sync_plan")] string planId)
+        [Description("Durable operation ID returned from apply_sync_plan")] string operationId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var snapshot = coordinator.Get(context.TenantId, planId);
-            return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
+            var operation = await coordinator.GetOperationAsync(
+                context.TenantId, Guid.Parse(operationId), cancellationToken)
+                .ConfigureAwait(false);
+            if (operation is null)
+                return Error("Durable sync operation was not found.");
+            return JsonSerializer.Serialize(new { success = true, operation }, JsonOptions);
         }
-        catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
+        catch (OperationCanceledException)
         {
-            return Error(ex.Message);
+            throw;
         }
         catch (ArgumentException ex)
         {
@@ -198,9 +207,34 @@ public static class SyncTools
         }
         catch
         {
-            return Error("Plan apply status lookup failed.");
+            return Error("Durable sync operation status lookup failed.");
         }
     }
+
+    public static async Task<string> ApplySyncPlan(
+        EntitySyncService service,
+        EntitySyncApplyCoordinator coordinator,
+        McpRequestContext context,
+        string planId,
+        bool apply = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (apply)
+            return JsonSerializer.Serialize(
+                new { success = true, snapshot = coordinator.Start(context.TenantId, planId) },
+                JsonOptions);
+        var result = await service.ApplyAsync(
+            context.TenantId, planId, false, cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { success = result.Success, result }, JsonOptions);
+    }
+
+    public static string GetSyncPlanApply(
+        EntitySyncApplyCoordinator coordinator,
+        McpRequestContext context,
+        string planId) =>
+        JsonSerializer.Serialize(
+            new { success = true, snapshot = coordinator.Get(context.TenantId, planId) },
+            JsonOptions);
 
     private static bool IsSafeApplyStateError(string message)
     {

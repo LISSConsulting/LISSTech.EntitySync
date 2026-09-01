@@ -74,6 +74,10 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<EntitySyncPlanner>();
         services.AddSingleton<EntitySyncService>();
+        services.AddSingleton<SyncAuditService>();
+        services.AddSingleton<SyncOperationService>();
+        services.AddSingleton<VendorOutcomeReconciler>();
+        services.AddSingleton<EntitySyncOperationWorker>();
         services.AddSingleton<EntityExclusionService>();
         services.AddScoped<ConnectionDefinitionService>();
         services.AddScoped<SyncPolicyService>();

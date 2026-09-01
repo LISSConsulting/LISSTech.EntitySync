@@ -25,6 +25,9 @@ public sealed class DurableOperationTests : IAsyncLifetime
         Assert.Equal(EntitySyncOperationStatus.Partial,
             SyncOperationService.DeriveTerminalStatus(
                 [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Unknown]));
+        Assert.Equal(EntitySyncOperationStatus.Failed,
+            SyncOperationService.DeriveTerminalStatus(
+                [EntitySyncItemOutcome.Skipped, EntitySyncItemOutcome.Unknown]));
         Assert.Equal(EntitySyncOperationStatus.Succeeded,
             SyncOperationService.DeriveTerminalStatus(
                 [EntitySyncItemOutcome.Succeeded, EntitySyncItemOutcome.Skipped]));
@@ -702,10 +705,11 @@ public sealed class DurableOperationTests : IAsyncLifetime
     private sealed class TestProtector : IEntitySyncDataProtector
     {
         public string Protect(EntitySyncDataProtectionPurpose purpose, string plaintext) =>
-            "cipher:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(plaintext));
+            $"cipher:{Guid.NewGuid():N}:{Convert.ToBase64String(Encoding.UTF8.GetBytes(plaintext))}";
 
         public string Unprotect(EntitySyncDataProtectionPurpose purpose, string ciphertext) =>
-            Encoding.UTF8.GetString(Convert.FromBase64String(ciphertext[7..]));
+            Encoding.UTF8.GetString(Convert.FromBase64String(
+                ciphertext[(ciphertext.LastIndexOf(':') + 1)..]));
     }
 
     private sealed class TestChangeStates : IEntitySyncChangeStateRepository

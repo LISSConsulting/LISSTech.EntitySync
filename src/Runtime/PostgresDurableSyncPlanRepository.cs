@@ -760,7 +760,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.source_connection_generation = @source_connection_generation
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
-              AND plan.status = 'Draft' AND plan.expires_at > @approved_at
+              AND plan.status = 'Draft' AND plan.expires_at > clock_timestamp()
               AND EXISTS (
                     SELECT 1
                     FROM entitysync.sync_policies policy
@@ -912,7 +912,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND plan.source_connection_generation = @source_connection_generation
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
-              AND plan.status = 'Approved' AND plan.expires_at > @now
+              AND plan.status = 'Approved' AND plan.expires_at > clock_timestamp()
               AND EXISTS (
                     SELECT 1 FROM entitysync.connection_definitions source_connection
                     WHERE source_connection.tenant_id = @tenant_id
@@ -928,7 +928,8 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
               AND approval.plan_digest_sha256 = plan.plan_digest_sha256
               AND approval.source_connection_generation = plan.source_connection_generation
               AND approval.target_connection_generation = plan.target_connection_generation
-              AND (approval.expires_at IS NULL OR approval.expires_at > @now)
+              AND (approval.expires_at IS NULL
+                   OR approval.expires_at > clock_timestamp())
               AND approval.tenant_id = @tenant_id
               AND (SELECT count(*) FROM entitysync.sync_plan_items item
                    WHERE item.tenant_id = @tenant_id AND item.plan_id = @plan_id)

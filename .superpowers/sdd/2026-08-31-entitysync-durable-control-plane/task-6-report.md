@@ -41,3 +41,18 @@ The focused scenarios cover duplicate and concurrent apply, dry-run non-mutation
 ## Concerns
 
 None within Task 6 scope. Scheduler cron hosting, HTTP controllers, and the OrchestraMSP adapter remain intentionally out of scope.
+
+## Fix Round 1
+
+- Preserved the first randomized encrypted after snapshot and made repeated reconciliation validate the persisted after hash without re-protecting immutable evidence.
+- Cut the MCP-attributed apply and status tools over to durable operation queueing/polling by operation ID, exact approval ID, and stable idempotency key.
+- Registered the durable queue, worker, reconciler, and audit services in production hosting.
+- Prioritized pending items ahead of unknown reconciliation work so one permanent unknown cannot starve later writes.
+- Added PostgreSQL-time reconciliation lease renewals and ownership rechecks around checkpoint and audit side effects.
+- Persisted returned create target IDs before readback/reconciliation.
+- Removed before-state equality as proof of non-application and kept request-ID-applied outcomes unknown until authoritative readback is available.
+- Corrected terminal derivation so skipped items do not turn failed/unknown-only runs into partial success.
+- Moved lease, approval, and operation graph expiry eligibility to PostgreSQL `clock_timestamp()` with DB-relative lease durations.
+- Changed the focused protector to randomized ciphertext and added skipped-plus-unknown terminal coverage.
+
+Focused verification after these changes: `DurableOperationTests` passed 9/9 against PostgreSQL.

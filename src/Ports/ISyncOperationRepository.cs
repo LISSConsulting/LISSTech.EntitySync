@@ -130,7 +130,16 @@ public interface ISyncOperationRepository
         Guid operationId,
         Guid itemId,
         string leaseOwner,
-        DateTimeOffset leaseExpiresAt,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken);
+
+    Task<bool> TryRenewUnknownItemLeaseAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string leaseOwner,
+        TimeSpan leaseDuration,
         CancellationToken cancellationToken);
 
     Task<bool> TryRecordReconciliationEvidenceAsync(

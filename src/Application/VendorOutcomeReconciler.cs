@@ -24,9 +24,8 @@ public sealed class VendorOutcomeReconciler(
         string leaseOwner,
         CancellationToken cancellationToken)
     {
-        var now = clock.GetUtcNow();
         var claim = await operations.TryLeaseUnknownItemAsync(
-            tenantId, operationId, itemId, leaseOwner, now + ReconciliationLease,
+            tenantId, operationId, itemId, leaseOwner, ReconciliationLease,
             cancellationToken).ConfigureAwait(false);
         if (claim is null) return null;
         var operation = await operations.GetAsync(
@@ -113,9 +112,15 @@ public sealed class VendorOutcomeReconciler(
                     : await ReadExactAsync(
                         adapter, claim.Item.TargetEntityType, requestTargetId,
                         cancellationToken).ConfigureAwait(false);
+                if (observed is null)
+                    return await ReleaseUnknownAsync(
+                        tenantId, claim, "REQUEST_ID_APPLIED_READBACK_PENDING",
+                        cancellationToken).ConfigureAwait(false);
+                var actual = PlanManifestBuilder.BuildBeforePayload(
+                    observed, desired.Keys, policy.Definition.BlockedFields);
                 return await CompleteAsync(
                     tenantId, operation, policy, claim, EntitySyncItemOutcome.Succeeded,
-                    observed, desired, "REQUEST_ID_PROVED_APPLIED", cancellationToken)
+                    observed, actual, "REQUEST_ID_PROVED_APPLIED", cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -136,13 +141,6 @@ public sealed class VendorOutcomeReconciler(
                             tenantId, operation, policy, claim,
                             EntitySyncItemOutcome.Succeeded, observed, desired,
                             "TARGET_ID_PROVED_APPLIED", cancellationToken)
-                            .ConfigureAwait(false);
-                    if (claim.Item.BeforePayloadSha256 is not null
-                        && actualHash == claim.Item.BeforePayloadSha256)
-                        return await CompleteAsync(
-                            tenantId, operation, policy, claim,
-                            EntitySyncItemOutcome.Failed, observed, actual,
-                            "TARGET_ID_PROVED_NOT_APPLIED", cancellationToken)
                             .ConfigureAwait(false);
                 }
             }
@@ -171,6 +169,15 @@ public sealed class VendorOutcomeReconciler(
                 .ConfigureAwait(false);
         }
     }
+
+    private Task<bool> RenewLeaseAsync(
+        string tenantId,
+        UnknownItemLease claim,
+        CancellationToken cancellationToken) =>
+        operations.TryRenewUnknownItemLeaseAsync(
+            tenantId, claim.Item.OperationId, claim.Item.ItemId,
+            claim.ReconciliationAttempt, claim.LeaseOwner, ReconciliationLease,
+            cancellationToken);
 
     private async Task<EntitySyncOperationItem?> CompleteAsync(
         string tenantId,
@@ -215,6 +222,9 @@ public sealed class VendorOutcomeReconciler(
                     claim.Item.SourceConnectionId, claim.Item.SourceEntityType,
                     claim.Item.TargetVendor, claim.Item.TargetConnectionId,
                     claim.Item.TargetEntityType);
+                if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
+                        .ConfigureAwait(false))
+                    return null;
                 await changeStates.UpsertAsync(
                     new EntitySyncChangeState(
                         route, claim.Item.SourceEntityId, claim.Item.SourceEntityId,
@@ -226,7 +236,13 @@ public sealed class VendorOutcomeReconciler(
                         claim.Item.DesiredPayloadSha256.Value,
                         completedAt),
                     cancellationToken).ConfigureAwait(false);
+                if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
+                        .ConfigureAwait(false))
+                    return null;
             }
+            if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
+                    .ConfigureAwait(false))
+                return null;
             var audited = await audits.AppendAsync(
                 tenantId,
                 "SyncOperationItemSucceeded",
@@ -245,6 +261,9 @@ public sealed class VendorOutcomeReconciler(
                 },
                 observed,
                 cancellationToken).ConfigureAwait(false);
+            if (!await RenewLeaseAsync(tenantId, claim, cancellationToken)
+                    .ConfigureAwait(false))
+                return null;
             if (!audited)
                 return await ReleaseUnknownAsync(
                     tenantId, claim, "AUDIT_CHECKPOINT_FAILED", cancellationToken)
@@ -253,7 +272,7 @@ public sealed class VendorOutcomeReconciler(
         var persisted = await operations.TryCompleteReconciliationAsync(
             tenantId, operation.OperationId, claim.Item.ItemId,
             claim.ReconciliationAttempt, claim.LeaseOwner, replacement,
-            afterSnapshot, cancellationToken).ConfigureAwait(false);
+            null, cancellationToken).ConfigureAwait(false);
         return persisted ? replacement : null;
     }
 

@@ -176,7 +176,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 WHERE operation.tenant_id = @tenant_id
                   AND (operation.status = 'Queued'
                        OR (operation.status IN ('Leased','Running')
-                           AND operation.lease_expires_at <= @now))
+                           AND operation.lease_expires_at <= clock_timestamp()))
                 ORDER BY operation.queued_at, operation.operation_id
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
@@ -184,7 +184,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 UPDATE entitysync.sync_operations operation
                 SET status = 'Leased',
                     lease_owner = @lease_owner,
-                    lease_expires_at = @lease_expires_at,
+                    lease_expires_at = clock_timestamp() + (@lease_expires_at - @now),
                     attempt = operation.attempt + 1,
                     started_at = NULL,
                     completed_at = NULL
@@ -703,13 +703,14 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         Guid operationId,
         Guid itemId,
         string leaseOwner,
-        DateTimeOffset leaseExpiresAt,
+        TimeSpan leaseDuration,
         CancellationToken cancellationToken)
     {
         const string sql = """
             UPDATE entitysync.sync_operation_items item
             SET reconcile_lease_owner = @lease_owner,
-                reconcile_lease_expires_at = @lease_expires_at,
+                reconcile_lease_expires_at =
+                    clock_timestamp() + @lease_duration,
                 reconcile_attempt = item.reconcile_attempt + 1
             WHERE item.tenant_id = @tenant_id
               AND item.operation_id = @operation_id
@@ -729,20 +730,53 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                       item.error_code, item.error_message, item.started_at,
                       item.completed_at, item.dispatch_started_at,
                       item.vendor_target_entity_id, item.safe_write_code,
-                      item.reconcile_attempt
+                      item.reconcile_attempt, item.reconcile_lease_expires_at
             """;
         await using var command = dataSource.CreateCommand(sql);
         AddOperationKey(command, tenantId, operationId);
         PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
         PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
         PostgresControlPersistence.Add(
-            command, "lease_expires_at", NpgsqlDbType.TimestampTz, leaseExpiresAt);
+            command, "lease_duration", NpgsqlDbType.Interval, leaseDuration);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             return null;
         return new UnknownItemLease(
-            ReadItem(reader), reader.GetInt32(29), leaseOwner, leaseExpiresAt);
+            ReadItem(reader), reader.GetInt32(29), leaseOwner,
+            reader.GetFieldValue<DateTimeOffset>(30));
+    }
+
+    public async Task<bool> TryRenewUnknownItemLeaseAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        if (leaseDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(leaseDuration));
+        const string sql = """
+            UPDATE entitysync.sync_operation_items
+            SET reconcile_lease_expires_at = clock_timestamp() + @lease_duration
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND item_id = @item_id AND outcome = 'Unknown'
+              AND reconcile_attempt = @expected_attempt
+              AND reconcile_lease_owner = @lease_owner
+              AND reconcile_lease_expires_at > clock_timestamp()
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer,
+            expectedReconciliationAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        PostgresControlPersistence.Add(
+            command, "lease_duration", NpgsqlDbType.Interval, leaseDuration);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
     }
 
     public async Task<bool> TryRecordReconciliationEvidenceAsync(
@@ -767,33 +801,65 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             .ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
-        await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
-            .ConfigureAwait(false);
-        const string sql = """
-            UPDATE entitysync.sync_operation_items
-            SET after_payload_sha256 = @after_payload_sha256,
-                vendor_target_entity_id = COALESCE(
-                    @vendor_target_entity_id, vendor_target_entity_id)
+        const string selectSql = """
+            SELECT after_payload_sha256
+            FROM entitysync.sync_operation_items
             WHERE tenant_id = @tenant_id AND operation_id = @operation_id
               AND item_id = @item_id AND outcome = 'Unknown'
               AND reconcile_attempt = @expected_attempt
               AND reconcile_lease_owner = @lease_owner
               AND reconcile_lease_expires_at > clock_timestamp()
-              AND (after_payload_sha256 IS NULL
-                   OR after_payload_sha256 = @after_payload_sha256)
+            FOR UPDATE
             """;
-        await using var command = new NpgsqlCommand(sql, connection, transaction);
-        AddOperationKey(command, tenantId, operationId);
-        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        string? storedHash;
+        await using (var select = new NpgsqlCommand(selectSql, connection, transaction))
+        {
+            AddOperationKey(select, tenantId, operationId);
+            PostgresControlPersistence.Add(select, "item_id", NpgsqlDbType.Uuid, itemId);
+            PostgresControlPersistence.Add(
+                select, "expected_attempt", NpgsqlDbType.Integer,
+                expectedReconciliationAttempt);
+            PostgresControlPersistence.Add(select, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+            var value = await select.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (value is null)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+            storedHash = value is DBNull ? null : (string)value;
+        }
+        if (storedHash is not null
+            && !storedHash.Equals(afterPayloadSha256.Value, StringComparison.Ordinal))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        if (storedHash is null)
+            await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
+                .ConfigureAwait(false);
+        const string updateSql = """
+            UPDATE entitysync.sync_operation_items
+            SET after_payload_sha256 = @after_payload_sha256,
+                vendor_target_entity_id = COALESCE(
+                    vendor_target_entity_id, @vendor_target_entity_id)
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND item_id = @item_id AND outcome = 'Unknown'
+              AND reconcile_attempt = @expected_attempt
+              AND reconcile_lease_owner = @lease_owner
+              AND reconcile_lease_expires_at > clock_timestamp()
+            """;
+        await using var update = new NpgsqlCommand(updateSql, connection, transaction);
+        AddOperationKey(update, tenantId, operationId);
+        PostgresControlPersistence.Add(update, "item_id", NpgsqlDbType.Uuid, itemId);
         PostgresControlPersistence.Add(
-            command, "expected_attempt", NpgsqlDbType.Integer,
+            update, "expected_attempt", NpgsqlDbType.Integer,
             expectedReconciliationAttempt);
-        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        PostgresControlPersistence.Add(update, "lease_owner", NpgsqlDbType.Text, leaseOwner);
         PostgresControlPersistence.Add(
-            command, "after_payload_sha256", NpgsqlDbType.Char, afterPayloadSha256.Value);
+            update, "after_payload_sha256", NpgsqlDbType.Char, afterPayloadSha256.Value);
         PostgresControlPersistence.Add(
-            command, "vendor_target_entity_id", NpgsqlDbType.Text, vendorTargetEntityId);
-        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            update, "vendor_target_entity_id", NpgsqlDbType.Text, vendorTargetEntityId);
+        if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
             return false;
@@ -821,8 +887,10 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 .ConfigureAwait(false);
         const string sql = """
             UPDATE entitysync.sync_operation_items
-            SET after_payload_sha256 = @after_payload_sha256,
-                vendor_target_entity_id = @vendor_target_entity_id,
+            SET after_payload_sha256 = COALESCE(
+                    @after_payload_sha256, after_payload_sha256),
+                vendor_target_entity_id = COALESCE(
+                    @vendor_target_entity_id, vendor_target_entity_id),
                 safe_write_code = @safe_write_code,
                 outcome = @outcome,
                 error_code = @error_code,
@@ -1141,7 +1209,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             SET status = CASE
                     WHEN counts.succeeded_count + counts.skipped_count = counts.total_count
                         THEN 'Succeeded'
-                    WHEN counts.succeeded_count + counts.skipped_count > 0 THEN 'Partial'
+                    WHEN counts.succeeded_count > 0 THEN 'Partial'
                     ELSE 'Failed'
                 END,
                 completed_at = @completed_at,
@@ -1231,6 +1299,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
               AND plan.source_connection_generation = @source_connection_generation
               AND plan.target_connection_id = @target_connection_id
               AND plan.target_connection_generation = @target_connection_generation
+              AND plan.expires_at > clock_timestamp()
+              AND plan.status <> 'Expired'
             """;
         await using (var command = new NpgsqlCommand(operationSql, connection, transaction))
         {

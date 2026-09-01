@@ -49,7 +49,7 @@ public sealed class SyncOperationService(
         if (outcomes.All(outcome => outcome is EntitySyncItemOutcome.Succeeded or EntitySyncItemOutcome.Skipped))
             return EntitySyncOperationStatus.Succeeded;
         var succeeded = outcomes.Any(
-            outcome => outcome is EntitySyncItemOutcome.Succeeded or EntitySyncItemOutcome.Skipped);
+            outcome => outcome == EntitySyncItemOutcome.Succeeded);
         return succeeded ? EntitySyncOperationStatus.Partial : EntitySyncOperationStatus.Failed;
     }
 
@@ -99,7 +99,6 @@ public sealed class SyncOperationService(
         if (replay is not null)
             throw new SyncOperationIdempotencyConflictException(idempotencyKey);
         var now = clock.GetUtcNow();
-        if (plan.ExpiresAt <= now) throw new DurablePlanExpiredException(planId);
         if (mode == EntitySyncOperationMode.Apply
             && plan.Status != EntitySyncDurablePlanStatus.Approved)
             throw new DurablePlanApprovalConflictException(planId);
@@ -120,8 +119,7 @@ public sealed class SyncOperationService(
                 || approval.SourceConnectionId != plan.SourceConnectionId
                 || approval.SourceConnectionGeneration != plan.SourceConnectionGeneration
                 || approval.TargetConnectionId != plan.TargetConnectionId
-                || approval.TargetConnectionGeneration != plan.TargetConnectionGeneration
-                || approval.ExpiresAt <= now)
+                || approval.TargetConnectionGeneration != plan.TargetConnectionGeneration)
                 throw new DurablePlanApprovalConflictException(planId);
         }
 

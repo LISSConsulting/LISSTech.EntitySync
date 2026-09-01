@@ -44,7 +44,9 @@ public sealed class EntitySyncOperationWorker(
             var items = await operations.GetItemsAsync(
                 tenantId, running.OperationId, cancellationToken).ConfigureAwait(false);
             var item = items.FirstOrDefault(candidate =>
-                candidate.Outcome is EntitySyncItemOutcome.Pending or EntitySyncItemOutcome.Unknown);
+                           candidate.Outcome == EntitySyncItemOutcome.Pending)
+                       ?? items.FirstOrDefault(candidate =>
+                           candidate.Outcome == EntitySyncItemOutcome.Unknown);
             if (item is null)
                 return await FinalizeAsync(tenantId, running, leaseOwner)
                     .ConfigureAwait(false);
@@ -271,8 +273,12 @@ public sealed class EntitySyncOperationWorker(
             {
                 // The committed dispatch boundary forbids a retry; reconciliation owns uncertainty.
             }
+            var reconciledItem = prepared with
+            {
+                VendorTargetEntityId = writeResult.Id ?? prepared.VendorTargetEntityId
+            };
             await PersistUnknownAsync(
-                tenantId, running, prepared, leaseOwner, observed, after,
+                tenantId, running, reconciledItem, leaseOwner, observed, after,
                 "WRITE_REQUIRES_RECONCILIATION").ConfigureAwait(false);
             await reconciler.ReconcileAsync(
                 tenantId, running.OperationId, item.ItemId,
