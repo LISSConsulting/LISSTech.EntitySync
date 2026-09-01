@@ -36,6 +36,12 @@ public sealed class SyncOperationService(
             tenantId, planId, approvalId, idempotencyKey, actor,
             EntitySyncOperationMode.Apply, cancellationToken);
 
+    internal Task<EntitySyncOperation?> GetControlOperationAsync(
+        string tenantId,
+        Guid operationId,
+        CancellationToken cancellationToken) =>
+        operations.GetAsync(tenantId, operationId, cancellationToken);
+
     public static EntitySyncOperationStatus DeriveTerminalStatus(
         IReadOnlyCollection<EntitySyncItemOutcome> outcomes,
         bool cancellationRequestedBeforeDispatch = false)

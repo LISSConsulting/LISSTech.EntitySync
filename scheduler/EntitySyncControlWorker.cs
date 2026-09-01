@@ -240,7 +240,6 @@ public sealed class EntitySyncControlWorker : BackgroundService
             }
 
             var actor = new EntitySyncActor("entitysync-control-worker");
-            IReadOnlyList<EntitySyncDurablePlanItem>? recoveredFirstPage = null;
             DurablePlanResult plan;
             if (work.PlanId is null)
             {
@@ -266,64 +265,126 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     throw new InvalidOperationException("Control work lost its plan checkpoint fence.");
                 work = work with { PlanId = plan.PlanId, PlanDigestSha256 = planDigest };
             }
-            else
+            else if (work.PlanDigestSha256 is null)
             {
-                if (work.PlanDigestSha256 is null)
-                    throw new InvalidOperationException("Checkpointed plan digest is missing.");
-                var firstPage = await durablePlans.GetPageAsync(
-                    work.TenantId, work.PlanId.Value, 1, 100, actor, cancellationToken)
+                return await HoldAsync(
+                    work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
                     .ConfigureAwait(false);
-                plan = firstPage.Plan;
-                if (plan.Digest != work.PlanDigestSha256.Value)
-                    throw new InvalidOperationException("Checkpointed plan digest changed.");
-                recoveredFirstPage = firstPage.Items;
             }
 
-            var items = new List<EntitySyncDurablePlanItem>(plan.ItemCount);
-            if (recoveredFirstPage is not null) items.AddRange(recoveredFirstPage);
-            for (var page = recoveredFirstPage is null ? 1 : 2;
-                 page <= plan.PageCount(100);
-                 page++)
-            {
-                var inspected = await durablePlans.GetPageAsync(
-                    work.TenantId, plan.PlanId, page, 100, actor, cancellationToken)
+            var persistedPlan = await durablePlans.GetControlPlanAsync(
+                work.TenantId, work.PlanId!.Value, cancellationToken).ConfigureAwait(false);
+            if (persistedPlan is null
+                || persistedPlan.PlanDigestSha256 != work.PlanDigestSha256
+                || persistedPlan.PolicyId != work.PolicyId
+                || persistedPlan.PolicyVersion != work.PolicyVersion
+                || !persistedPlan.RouteScope.Equals(
+                    work.RouteScope, StringComparison.OrdinalIgnoreCase))
+                return await HoldAsync(
+                    work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
                     .ConfigureAwait(false);
-                items.AddRange(inspected.Items);
-            }
-            if (!PostgresSyncWorkQueue.IsSafeSubset(policy, items))
-                return await HoldAsync(work, "UNSAFE_PLAN_HELD", cancellationToken)
-                    .ConfigureAwait(false);
+            plan = ToPlanResult(persistedPlan);
 
-            var approvalId = work.ApprovalId;
-            if (approvalId is null)
+            if (work.OperationId is not null)
             {
-                var deterministicApprovalId =
-                    PostgresSyncWorkQueue.CreateControlApprovalId(work.WorkId);
-                var approval = await durablePlans.ApproveControlAsync(
-                    work.TenantId, plan.PlanId, plan.Digest, actor,
-                    deterministicApprovalId, cancellationToken).ConfigureAwait(false);
-                approvalId = approval.ApprovalId;
-                if (!await queue.TryCheckpointApprovalAsync(
-                        work, approvalId.Value, cancellationToken).ConfigureAwait(false))
-                    throw new InvalidOperationException("Control work lost its approval checkpoint fence.");
+                if (work.ApprovalId is null
+                    || persistedPlan.Status != EntitySyncDurablePlanStatus.Consumed)
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                var approval = await durablePlans.RecoverControlApprovalAsync(
+                    work.TenantId, plan.PlanId, plan.Digest, work.ApprovalId.Value,
+                    cancellationToken).ConfigureAwait(false);
+                var operation = await operationService.GetControlOperationAsync(
+                    work.TenantId, work.OperationId.Value, cancellationToken)
+                    .ConfigureAwait(false);
+                if (approval is null
+                    || !IsExpectedOperation(work, operation, approval.ApprovalId))
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                if (!await queue.TryCompleteAsync(
+                        work, plan.PlanId, approval.ApprovalId, operation!.OperationId,
+                        cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException(
+                        "Control work lost its owner/attempt/lease completion fence.");
+                return true;
+            }
+
+            Guid approvalId;
+            if (work.ApprovalId is not null)
+            {
+                if (persistedPlan.Status is not (
+                    EntitySyncDurablePlanStatus.Approved
+                    or EntitySyncDurablePlanStatus.Consumed))
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                var recovered = await durablePlans.RecoverControlApprovalAsync(
+                    work.TenantId, plan.PlanId, plan.Digest, work.ApprovalId.Value,
+                    cancellationToken).ConfigureAwait(false);
+                if (recovered is null)
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                approvalId = recovered.ApprovalId;
+            }
+            else if (persistedPlan.Status == EntitySyncDurablePlanStatus.Approved)
+            {
+                approvalId = PostgresSyncWorkQueue.CreateControlApprovalId(work.WorkId);
+                var recovered = await durablePlans.RecoverControlApprovalAsync(
+                    work.TenantId, plan.PlanId, plan.Digest, approvalId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (recovered is null
+                    || !await queue.TryCheckpointApprovalAsync(
+                        work, approvalId, cancellationToken).ConfigureAwait(false))
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
                 work = work with { ApprovalId = approvalId };
             }
-
-            var operationId = work.OperationId;
-            if (operationId is null)
+            else if (persistedPlan.Status == EntitySyncDurablePlanStatus.Draft)
             {
-                var operation = await operationService.QueueApplyAsync(
-                    work.TenantId, plan.PlanId, approvalId.Value,
-                    $"control-work:{work.WorkId:N}:apply", actor, cancellationToken)
-                    .ConfigureAwait(false);
-                operationId = operation.OperationId;
-                if (!await queue.TryCheckpointOperationAsync(
-                        work, operationId.Value, cancellationToken).ConfigureAwait(false))
-                    throw new InvalidOperationException("Control work lost its operation checkpoint fence.");
-                work = work with { OperationId = operationId };
+                var items = new List<EntitySyncDurablePlanItem>(plan.ItemCount);
+                for (var page = 1; page <= plan.PageCount(100); page++)
+                {
+                    var inspected = await durablePlans.GetPageAsync(
+                        work.TenantId, plan.PlanId, page, 100, actor, cancellationToken)
+                        .ConfigureAwait(false);
+                    items.AddRange(inspected.Items);
+                }
+                if (!PostgresSyncWorkQueue.IsSafeSubset(policy, items))
+                    return await HoldAsync(work, "UNSAFE_PLAN_HELD", cancellationToken)
+                        .ConfigureAwait(false);
+                approvalId = PostgresSyncWorkQueue.CreateControlApprovalId(work.WorkId);
+                var approved = await durablePlans.ApproveControlAsync(
+                    work.TenantId, plan.PlanId, plan.Digest, actor,
+                    approvalId, cancellationToken).ConfigureAwait(false);
+                approvalId = approved.ApprovalId;
+                if (!await queue.TryCheckpointApprovalAsync(
+                        work, approvalId, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException(
+                        "Control work lost its approval checkpoint fence.");
+                work = work with { ApprovalId = approvalId };
             }
+            else
+            {
+                return await HoldAsync(
+                    work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var queuedOperation = await operationService.QueueApplyAsync(
+                work.TenantId, plan.PlanId, approvalId,
+                $"control-work:{work.WorkId:N}:apply", actor, cancellationToken)
+                .ConfigureAwait(false);
+            if (!await queue.TryCheckpointOperationAsync(
+                    work, queuedOperation.OperationId, cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "Control work lost its operation checkpoint fence.");
+            work = work with { OperationId = queuedOperation.OperationId };
             if (!await queue.TryCompleteAsync(
-                    work, plan.PlanId, approvalId.Value, operationId.Value,
+                    work, plan.PlanId, approvalId, queuedOperation.OperationId,
                     cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException(
                     "Control work lost its owner/attempt/lease completion fence.");
@@ -353,6 +414,31 @@ public sealed class EntitySyncControlWorker : BackgroundService
             }
         }
     }
+
+    private static DurablePlanResult ToPlanResult(EntitySyncDurablePlan plan) =>
+        new(
+            plan.TenantId,
+            plan.PlanId,
+            plan.PlanDigestSha256.Value,
+            plan.ItemCount,
+            plan.PolicyId,
+            plan.PolicyVersion,
+            plan.SourceConnectionGeneration,
+            plan.TargetConnectionGeneration,
+            plan.CreatedAt,
+            plan.ExpiresAt);
+
+    private static bool IsExpectedOperation(
+        SyncControlWork work,
+        EntitySyncOperation? operation,
+        Guid approvalId) =>
+        operation is not null
+        && operation.OperationId == work.OperationId
+        && operation.PlanId == work.PlanId
+        && operation.ApprovalId == approvalId
+        && operation.Mode == EntitySyncOperationMode.Apply
+        && operation.IdempotencyKey.Equals(
+            $"control-work:{work.WorkId:N}:apply", StringComparison.Ordinal);
 
     private async Task MaintainOwnershipAsync(
         SyncControlWork work,

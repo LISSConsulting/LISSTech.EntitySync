@@ -132,6 +132,77 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Worker_recovers_approval_committed_before_checkpoint_without_reinspection()
+    {
+        const string tenant = "approval-lost-response";
+        var workId = Guid.NewGuid();
+        var setup = await CreateApprovedControlPlanAsync(tenant, workId);
+        await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
+        await SetWorkCheckpointAsync(
+            tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256, null);
+
+        Assert.True(await setup.Worker.ExecuteOneAsync(default));
+
+        var work = await ReadWorkAsync(tenant, workId);
+        Assert.Equal(SyncControlWorkState.Completed, work.State);
+        Assert.Equal(setup.Approval.ApprovalId, work.ApprovalId);
+        Assert.NotNull(work.OperationId);
+        Assert.Equal(1, await CountAsync(
+            "entitysync.sync_approvals", tenant));
+        Assert.Equal(1, await CountAsync(
+            "entitysync.sync_operations", tenant));
+    }
+
+    [Fact]
+    public async Task Worker_recovers_operation_committed_before_checkpoint_without_second_queue()
+    {
+        const string tenant = "operation-lost-response";
+        var workId = Guid.NewGuid();
+        var setup = await CreateApprovedControlPlanAsync(tenant, workId);
+        var operation = await setup.OperationService.QueueApplyAsync(
+            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
+            $"control-work:{workId:N}:apply",
+            new EntitySyncActor("entitysync-control-worker"), default);
+        await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
+        await SetWorkCheckpointAsync(
+            tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
+            setup.Approval.ApprovalId);
+
+        Assert.True(await setup.Worker.ExecuteOneAsync(default));
+
+        var work = await ReadWorkAsync(tenant, workId);
+        Assert.Equal(SyncControlWorkState.Completed, work.State);
+        Assert.Equal(operation.OperationId, work.OperationId);
+        Assert.Equal(1, await CountAsync(
+            "entitysync.sync_approvals", tenant));
+        Assert.Equal(1, await CountAsync(
+            "entitysync.sync_operations", tenant));
+    }
+
+    [Fact]
+    public async Task Worker_validates_operation_checkpoint_before_linking_completion()
+    {
+        const string tenant = "operation-checkpoint";
+        var workId = Guid.NewGuid();
+        var setup = await CreateApprovedControlPlanAsync(tenant, workId);
+        var operation = await setup.OperationService.QueueApplyAsync(
+            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
+            $"control-work:{workId:N}:apply",
+            new EntitySyncActor("entitysync-control-worker"), default);
+        await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
+        await SetWorkCheckpointAsync(
+            tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
+            setup.Approval.ApprovalId, operation.OperationId);
+
+        Assert.True(await setup.Worker.ExecuteOneAsync(default));
+
+        var work = await ReadWorkAsync(tenant, workId);
+        Assert.Equal(SyncControlWorkState.Completed, work.State);
+        Assert.Equal(operation.OperationId, work.OperationId);
+        Assert.Equal(1, await CountAsync("entitysync.sync_operations", tenant));
+    }
+
+    [Fact]
     public async Task Route_contention_defers_hot_work_and_leases_another_route()
     {
         const string tenant = "route-contention";
@@ -403,6 +474,146 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
             createdAt ?? DateTimeOffset.UtcNow);
         await command.ExecuteNonQueryAsync();
     }
+
+    private async Task<ControlRecoverySetup> CreateApprovedControlPlanAsync(
+        string tenant,
+        Guid workId)
+    {
+        var actor = new EntitySyncActor("entitysync-control-worker");
+        var policy = Policy(tenant);
+        var policyRepository = new PostgresSyncPolicyRepository(Database);
+        var connectionRepository = new PostgresConnectionDefinitionRepository(Database);
+        var planRepository = new PostgresDurableSyncPlanRepository(Database);
+        var operationRepository = new PostgresSyncOperationRepository(Database);
+        await policyRepository.InsertAsync(tenant, policy, default);
+        var now = DateTimeOffset.UtcNow;
+        await connectionRepository.InsertAsync(
+            tenant,
+            new EntitySyncConnectionDefinition(
+                tenant, "source", "OrchestraMSP", "Source", 1, true,
+                new EntitySyncJsonValue("{}"), "ciphertext", now, actor, now, actor),
+            default);
+        await connectionRepository.InsertAsync(
+            tenant,
+            new EntitySyncConnectionDefinition(
+                tenant, "target", "HaloPSA", "Target", 1, true,
+                new EntitySyncJsonValue("{}"), "ciphertext", now, actor, now, actor),
+            default);
+        var planId = Guid.NewGuid();
+        var before = new EntitySyncJsonValue("""{"Name":"Before"}""");
+        var desired = new EntitySyncJsonValue("""{"Name":"After"}""");
+        var beforeHash = EntitySyncCanonicalDigest.Compute(new { Name = "Before" });
+        var desiredHash = EntitySyncCanonicalDigest.Compute(new { Name = "After" });
+        var draft = new EntitySyncDurablePlan(
+            tenant, planId, policy.PolicyId, policy.Version, policy.DefinitionSha256,
+            policy.RouteScope, "source", 1, "target", 1,
+            new EntitySyncSha256(new string('0', 64)),
+            EntitySyncDurablePlanStatus.Draft,
+            new EntitySyncSelectionBounds(null, null, null),
+            0, now, actor, now.AddHours(1));
+        var item = new EntitySyncDurablePlanItem(
+            tenant, planId, Guid.NewGuid(), 0,
+            "OrchestraMSP", "source", "Client", "source-key", "source-id",
+            "HaloPSA", "target", "Client", "target-id", "Update",
+            new EntitySyncMatchEvidence(100, "Linked", ["linked"]),
+            before, desired, beforeHash, desiredHash,
+            [new EntityFieldChange(
+                "Name", before, desired, beforeHash, desiredHash, false)]);
+        var manifest = EntitySyncDurablePlanManifest.Create(draft, [item]);
+        await planRepository.InsertAsync(tenant, manifest, default);
+        var planService = new DurablePlanService(
+            null!, null!, policyRepository, connectionRepository, null!, null!,
+            planRepository, TimeProvider.System);
+        await planService.GetPageAsync(
+            tenant, planId, 1, 100, actor, default);
+        var approval = await planService.ApproveControlAsync(
+            tenant, planId, manifest.Plan.PlanDigestSha256.Value, actor,
+            PostgresSyncWorkQueue.CreateControlApprovalId(workId), default);
+        var operationService = new SyncOperationService(
+            planRepository, operationRepository, policyRepository, connectionRepository);
+        var worker = new EntitySyncControlWorker(
+            new PostgresSyncWorkQueue(Database),
+            new PostgresRouteLock(Database),
+            policyRepository,
+            connectionRepository,
+            null!,
+            planService,
+            operationService,
+            null!,
+            TimeProvider.System,
+            new EntitySyncControlOptions([tenant]));
+        return new ControlRecoverySetup(
+            policy, manifest.Plan, approval, operationService, worker);
+    }
+
+    private async Task SetWorkCheckpointAsync(
+        string tenant,
+        Guid workId,
+        Guid planId,
+        EntitySyncSha256 digest,
+        Guid? approvalId,
+        Guid? operationId = null)
+    {
+        await using var command = Database.CreateCommand("""
+            UPDATE entitysync.sync_control_work
+            SET checkpoint = CASE
+                    WHEN @operation IS NOT NULL THEN 'OperationQueued'
+                    WHEN @approval IS NOT NULL THEN 'Approved'
+                    ELSE 'Planned'
+                END,
+                plan_id = @plan,
+                plan_digest_sha256 = @digest,
+                approval_id = @approval,
+                operation_id = @operation
+            WHERE tenant_id = @tenant AND work_id = @work
+            """);
+        command.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        command.Parameters.AddWithValue("work", NpgsqlDbType.Uuid, workId);
+        command.Parameters.AddWithValue("plan", NpgsqlDbType.Uuid, planId);
+        command.Parameters.AddWithValue("digest", NpgsqlDbType.Char, digest.Value);
+        command.Parameters.AddWithValue(
+            "approval", NpgsqlDbType.Uuid, (object?)approvalId ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "operation", NpgsqlDbType.Uuid, (object?)operationId ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<WorkSnapshot> ReadWorkAsync(string tenant, Guid workId)
+    {
+        await using var command = Database.CreateCommand("""
+            SELECT state, approval_id, operation_id
+            FROM entitysync.sync_control_work
+            WHERE tenant_id = @tenant AND work_id = @work
+            """);
+        command.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        command.Parameters.AddWithValue("work", NpgsqlDbType.Uuid, workId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return new WorkSnapshot(
+            Enum.Parse<SyncControlWorkState>(reader.GetString(0)),
+            reader.IsDBNull(1) ? null : reader.GetGuid(1),
+            reader.IsDBNull(2) ? null : reader.GetGuid(2));
+    }
+
+    private async Task<int> CountAsync(string table, string tenant)
+    {
+        await using var command = Database.CreateCommand(
+            $"SELECT count(*) FROM {table} WHERE tenant_id = @tenant");
+        command.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    private sealed record WorkSnapshot(
+        SyncControlWorkState State,
+        Guid? ApprovalId,
+        Guid? OperationId);
+
+    private sealed record ControlRecoverySetup(
+        EntitySyncPolicy Policy,
+        EntitySyncDurablePlan Plan,
+        DurablePlanApprovalResult Approval,
+        SyncOperationService OperationService,
+        EntitySyncControlWorker Worker);
 
     private async Task ExpireWorkLeaseAsync(string tenant, Guid workId)
     {

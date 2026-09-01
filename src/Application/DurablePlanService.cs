@@ -386,6 +386,28 @@ public sealed class DurablePlanService(
         CancellationToken cancellationToken) =>
         ApproveCoreAsync(tenantId, planId, digest, actor, null, cancellationToken);
 
+    internal Task<EntitySyncDurablePlan?> GetControlPlanAsync(
+        string tenantId,
+        Guid planId,
+        CancellationToken cancellationToken) =>
+        plans.GetAsync(RequireTenant(tenantId), planId, cancellationToken);
+
+    internal async Task<DurablePlanApprovalResult?> RecoverControlApprovalAsync(
+        string tenantId,
+        Guid planId,
+        string digest,
+        Guid approvalId,
+        CancellationToken cancellationToken)
+    {
+        var approval = await plans.GetApprovalAsync(
+            RequireTenant(tenantId), approvalId, cancellationToken).ConfigureAwait(false);
+        if (approval is null) return null;
+        if (approval.PlanId != planId
+            || approval.PlanDigestSha256 != new EntitySyncSha256(digest))
+            throw new DurablePlanApprovalConflictException(planId);
+        return ToApprovalResult(approval);
+    }
+
     internal Task<DurablePlanApprovalResult> ApproveControlAsync(
         string tenantId,
         Guid planId,

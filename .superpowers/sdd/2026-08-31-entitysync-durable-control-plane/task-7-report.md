@@ -125,3 +125,38 @@
   0 skipped, 1 second (`artifact://1522`).
 - Minimal scheduler Release build passed (`artifact://1524`).
 - No formatter, linter, broad build, Pester, or project-wide test suite was run.
+
+## Fix Round 3
+
+### RED
+
+- Worker-level live-PostgreSQL fixtures seed the exact lost-response states: an
+  approval committed while work remains at `Planned`, and an operation committed
+  while work remains at `Approved`. Reintroducing the prior unconditional
+  `GetPageAsync` call left both at `Planning` (2 failed, `artifact://1535`).
+
+### Fixes
+
+- Control recovery now loads and validates the persisted plan identity, digest,
+  policy version, route, and status before choosing a phase.
+- Only `Draft` work without an approval is paged, safe-subset revalidated, and
+  deterministically approved.
+- `Approved` work with a lost approval response recovers the deterministic,
+  digest-bound approval and checkpoints it without page inspection or another
+  approval mutation.
+- Work with an approval checkpoint validates that exact approval and queues or
+  replays the deterministic operation without page inspection.
+- `Consumed` work with a lost operation response replays the existing
+  idempotency-bound operation and checkpoints the same ID. Work with an operation
+  checkpoint validates the approval and operation identities before atomic linkage
+  completion. Contradictory status/identity combinations are visibly held with
+  `CONTROL_WORK_CHECKPOINT_CONFLICT`.
+- Worker-level live-PostgreSQL recovery tests pass for all three reclaim phases
+  (3 passed, `artifact://1539`) and assert one approval and one operation.
+
+### GREEN
+
+- Exact focused filter against isolated PostgreSQL 18: 29 passed, 0 failed,
+  0 skipped, 3 seconds (`artifact://1541`).
+- Minimal scheduler Release build passed (`artifact://1543`).
+- No formatter, linter, broad build, Pester, or project-wide test suite was run.
