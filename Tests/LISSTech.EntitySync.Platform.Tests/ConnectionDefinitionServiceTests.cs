@@ -298,8 +298,13 @@ public sealed class ConnectionDefinitionServiceTests
                 ["NETSUITE_CONSUMER_SECRET"] = "environment-secret",
                 ["NETSUITE_TOKEN_ID"] = "environment-token",
                 ["NETSUITE_TOKEN_SECRET"] = "environment-token-secret",
-                ["ENTITYSYNC_PLATFORM_INSTANCE_ID"] =
-                    "44444444-4444-4444-4444-444444444444",
+                ["ORCHESTRA_BASE_URL"] =
+                    "https://directory.example/api/v1/internal/client-directory/",
+                ["ORCHESTRA_AUTHORITY"] = "https://login.example/",
+                ["ORCHESTRA_TENANT_ID"] = "tenant",
+                ["ORCHESTRA_CLIENT_ID"] = "client",
+                ["ORCHESTRA_RESOURCE"] = "api://orchestra",
+                ["ORCHESTRA_CLIENT_SECRET"] = "secret"
             });
         var exported = factory.GetConnectionConfiguration(
             "NetSuite",
@@ -307,9 +312,21 @@ public sealed class ConnectionDefinitionServiceTests
         Assert.Equal(
             "environment-account",
             exported.PublicConfiguration["NetSuiteAccountId"].GetString());
+        Assert.Null(exported.PlatformInstanceId);
+        var profiled = factory.GetConnectionConfiguration(
+            "NetSuite",
+            new Dictionary<string, string>
+            {
+                ["EntitySyncPlatformInstanceId"] =
+                    "44444444-4444-4444-4444-444444444444"
+            });
         Assert.Equal(
             Guid.Parse("44444444-4444-4444-4444-444444444444"),
-            exported.PlatformInstanceId);
+            profiled.PlatformInstanceId);
+        var orchestraTarget = factory.GetConnectionConfiguration(
+            EntitySyncVendors.OrchestraMSP,
+            profileSettings: null);
+        Assert.Null(orchestraTarget.PlatformInstanceId);
         Assert.False(exported.PublicConfiguration.ContainsKey("NetSuiteConsumerSecret"));
         Assert.Equal(
             "environment-secret",

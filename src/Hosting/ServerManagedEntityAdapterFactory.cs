@@ -691,10 +691,12 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
     private Guid? ResolvePlatformInstanceId(
         IReadOnlyDictionary<string, string>? profileSettings)
     {
-        var value = ResolveOptional(
-            profileSettings,
-            "EntitySyncPlatformInstanceId",
-            "ENTITYSYNC_PLATFORM_INSTANCE_ID");
+        var value =
+            profileSettings?.TryGetValue(
+                "EntitySyncPlatformInstanceId", out var configured) == true
+            && !string.IsNullOrWhiteSpace(configured)
+                ? configured
+                : null;
         if (value is null) return null;
         if (!Guid.TryParse(value, out var platformInstanceId)
             || platformInstanceId == Guid.Empty)

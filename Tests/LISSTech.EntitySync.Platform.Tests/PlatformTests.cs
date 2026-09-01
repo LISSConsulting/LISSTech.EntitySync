@@ -37,6 +37,37 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public void Connection_registration_rejects_empty_platform_uuid_before_mutation()
+    {
+        using var repository = new InMemoryEntityConnectionRepository();
+        var adapter = new FakeAdapter("NCentral");
+
+        Assert.Throws<ArgumentException>(() =>
+            repository.Register(
+                "tenant", "ncentral-prod", adapter, Guid.Empty));
+
+        Assert.Empty(repository.List("tenant"));
+        Assert.False(adapter.Disposed);
+    }
+
+    [Fact]
+    public void Platform_uuid_is_connection_specific_and_nullable_for_Orchestra_target()
+    {
+        using var repository = new InMemoryEntityConnectionRepository();
+        var platformInstanceId =
+            Guid.Parse("44444444-4444-4444-4444-444444444444");
+
+        var source = repository.Register(
+            "tenant", "ncentral-prod", new FakeAdapter("NCentral"), platformInstanceId);
+        var target = repository.Register(
+            "tenant", "orchestra-target", new FakeAdapter("OrchestraMSP"));
+
+        Assert.Equal(platformInstanceId, source.PlatformInstanceId);
+        Assert.Null(target.PlatformInstanceId);
+        Assert.Equal(2, repository.List("tenant").Count);
+    }
+
+    [Fact]
     public void ReplacingConnectionIncrementsGenerationAndDisposesOldAdapter()
     {
         using var repository = new InMemoryEntityConnectionRepository();
@@ -801,6 +832,33 @@ public sealed class PlatformTests
         Assert.Equal(
             explicitPlatformInstanceId,
             Assert.Single(connections.List("tenant")).PlatformInstanceId);
+    }
+
+    [Fact]
+    public async Task Local_mcp_rejects_empty_platform_uuid_without_registering_generation()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var factory = new RecordingServerManagedEntityAdapterFactory();
+        var context = new McpRequestContext("tenant", true);
+        using var services = new ServiceCollection()
+            .AddSingleton<IEntityConnectionRepository>(connections)
+            .BuildServiceProvider();
+
+        var response = await ConnectionTools.ConnectVendor(
+            services,
+            factory,
+            definitions: null,
+            context: context,
+            vendor: "NCentral",
+            connectionId: "ncentral-prod",
+            platformInstanceId: Guid.Empty,
+            cancellationToken: default);
+
+        using var document = JsonDocument.Parse(response);
+        Assert.False(document.RootElement.GetProperty("success").GetBoolean());
+        Assert.Empty(connections.List("tenant"));
+        Assert.Single(factory.Adapters);
+        Assert.True(factory.Adapters[0].Disposed);
     }
 
     [Fact]

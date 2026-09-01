@@ -47,6 +47,10 @@ public sealed class InMemoryEntityConnectionRepository
         Guid? platformInstanceId = null)
     {
         tenantId = Require(tenantId, nameof(tenantId));
+        if (platformInstanceId == Guid.Empty)
+            throw new ArgumentException(
+                "Platform instance ID cannot be empty.",
+                nameof(platformInstanceId));
         var vendor = EntitySyncVendors.Normalize(adapter.Vendor);
         connectionId = string.IsNullOrWhiteSpace(connectionId) ? vendor.ToLowerInvariant() : connectionId.Trim();
         ValidateConnectionId(connectionId);
