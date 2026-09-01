@@ -21,6 +21,15 @@ public interface IServerManagedEntityAdapterFactory
         IReadOnlyDictionary<string, string> secretConfiguration,
         CancellationToken cancellationToken);
 
+    Task<IEntityAdapter> CreateDurableAsync(
+        string vendor,
+        IReadOnlyDictionary<string, JsonElement> publicConfiguration,
+        IReadOnlyDictionary<string, string> secretConfiguration,
+        long connectionGeneration,
+        CancellationToken cancellationToken) =>
+        CreateDurableAsync(
+            vendor, publicConfiguration, secretConfiguration, cancellationToken);
+
     ServerManagedConnectionConfiguration GetConnectionConfiguration(
         string vendor,
         IReadOnlyDictionary<string, string>? profileSettings);

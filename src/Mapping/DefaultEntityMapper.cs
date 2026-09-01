@@ -5,30 +5,126 @@ namespace LISSTech.EntitySync.Mapping;
 
 public sealed partial class DefaultEntityMapper : IEntityMapper
 {
-    public EntityWriteRequest MapCreate(ExternalEntity source, string targetVendor, string targetEntityType, MatchOptions options)
+    public EntityWriteRequest MapCreate(
+        ExternalEntity source,
+        string targetVendor,
+        string targetEntityType,
+        MatchOptions options) =>
+        MapCreate(source, targetVendor, targetEntityType, options, null);
+
+    public EntityWriteRequest MapCreate(
+        ExternalEntity source,
+        string targetVendor,
+        string targetEntityType,
+        MatchOptions options,
+        EntityWriteParent? resolvedParent)
     {
         targetVendor = EntitySyncVendors.Normalize(targetVendor);
-        var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = targetEntityType, Name = source.Name };
+        var request = new EntityWriteRequest
+        {
+            Vendor = targetVendor,
+            EntityType = targetEntityType,
+            Name = source.Name,
+            ParentId = EntitySyncVendors.IsOrchestraMSP(targetVendor)
+                ? null
+                : source.ParentId,
+            ParentEntityType = EntitySyncVendors.IsOrchestraMSP(targetVendor)
+                ? null
+                : source.ParentEntityType,
+            PrimarySiteId = source.PrimarySiteId,
+            Address = MapAddress(source)
+        };
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
         AddLtacCustomerScopeFields(request, source, targetVendor);
+        AddOrchestraFields(request, source, targetVendor);
+        if (EntitySyncVendors.IsOrchestraMSP(targetVendor))
+            ApplyResolvedParent(request, targetEntityType, resolvedParent);
         return request;
     }
 
     public EntityWriteRequest MapUpdate(ExternalEntity source, ExternalEntity target, MatchOptions options)
     {
         var targetVendor = EntitySyncVendors.Normalize(target.Vendor);
-        var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = source.Name };
+        var request = new EntityWriteRequest
+        {
+            Vendor = targetVendor,
+            EntityType = target.EntityType,
+            Id = target.Id,
+            ParentId = target.ParentId,
+            ParentEntityType = target.ParentEntityType,
+            ParentClientId = target.GetExternalId("OrchestraClientId"),
+            PrimarySiteId = target.PrimarySiteId,
+            ExpectedVersion = target.Version,
+            Name = source.Name,
+            Address = MapAddress(source)
+        };
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
         AddLtacCustomerScopeFields(request, source, targetVendor);
+        AddOrchestraFields(request, source, targetVendor);
         return request;
+    }
+
+    private static void AddOrchestraFields(
+        EntityWriteRequest request,
+        ExternalEntity source,
+        string targetVendor)
+    {
+        if (!EntitySyncVendors.IsOrchestraMSP(targetVendor)) return;
+
+        foreach (var field in source.CustomFields
+                     .Where(pair => pair.Value is not null
+                                    && !pair.Key.Equals(
+                                        "address_type",
+                                        StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            request.Fields[field.Key] = field.Value;
+    }
+
+    private static void ApplyResolvedParent(
+        EntityWriteRequest request,
+        string targetEntityType,
+        EntityWriteParent? parent)
+    {
+        if (targetEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase))
+            return;
+        if (parent is null)
+            return;
+        request.ParentClientId = parent.ClientId.ToString("D");
+        request.ParentEntityType = parent.ParentEntityType;
+        request.ParentId = parent.ParentEntityType.Equals(
+            "Site", StringComparison.OrdinalIgnoreCase)
+            ? parent.SiteId?.ToString("D")
+            : parent.ClientId.ToString("D");
+    }
+
+    private static EntityAddress? MapAddress(ExternalEntity source)
+    {
+        if (!source.EntityType.Equals("Address", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var value = source.PrimaryAddress;
+        if (value is null) return null;
+        return new EntityAddress
+        {
+            AddressType = string.IsNullOrWhiteSpace(value.AddressType)
+                ? source.Name
+                : value.AddressType,
+            Attention = value.Attention,
+            Line1 = value.Line1,
+            Line2 = value.Line2,
+            Line3 = value.Line3,
+            City = value.City,
+            State = value.State,
+            PostalCode = value.PostalCode,
+            Country = value.Country
+        };
     }
 
     private static void AddLtacCustomerScopeFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)

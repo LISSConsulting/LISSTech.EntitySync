@@ -175,6 +175,40 @@ public sealed record EntityAdapterCapabilities
             scheduledSafeFields ?? []);
 }
 
+public sealed record CanonicalEntityVersion(
+    Guid CanonicalEntityId,
+    long CanonicalVersion,
+    ExternalEntity Entity);
+
+public interface ICanonicalEntityVersionAdapter
+{
+    Task<CanonicalEntityVersion?> ReadCanonicalAsync(
+        string entityType,
+        Guid canonicalEntityId,
+        long assertedVersion,
+        CancellationToken cancellationToken);
+}
+
+public enum EntityWriteParentResolutionStatus
+{
+    Resolved,
+    Missing,
+    Ambiguous,
+    Stale
+}
+
+public sealed record EntityWriteParentResolution(
+    EntityWriteParentResolutionStatus Status,
+    EntityWriteParent? Parent,
+    string SafeCode);
+
+public interface IEntityWriteParentResolver
+{
+    Task<EntityWriteParentResolution> ResolveWriteParentAsync(
+        ExternalEntity source,
+        CancellationToken cancellationToken);
+}
+
 public interface IEntityAdapter
 {
     string Vendor { get; }

@@ -2,6 +2,7 @@ namespace LISSTech.EntitySync.Core;
 
 public sealed class EntityAddress
 {
+    public string? AddressType { get; set; }
     public string? Attention { get; set; }
     public string? Line1 { get; set; }
     public string? Line2 { get; set; }

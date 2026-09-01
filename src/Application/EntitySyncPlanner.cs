@@ -225,6 +225,14 @@ public sealed class EntitySyncPlanner(
             }
 
             var item = CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks);
+            if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+                && EntitySyncVendors.IsOrchestraMSP(targetVendor)
+                && (targetType.Equals("Site", StringComparison.OrdinalIgnoreCase)
+                    || targetType.Equals(
+                        "Address", StringComparison.OrdinalIgnoreCase)))
+                await ResolveCreateParentAsync(
+                    item, targetLease.Adapter, cancellationToken)
+                    .ConfigureAwait(false);
             if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
             plan.Items.Add(item);
         }
@@ -292,6 +300,38 @@ public sealed class EntitySyncPlanner(
             item.Action = best.Score >= options.AutoLinkScore ? "Link" : "Review";
         }
         return item;
+    }
+
+    private static async Task ResolveCreateParentAsync(
+        EntitySyncPlanItem item,
+        IEntityAdapter targetAdapter,
+        CancellationToken cancellationToken)
+    {
+        if (targetAdapter is not IEntityWriteParentResolver resolver)
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
+            return;
+        }
+        var resolution = await resolver.ResolveWriteParentAsync(
+            item.Source, cancellationToken).ConfigureAwait(false);
+        if (resolution.Status == EntityWriteParentResolutionStatus.Resolved
+            && resolution.Parent is not null)
+        {
+            item.ResolvedTargetParent = resolution.Parent;
+            return;
+        }
+        HoldForParentReview(item, resolution.SafeCode);
+    }
+
+    private static void HoldForParentReview(
+        EntitySyncPlanItem item,
+        string safeCode)
+    {
+        item.Action = "Review";
+        item.MatchType = "ParentLinkReview";
+        item.Reasons.Add(
+            $"Canonical parent resolution requires review ({safeCode}).");
     }
 
     private void ApplyChangedOnlyPolicy(

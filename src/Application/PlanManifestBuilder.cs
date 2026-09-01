@@ -148,7 +148,8 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
                 plannerItem.Source,
                 plannerOutput.TargetVendor,
                 plannerOutput.TargetEntityType,
-                plannerOutput.Execution.MatchOptions);
+                plannerOutput.Execution.MatchOptions,
+                plannerItem.ResolvedTargetParent);
         }
         else
         {
@@ -174,6 +175,8 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
         };
         if (request.PrimarySiteId is not null)
             mapped["primarySiteId"] = request.PrimarySiteId;
+        if (request.Address is not null)
+            mapped["Address"] = request.Address;
         AddMappedFields(mapped, request.Fields);
         AddMappedFields(mapped, request.CustomFields);
 
@@ -423,6 +426,8 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
         if (field.Equals("domain", StringComparison.OrdinalIgnoreCase)) return target.Domain;
         if (field.Equals("primarySiteId", StringComparison.OrdinalIgnoreCase))
             return target.PrimarySiteId;
+        if (field.Equals("Address", StringComparison.OrdinalIgnoreCase))
+            return target.PrimaryAddress;
         if (field.Equals("isActive", StringComparison.OrdinalIgnoreCase)) return target.IsActive;
         return target.CustomFields.TryGetValue(field, out var value) ? value : null;
     }

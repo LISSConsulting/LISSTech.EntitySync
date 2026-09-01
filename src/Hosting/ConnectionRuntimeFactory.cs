@@ -44,6 +44,7 @@ public sealed class ConnectionRuntimeFactory(
                 definition.Vendor,
                 publicConfiguration,
                 secretConfiguration,
+                definition.Generation,
                 cancellationToken).ConfigureAwait(false);
             if (!adapter.Vendor.Equals(definition.Vendor, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(

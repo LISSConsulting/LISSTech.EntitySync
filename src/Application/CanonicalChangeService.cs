@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Application;
 
@@ -84,19 +85,6 @@ public sealed class CanonicalChangeConflictException(string outboxEventId)
     public int StatusCode => 409;
 }
 
-public sealed record CanonicalEntityVersion(
-    Guid CanonicalEntityId,
-    long CanonicalVersion,
-    ExternalEntity Entity);
-
-public interface ICanonicalEntityVersionAdapter
-{
-    Task<CanonicalEntityVersion?> ReadCanonicalAsync(
-        string entityType,
-        Guid canonicalEntityId,
-        long assertedVersion,
-        CancellationToken cancellationToken);
-}
 
 public enum CanonicalVersionReadStatus
 {

@@ -8,6 +8,7 @@ using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Adapters.NetSuite;
+using LISSTech.EntitySync.Adapters.OrchestraMSP;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
 
@@ -47,11 +48,18 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         "BILLCOM_BASE_URL",
         "BILLCOM_API_TOKEN",
         "BILLSPEND_API_TOKEN",
-        "BILLCOM_CLIENT_FIELD_NAME"
+        "BILLCOM_CLIENT_FIELD_NAME",
+        "ORCHESTRA_BASE_URL",
+        "ORCHESTRA_AUTHORITY",
+        "ORCHESTRA_TENANT_ID",
+        "ORCHESTRA_CLIENT_ID",
+        "ORCHESTRA_RESOURCE",
+        "ORCHESTRA_CLIENT_SECRET"
     ];
 
     private readonly IReadOnlyDictionary<string, string?> environment;
     private readonly Func<Dictionary<string, string>> createSecretConfiguration;
+    private readonly Func<HttpClient> createOrchestraHttpClient;
 
     public ServerManagedEntityAdapterFactory()
         : this(ReadCurrentEnvironment())
@@ -62,21 +70,41 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         IReadOnlyDictionary<string, string?> environment)
         : this(
             environment,
-            () => new Dictionary<string, string>(
-                StringComparer.OrdinalIgnoreCase))
+            () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            static () => new HttpClient())
     {
     }
 
     internal ServerManagedEntityAdapterFactory(
         IReadOnlyDictionary<string, string?> environment,
         Func<Dictionary<string, string>> createSecretConfiguration)
+        : this(environment, createSecretConfiguration, static () => new HttpClient())
+    {
+    }
+
+    internal ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment,
+        Func<HttpClient> createOrchestraHttpClient)
+        : this(
+            environment,
+            () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            createOrchestraHttpClient)
+    {
+    }
+
+    private ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment,
+        Func<Dictionary<string, string>> createSecretConfiguration,
+        Func<HttpClient> createOrchestraHttpClient)
     {
         ArgumentNullException.ThrowIfNull(environment);
         ArgumentNullException.ThrowIfNull(createSecretConfiguration);
+        ArgumentNullException.ThrowIfNull(createOrchestraHttpClient);
         this.environment = new Dictionary<string, string?>(
             environment,
             StringComparer.Ordinal);
         this.createSecretConfiguration = createSecretConfiguration;
+        this.createOrchestraHttpClient = createOrchestraHttpClient;
     }
 
     public async Task<IEntityAdapter> CreateAsync(
@@ -84,6 +112,7 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         IReadOnlyDictionary<string, string>? profileSettings,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var normalized = EntitySyncVendors.Normalize(vendor);
         if (normalized.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
         {
@@ -147,17 +176,58 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             });
         }
 
+        if (EntitySyncVendors.IsOrchestraMSP(normalized))
+        {
+            var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["OrchestraBaseUrl"] = Resolve(
+                    profileSettings, "OrchestraBaseUrl", "ORCHESTRA_BASE_URL"),
+                ["OrchestraAuthority"] = Resolve(
+                    profileSettings, "OrchestraAuthority", "ORCHESTRA_AUTHORITY"),
+                ["OrchestraTenantId"] = Resolve(
+                    profileSettings, "OrchestraTenantId", "ORCHESTRA_TENANT_ID"),
+                ["OrchestraClientId"] = Resolve(
+                    profileSettings, "OrchestraClientId", "ORCHESTRA_CLIENT_ID"),
+                ["OrchestraResource"] = Resolve(
+                    profileSettings, "OrchestraResource", "ORCHESTRA_RESOURCE"),
+                ["OrchestraClientSecret"] = Resolve(
+                    profileSettings, "OrchestraClientSecret", "ORCHESTRA_CLIENT_SECRET")
+            };
+            try
+            {
+                return CreateOrchestraAdapter(settings, 1);
+            }
+            finally
+            {
+                settings.Clear();
+            }
+        }
+
         throw new InvalidOperationException("Unsupported vendor.");
     }
+
+    public Task<IEntityAdapter> CreateDurableAsync(
+        string vendor,
+        IReadOnlyDictionary<string, JsonElement> publicConfiguration,
+        IReadOnlyDictionary<string, string> secretConfiguration,
+        CancellationToken cancellationToken) =>
+        CreateDurableAsync(
+            vendor,
+            publicConfiguration,
+            secretConfiguration,
+            ReadConnectionGeneration(publicConfiguration),
+            cancellationToken);
 
     public async Task<IEntityAdapter> CreateDurableAsync(
         string vendor,
         IReadOnlyDictionary<string, JsonElement> publicConfiguration,
         IReadOnlyDictionary<string, string> secretConfiguration,
+        long connectionGeneration,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(publicConfiguration);
         ArgumentNullException.ThrowIfNull(secretConfiguration);
+        cancellationToken.ThrowIfCancellationRequested();
         var settings = new Dictionary<string, string>(
             publicConfiguration.Count + secretConfiguration.Count,
             StringComparer.OrdinalIgnoreCase);
@@ -180,6 +250,9 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                         nameof(secretConfiguration));
                 settings.Add(pair.Key, pair.Value);
             }
+
+            if (EntitySyncVendors.IsOrchestraMSP(vendor))
+                return CreateOrchestraAdapter(settings, connectionGeneration);
 
             if (EntitySyncVendors.IsAgentController(vendor))
             {
@@ -369,6 +442,30 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                 "BillComApiToken",
                 Resolve(profileSettings, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN"));
         }
+        else if (EntitySyncVendors.IsOrchestraMSP(normalized))
+        {
+            AddPublic(
+                "OrchestraBaseUrl",
+                Resolve(profileSettings, "OrchestraBaseUrl", "ORCHESTRA_BASE_URL"));
+            AddPublic(
+                "OrchestraAuthority",
+                Resolve(profileSettings, "OrchestraAuthority", "ORCHESTRA_AUTHORITY"));
+            AddPublic(
+                "OrchestraTenantId",
+                Resolve(profileSettings, "OrchestraTenantId", "ORCHESTRA_TENANT_ID"));
+            AddPublic(
+                "OrchestraClientId",
+                Resolve(profileSettings, "OrchestraClientId", "ORCHESTRA_CLIENT_ID"));
+            AddPublic(
+                "OrchestraResource",
+                Resolve(profileSettings, "OrchestraResource", "ORCHESTRA_RESOURCE"));
+            secretConfiguration.Add(
+                "OrchestraClientSecret",
+                Resolve(
+                    profileSettings,
+                    "OrchestraClientSecret",
+                    "ORCHESTRA_CLIENT_SECRET"));
+        }
         else
         {
             throw new InvalidOperationException("Unsupported vendor.");
@@ -384,6 +481,77 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             secretConfiguration.Clear();
             throw;
         }
+    }
+
+    private OrchestraEntityAdapter CreateOrchestraAdapter(
+        IReadOnlyDictionary<string, string> settings,
+        long connectionGeneration)
+    {
+        if (connectionGeneration <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(connectionGeneration), connectionGeneration,
+                "Connection generation must be positive.");
+        var httpClient = createOrchestraHttpClient()
+            ?? throw new InvalidOperationException(
+                "The OrchestraMSP HTTP client factory returned no client.");
+        byte[]? secretBytes = null;
+        OrchestraTokenProvider? tokenProvider = null;
+        try
+        {
+            secretBytes = Encoding.UTF8.GetBytes(
+                RequireSetting(settings, "OrchestraClientSecret"));
+            tokenProvider = new OrchestraTokenProvider(
+                httpClient,
+                new Uri(RequireSetting(settings, "OrchestraAuthority"), UriKind.Absolute),
+                RequireSetting(settings, "OrchestraTenantId"),
+                RequireSetting(settings, "OrchestraClientId"),
+                secretBytes,
+                RequireSetting(settings, "OrchestraResource"),
+                connectionGeneration,
+                TimeProvider.System);
+            var directory = new OrchestraClientDirectoryClient(
+                httpClient,
+                tokenProvider,
+                new Uri(RequireSetting(settings, "OrchestraBaseUrl"), UriKind.Absolute),
+                disposeHttpClient: true);
+            tokenProvider = null;
+            return new OrchestraEntityAdapter(directory);
+        }
+        catch
+        {
+            tokenProvider?.Dispose();
+            httpClient.Dispose();
+            throw;
+        }
+        finally
+        {
+            if (secretBytes is not null)
+                CryptographicOperations.ZeroMemory(secretBytes);
+        }
+    }
+
+    private static long ReadConnectionGeneration(
+        IReadOnlyDictionary<string, JsonElement> publicConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(publicConfiguration);
+        if (!publicConfiguration.TryGetValue(
+                "OrchestraConnectionGeneration", out var configured))
+            return 1;
+        if (configured.ValueKind == JsonValueKind.Number
+            && configured.TryGetInt64(out var number)
+            && number > 0)
+            return number;
+        if (configured.ValueKind == JsonValueKind.String
+            && long.TryParse(
+                configured.GetString(),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out number)
+            && number > 0)
+            return number;
+        throw new ArgumentException(
+            "Orchestra connection generation must be a positive integer.",
+            nameof(publicConfiguration));
     }
 
     private static string ConfigurationValue(string key, JsonElement value) =>

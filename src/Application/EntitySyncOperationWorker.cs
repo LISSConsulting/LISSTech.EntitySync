@@ -139,7 +139,11 @@ public sealed class EntitySyncOperationWorker(
                     ?? throw new InvalidOperationException(
                         "The immutable target entity was unavailable before dispatch.");
             }
-            var writeRequest = CreateWriteRequest(item, source, targetBefore, policy);
+            var resolvedParent = await ResolveCreateParentAsync(
+                    item, source, targetLease.Adapter, cancellationToken)
+                .ConfigureAwait(false);
+            var writeRequest = CreateWriteRequest(
+                item, source, targetBefore, policy, resolvedParent);
             var desired = PlanManifestBuilder.CreateAllowedDesiredPayload(
                 writeRequest, policy.Definition);
             if (PlanManifestBuilder.HashPayload(desired) != item.DesiredPayloadSha256)
@@ -195,6 +199,7 @@ public sealed class EntitySyncOperationWorker(
             var vendorRequestId = CreateVendorRequestId(
                 running.OperationId, item.ItemId);
             writeRequest.VendorRequestId = vendorRequestId;
+            writeRequest.IdempotencyKey = vendorRequestId;
             var prepared = Copy(
                 item, redactedBefore, beforeHash, vendorRequestId, dispatchAt,
                 EntitySyncItemOutcome.Pending, null, null);
@@ -450,11 +455,35 @@ public sealed class EntitySyncOperationWorker(
             tenantId, operation.OperationId, operation.Attempt, leaseOwner,
             clock.GetUtcNow(), CancellationToken.None);
 
+    private static async Task<EntityWriteParent?> ResolveCreateParentAsync(
+        EntitySyncOperationItem item,
+        ExternalEntity source,
+        IEntityAdapter targetAdapter,
+        CancellationToken cancellationToken)
+    {
+        if (!item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+            || !EntitySyncVendors.IsOrchestraMSP(item.TargetVendor)
+            || (!item.TargetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
+                && !item.TargetEntityType.Equals(
+                    "Address", StringComparison.OrdinalIgnoreCase)))
+            return null;
+        if (targetAdapter is not IEntityWriteParentResolver resolver)
+            throw new InvalidOperationException(
+                "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
+        var resolution = await resolver.ResolveWriteParentAsync(
+            source, cancellationToken).ConfigureAwait(false);
+        if (resolution.Status != EntityWriteParentResolutionStatus.Resolved
+            || resolution.Parent is null)
+            throw new InvalidOperationException(resolution.SafeCode);
+        return resolution.Parent;
+    }
+
     private EntityWriteRequest CreateWriteRequest(
         EntitySyncOperationItem item,
         ExternalEntity source,
         ExternalEntity? target,
-        EntitySyncPolicy policy)
+        EntitySyncPolicy policy,
+        EntityWriteParent? resolvedParent)
     {
         var matchOptions = new MatchOptions
         {
@@ -466,7 +495,12 @@ public sealed class EntitySyncOperationWorker(
             CreateMissing = policy.Definition.CreateMissing
         };
         var request = item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
-            ? mapper.MapCreate(source, item.TargetVendor, item.TargetEntityType, matchOptions)
+            ? mapper.MapCreate(
+                source,
+                item.TargetVendor,
+                item.TargetEntityType,
+                matchOptions,
+                resolvedParent)
             : mapper.MapUpdate(
                 source,
                 target ?? throw new InvalidOperationException(
