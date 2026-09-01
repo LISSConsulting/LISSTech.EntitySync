@@ -14,6 +14,9 @@
     <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="LISSTech.EntitySync.Platform.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="..\..\db\migrations\*.sql" Link="Migrations\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

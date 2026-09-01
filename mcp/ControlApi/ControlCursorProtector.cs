@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace LISSTech.EntitySync.Mcp.ControlApi;
@@ -13,6 +15,12 @@ public sealed class InvalidControlCursorException : ArgumentException
 public sealed class ControlCursorProtector
 {
     private const int Version = 1;
+    private const int MaximumCursorLength = 2048;
+    private const int MaximumPayloadLength = 1024;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+    };
     private readonly IDataProtector protector;
 
     public ControlCursorProtector(IDataProtectionProvider provider)
@@ -53,16 +61,125 @@ public sealed class ControlCursorProtector
         return (payload.OccurredAt.Value, payload.EventId.Value);
     }
 
-    private string Protect(CursorPayload payload) =>
-        protector.Protect(JsonSerializer.Serialize(payload));
+    public string ProtectRunStart(
+        string resource,
+        string tenantId,
+        DateTimeOffset highWater)
+    {
+        if (highWater.Offset != TimeSpan.Zero)
+            throw new ArgumentException("The run cursor high-water is invalid.");
+        return Protect(new RunCursorPayload(
+            Version,
+            resource,
+            tenantId,
+            highWater.ToString("O", CultureInfo.InvariantCulture),
+            null,
+            null));
+    }
+
+    public string ProtectRun(
+        string resource,
+        string tenantId,
+        DateTimeOffset highWater,
+        DateTimeOffset lastQueuedAt,
+        Guid lastOperationId)
+    {
+        if (highWater.Offset != TimeSpan.Zero
+            || lastQueuedAt.Offset != TimeSpan.Zero
+            || lastQueuedAt > highWater
+            || lastOperationId == Guid.Empty)
+            throw new ArgumentException("The run cursor position is invalid.");
+        return Protect(new RunCursorPayload(
+            Version,
+            resource,
+            tenantId,
+            highWater.ToString("O", CultureInfo.InvariantCulture),
+            lastQueuedAt.ToString("O", CultureInfo.InvariantCulture),
+            lastOperationId.ToString("D")));
+    }
+
+    public (
+        DateTimeOffset HighWater,
+        DateTimeOffset? LastQueuedAt,
+        Guid? LastOperationId) UnprotectRun(
+            string cursor,
+            string resource,
+            string tenantId)
+    {
+        var payload = UnprotectRunPayload(cursor);
+        if (payload.Version != Version
+            || !string.Equals(payload.Resource, resource, StringComparison.Ordinal)
+            || !string.Equals(payload.TenantId, tenantId, StringComparison.Ordinal)
+            || (payload.LastQueuedAt is null) != (payload.LastOperationId is null))
+            throw new InvalidControlCursorException();
+        var highWater = ParseCanonicalTime(payload.HighWater);
+        if (payload.LastQueuedAt is null) return (highWater, null, null);
+        var lastQueuedAt = ParseCanonicalTime(payload.LastQueuedAt);
+        var lastOperationId = ParseCanonicalGuid(payload.LastOperationId);
+        if (lastQueuedAt > highWater) throw new InvalidControlCursorException();
+        return (highWater, lastQueuedAt, lastOperationId);
+    }
+
+    private RunCursorPayload UnprotectRunPayload(string cursor)
+    {
+        ValidateCursorLength(cursor);
+        try
+        {
+            var json = protector.Unprotect(cursor);
+            if (json.Length > MaximumPayloadLength)
+                throw new InvalidControlCursorException();
+            return JsonSerializer.Deserialize<RunCursorPayload>(json, JsonOptions)
+                ?? throw new InvalidControlCursorException();
+        }
+        catch (InvalidControlCursorException)
+        {
+            throw;
+        }
+        catch
+        {
+            throw new InvalidControlCursorException();
+        }
+    }
+
+    private static DateTimeOffset ParseCanonicalTime(string? value)
+    {
+        if (value is null
+            || !DateTimeOffset.TryParseExact(
+                value,
+                "O",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var parsed)
+            || parsed.Offset != TimeSpan.Zero
+            || !string.Equals(
+                value,
+                parsed.ToString("O", CultureInfo.InvariantCulture),
+                StringComparison.Ordinal))
+            throw new InvalidControlCursorException();
+        return parsed;
+    }
+
+    private static Guid ParseCanonicalGuid(string? value)
+    {
+        if (value is null
+            || !Guid.TryParseExact(value, "D", out var parsed)
+            || parsed == Guid.Empty
+            || !string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal))
+            throw new InvalidControlCursorException();
+        return parsed;
+    }
+
+    private string Protect<T>(T payload) =>
+        protector.Protect(JsonSerializer.Serialize(payload, JsonOptions));
 
     private CursorPayload Unprotect(string cursor, string resource, string tenantId)
     {
-        if (string.IsNullOrWhiteSpace(cursor)) throw new InvalidControlCursorException();
+        ValidateCursorLength(cursor);
         try
         {
             var payload = JsonSerializer.Deserialize<CursorPayload>(
-                protector.Unprotect(cursor)) ?? throw new InvalidControlCursorException();
+                protector.Unprotect(cursor), JsonOptions)
+                ?? throw new InvalidControlCursorException();
             if (payload.Version != Version
                 || !payload.Resource.Equals(resource, StringComparison.Ordinal)
                 || !payload.TenantId.Equals(tenantId, StringComparison.Ordinal))
@@ -79,6 +196,12 @@ public sealed class ControlCursorProtector
         }
     }
 
+    private static void ValidateCursorLength(string cursor)
+    {
+        if (string.IsNullOrWhiteSpace(cursor) || cursor.Length > MaximumCursorLength)
+            throw new InvalidControlCursorException();
+    }
+
     private sealed record CursorPayload(
         int Version,
         string Resource,
@@ -86,4 +209,12 @@ public sealed class ControlCursorProtector
         int? Offset,
         DateTimeOffset? OccurredAt,
         Guid? EventId);
+
+    private sealed record RunCursorPayload(
+        int Version,
+        string Resource,
+        string TenantId,
+        string HighWater,
+        string? LastQueuedAt,
+        string? LastOperationId);
 }

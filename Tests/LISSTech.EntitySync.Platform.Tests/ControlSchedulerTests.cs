@@ -314,6 +314,7 @@ public sealed class ControlSchedulerTests
         public Task<bool> TryInsertAsync(string tenantId, EntitySyncOperation operation, IReadOnlyList<EntitySyncOperationItem> items, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<EntitySyncOperation?> FindByIdempotencyKeyAsync(string tenantId, string idempotencyKey, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<EntitySyncOperation?> GetAsync(string tenantId, Guid operationId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<EntitySyncOperationPage> ListPageAsync(string tenantId, EntitySyncOperationListCursor? cursor, int maximumRows, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsAsync(string tenantId, Guid operationId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<EntitySyncOperationItem?> GetItemAsync(string tenantId, Guid operationId, Guid itemId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<EntitySyncOperation?> TryLeaseNextAsync(string tenantId, string leaseOwner, DateTimeOffset now, DateTimeOffset leaseExpiresAt, CancellationToken cancellationToken) => throw new NotSupportedException();

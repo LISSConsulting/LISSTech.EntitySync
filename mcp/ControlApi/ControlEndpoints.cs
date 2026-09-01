@@ -98,7 +98,7 @@ public static class ControlEndpoints
             .Produces<QueuedRunResponse>(StatusCodes.Status202Accepted);
 
         Read(group.MapGet("/runs", ListRunsAsync),
-            "ListControlRuns").Produces<ControlPage<RunResponse>>();
+            "ListControlRuns").Produces<RunPageResponse>();
         Read(group.MapGet("/runs/{runId:guid}", GetRunAsync),
             "GetControlRun").Produces<RunResponse>();
         Read(group.MapGet("/runs/{runId:guid}/items", GetRunItemsAsync),
@@ -562,6 +562,7 @@ public static class ControlEndpoints
     }
 
     private static async Task<IResult> ListRunsAsync(
+        HttpContext http,
         IControlApiQueries queries,
         ControlRequestContext control,
         ControlCursorProtector cursors,
@@ -569,10 +570,40 @@ public static class ControlEndpoints
         int pageSize = 25,
         CancellationToken cancellationToken = default)
     {
-        var offset = Offset(cursors, cursor, "runs", control, pageSize);
-        var values = await queries.ListRunsAsync(
-            control.TenantId, offset, pageSize + 1, cancellationToken).ConfigureAwait(false);
-        return Page(values, pageSize, offset, cursors, "runs", control);
+        ValidatePageSize(pageSize);
+        if (http.Request.Query.ContainsKey("offset"))
+            throw new BadHttpRequestException("Offset pagination is not supported.");
+        EntitySyncOperationListCursor? position = null;
+        var hasCursor = !string.IsNullOrWhiteSpace(cursor);
+        if (hasCursor)
+        {
+            var decoded = cursors.UnprotectRun(cursor!, "runs", control.TenantId);
+            position = new EntitySyncOperationListCursor(
+                decoded.HighWater,
+                decoded.LastQueuedAt,
+                decoded.LastOperationId);
+        }
+        var page = await queries.ListRunsAsync(
+            control.TenantId, position, pageSize + 1, cancellationToken)
+            .ConfigureAwait(false);
+        IReadOnlyList<RunResponse> items = page.Items.Count > pageSize
+            ? page.Items.Take(pageSize).ToArray()
+            : page.Items;
+        string? next = null;
+        if (page.Items.Count > pageSize)
+        {
+            var last = items[^1];
+            next = cursors.ProtectRun(
+                "runs",
+                control.TenantId,
+                page.HighWater,
+                last.QueuedAt,
+                last.RunId);
+        }
+        var replay = hasCursor
+            ? cursor!
+            : cursors.ProtectRunStart("runs", control.TenantId, page.HighWater);
+        return Results.Ok(new RunPageResponse(items, replay, next));
     }
 
     private static async Task<IResult> GetRunAsync(

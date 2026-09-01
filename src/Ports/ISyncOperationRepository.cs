@@ -23,6 +23,15 @@ public sealed record UnknownItemLease(
     string LeaseOwner,
     DateTimeOffset LeaseExpiresAt);
 
+public sealed record EntitySyncOperationListCursor(
+    DateTimeOffset HighWater,
+    DateTimeOffset? LastQueuedAt,
+    Guid? LastOperationId);
+
+public sealed record EntitySyncOperationPage(
+    DateTimeOffset HighWater,
+    IReadOnlyList<EntitySyncOperation> Items);
+
 public interface ISyncOperationRepository
 {
     Task InsertAsync(
@@ -47,12 +56,11 @@ public interface ISyncOperationRepository
         Guid operationId,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<EntitySyncOperation>> ListAsync(
+    Task<EntitySyncOperationPage> ListPageAsync(
         string tenantId,
-        int offset,
+        EntitySyncOperationListCursor? cursor,
         int maximumRows,
-        CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<EntitySyncOperation>>([]);
+        CancellationToken cancellationToken);
 
     Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsAsync(
         string tenantId,

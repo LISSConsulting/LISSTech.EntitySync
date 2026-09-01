@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Text.Encodings.Web;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
@@ -14,6 +15,7 @@ using LISSTech.EntitySync.Ports;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -280,6 +282,136 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal("INVALID_CURSOR", await ProblemCode(malformed));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(101)]
+    public async Task Run_page_size_rejects_values_outside_one_through_one_hundred(
+        int pageSize)
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+
+        using var response = await client.GetAsync(
+            $"/api/v1/control/runs?pageSize={pageSize}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("PAGE_SIZE_OUT_OF_RANGE", await ProblemCode(response));
+    }
+
+    [Fact]
+    public async Task Run_list_rejects_offset_and_invalid_bounded_cursors_with_safe_errors()
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+        using var offset = await client.GetAsync("/api/v1/control/runs?offset=1");
+        Assert.Equal(HttpStatusCode.BadRequest, offset.StatusCode);
+        Assert.Equal("INVALID_REQUEST", await ProblemCode(offset));
+
+        foreach (var cursor in new[] { "1", new string('A', 4097) })
+        {
+            using var response = await client.GetAsync(
+                $"/api/v1/control/runs?cursor={Uri.EscapeDataString(cursor)}");
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal("INVALID_CURSOR", await ProblemCode(response));
+        }
+    }
+
+    [Fact]
+    public async Task Run_cursor_is_strict_tamper_evident_and_restart_stable()
+    {
+        var provider = factory.Services.GetRequiredService<IDataProtectionProvider>();
+        var firstCodec = new ControlCursorProtector(provider);
+        var restartedCodec = new ControlCursorProtector(provider);
+        var highWater = new DateTimeOffset(
+            2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        var lastQueuedAt = highWater.AddMinutes(-1);
+        var lastOperationId =
+            Guid.Parse("12345678-1234-1234-1234-123456789abc");
+        var cursor = firstCodec.ProtectRun(
+            "runs", "tenant-a", highWater, lastQueuedAt, lastOperationId);
+        Assert.DoesNotContain("tenant-a", cursor, StringComparison.Ordinal);
+        Assert.DoesNotContain(lastOperationId.ToString("D"), cursor, StringComparison.Ordinal);
+        Assert.Equal(
+            (highWater, lastQueuedAt, lastOperationId),
+            restartedCodec.UnprotectRun(cursor, "runs", "tenant-a"));
+        var pageStart = firstCodec.ProtectRunStart("runs", "tenant-a", highWater);
+        Assert.Equal(
+            (highWater, (DateTimeOffset?)null, (Guid?)null),
+            restartedCodec.UnprotectRun(pageStart, "runs", "tenant-a"));
+
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+        factory.LogRecorder.Clear();
+        using var initial = await client.GetAsync("/api/v1/control/runs?pageSize=1");
+        initial.EnsureSuccessStatusCode();
+        var initialBody = await initial.Content.ReadAsStringAsync();
+        using var initialJson = JsonDocument.Parse(initialBody);
+        var replayCursor = initialJson.RootElement
+            .GetProperty("replayCursor")
+            .GetString();
+        Assert.False(string.IsNullOrWhiteSpace(replayCursor));
+        using var replayedInitial = await client.GetAsync(
+            $"/api/v1/control/runs?pageSize=1&cursor={Uri.EscapeDataString(replayCursor!)}");
+        replayedInitial.EnsureSuccessStatusCode();
+        Assert.Equal(initialBody, await replayedInitial.Content.ReadAsStringAsync());
+        using var firstReplay = await client.GetAsync(
+            $"/api/v1/control/runs?pageSize=1&cursor={Uri.EscapeDataString(cursor)}");
+        using var secondReplay = await client.GetAsync(
+            $"/api/v1/control/runs?pageSize=1&cursor={Uri.EscapeDataString(cursor)}");
+        firstReplay.EnsureSuccessStatusCode();
+        secondReplay.EnsureSuccessStatusCode();
+        var firstReplayBody = await firstReplay.Content.ReadAsStringAsync();
+        Assert.Equal(
+            firstReplayBody,
+            await secondReplay.Content.ReadAsStringAsync());
+        using var firstReplayJson = JsonDocument.Parse(firstReplayBody);
+        Assert.Equal(
+            cursor,
+            firstReplayJson.RootElement.GetProperty("replayCursor").GetString());
+        Assert.DoesNotContain(
+            factory.LogRecorder.Entries,
+            entry => entry.Contains(cursor, StringComparison.Ordinal));
+
+        var tamperedChars = cursor.ToCharArray();
+        var tamperIndex = tamperedChars.Length / 2;
+        tamperedChars[tamperIndex] = tamperedChars[tamperIndex] == 'A' ? 'B' : 'A';
+        using var tampered = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(new string(tamperedChars))}");
+        Assert.Equal(HttpStatusCode.BadRequest, tampered.StatusCode);
+        Assert.Equal("INVALID_CURSOR", await ProblemCode(tampered));
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidRunCursorPayloads))]
+    public async Task Run_cursor_rejects_protected_noncanonical_payloads(string payload)
+    {
+        var provider = factory.Services.GetRequiredService<IDataProtectionProvider>();
+        var protectedPayload = provider
+            .CreateProtector("LISSTech.EntitySync.ControlApi.Cursor.v1")
+            .Protect(payload);
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+
+        using var response = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(protectedPayload)}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_CURSOR", await ProblemCode(response));
+    }
+
+    public static TheoryData<string> InvalidRunCursorPayloads => new()
+    {
+        """
+        {"Version":2,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc"}
+        """,
+        """
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"not-a-time","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc"}
+        """,
+        """
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","Unexpected":true}
+        """
+    };
+
     [Fact]
     public async Task Safe_errors_are_RFC_9457_and_do_not_expose_exception_details()
     {
@@ -338,8 +470,38 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Contains("\"ConnectionResponse\"", document);
         Assert.Contains("\"PlanResponse\"", document);
         Assert.Contains("\"RunResponse\"", document);
+        Assert.Contains("\"RunPageResponse\"", document);
         Assert.Equal(Inventory.Length,
             CountOccurrences(document, "\"operationId\": \""));
+        using var openApi = JsonDocument.Parse(document);
+        var runList = openApi.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/control/runs")
+            .GetProperty("get");
+        var parameterNames = runList.GetProperty("parameters")
+            .EnumerateArray()
+            .Select(value => value.GetProperty("name").GetString())
+            .ToArray();
+        Assert.Contains("cursor", parameterNames);
+        Assert.Contains("pageSize", parameterNames);
+        Assert.DoesNotContain("offset", parameterNames);
+        var runSchema = openApi.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty("RunResponse");
+        Assert.True(runSchema.GetProperty("properties").TryGetProperty("queuedAt", out _));
+        var runPageSchema = openApi.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty("RunPageResponse");
+        Assert.True(
+            runPageSchema.GetProperty("properties")
+                .TryGetProperty("replayCursor", out _));
+        Assert.Contains(
+            "replayCursor",
+            runPageSchema.GetProperty("required")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
     }
 
     [Fact]
@@ -583,6 +745,8 @@ public class EmptyQueryProxy : DispatchProxy
     {
         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>))
             return Array.CreateInstance(type.GetGenericArguments()[0], 0);
+        if (type == typeof(RunQueryResult))
+            return new RunQueryResult(DateTimeOffset.UnixEpoch, []);
         if (type == typeof(bool)) return false;
         return null;
     }

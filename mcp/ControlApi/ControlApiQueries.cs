@@ -5,6 +5,9 @@ using LISSTech.EntitySync.Ports;
 namespace LISSTech.EntitySync.Mcp.ControlApi;
 
 public sealed record PlanItemQueryResult(int TotalItems, IReadOnlyList<PlanItemResponse> Items);
+public sealed record RunQueryResult(
+    DateTimeOffset HighWater,
+    IReadOnlyList<RunResponse> Items);
 public sealed record AuditQueryResult(
     IReadOnlyList<AuditEventResponse> Events,
     DateTimeOffset? ContinuationOccurredAt,
@@ -26,8 +29,11 @@ public interface IControlApiQueries
     Task<PlanItemQueryResult?> GetPlanItemsAsync(
         string tenantId, Guid planId, int offset, int maximumRows,
         CancellationToken cancellationToken);
-    Task<IReadOnlyList<RunResponse>> ListRunsAsync(
-        string tenantId, int offset, int maximumRows, CancellationToken cancellationToken);
+    Task<RunQueryResult> ListRunsAsync(
+        string tenantId,
+        EntitySyncOperationListCursor? cursor,
+        int maximumRows,
+        CancellationToken cancellationToken);
     Task<RunResponse?> GetRunAsync(
         string tenantId, Guid runId, CancellationToken cancellationToken);
     Task<IReadOnlyList<RunItemResponse>?> GetRunItemsAsync(
@@ -117,10 +123,18 @@ public sealed class ControlApiQueries(
             page.Items.Select(PlanItemResponse.From).ToArray());
     }
 
-    public async Task<IReadOnlyList<RunResponse>> ListRunsAsync(
-        string tenantId, int offset, int maximumRows, CancellationToken cancellationToken) =>
-        (await operations.ListAsync(tenantId, offset, maximumRows, cancellationToken)
-            .ConfigureAwait(false)).Select(RunResponse.From).ToArray();
+    public async Task<RunQueryResult> ListRunsAsync(
+        string tenantId,
+        EntitySyncOperationListCursor? cursor,
+        int maximumRows,
+        CancellationToken cancellationToken)
+    {
+        var page = await operations.ListPageAsync(
+            tenantId, cursor, maximumRows, cancellationToken).ConfigureAwait(false);
+        return new RunQueryResult(
+            page.HighWater,
+            page.Items.Select(RunResponse.From).ToArray());
+    }
 
     public async Task<RunResponse?> GetRunAsync(
         string tenantId, Guid runId, CancellationToken cancellationToken)

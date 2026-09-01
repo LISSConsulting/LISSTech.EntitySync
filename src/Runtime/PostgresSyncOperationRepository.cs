@@ -102,13 +102,51 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadOperation(reader) : null;
     }
 
-    public async Task<IReadOnlyList<EntitySyncOperation>> ListAsync(
+    public async Task<EntitySyncOperationPage> ListPageAsync(
         string tenantId,
-        int offset,
+        EntitySyncOperationListCursor? cursor,
         int maximumRows,
         CancellationToken cancellationToken)
     {
-        ValidatePage(offset, maximumRows);
+        if (maximumRows is <= 0 or > 101)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows));
+        if (cursor is not null
+            && (cursor.HighWater.Offset != TimeSpan.Zero
+                || (cursor.LastQueuedAt is null) != (cursor.LastOperationId is null)
+                || cursor.LastQueuedAt?.Offset != TimeSpan.Zero
+                || cursor.LastQueuedAt > cursor.HighWater
+                || cursor.LastOperationId == Guid.Empty))
+            throw new ArgumentException("The operation list cursor is invalid.", nameof(cursor));
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        DateTimeOffset highWater;
+        if (cursor is null)
+        {
+            await using (var barrier = new NpgsqlCommand(
+                             """
+                             SELECT pg_advisory_xact_lock(
+                                 hashtextextended(
+                                     'lisstech.entitysync.run-history-high-water-v1', 0))
+                             """,
+                             connection,
+                             transaction))
+                await barrier.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await using var clock = new NpgsqlCommand(
+                "SELECT clock_timestamp()", connection, transaction);
+            await using var clockReader = await clock.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await clockReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("The database clock was unavailable.");
+            highWater = clockReader.GetFieldValue<DateTimeOffset>(0);
+        }
+        else
+        {
+            highWater = cursor.HighWater;
+        }
+
         const string sql = """
             SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
                    operation.run_id, operation.correlation_id,
@@ -126,17 +164,38 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
               ON plan.tenant_id = operation.tenant_id
              AND plan.plan_id = operation.plan_id
             WHERE operation.tenant_id = @tenant_id
-            ORDER BY operation.queued_at DESC, operation.operation_id
-            LIMIT @maximum_rows OFFSET @offset
+              AND operation.queued_at <= @high_water
+              AND (
+                    @last_queued_at IS NULL
+                    OR operation.queued_at < @last_queued_at
+                    OR (
+                        operation.queued_at = @last_queued_at
+                        AND operation.operation_id > @last_operation_id
+                    )
+                  )
+            ORDER BY operation.queued_at DESC, operation.operation_id ASC
+            LIMIT @maximum_rows
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddPage(command, tenantId, offset, maximumRows);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-        var result = new List<EntitySyncOperation>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            result.Add(ReadOperation(reader));
-        return result;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "high_water", NpgsqlDbType.TimestampTz, highWater);
+        PostgresControlPersistence.Add(
+            command, "last_queued_at", NpgsqlDbType.TimestampTz, cursor?.LastQueuedAt);
+        PostgresControlPersistence.Add(
+            command, "last_operation_id", NpgsqlDbType.Uuid, cursor?.LastOperationId);
+        PostgresControlPersistence.Add(
+            command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
+        var result = new List<EntitySyncOperation>(maximumRows);
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken)
+                         .ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                result.Add(ReadOperation(reader));
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new EntitySyncOperationPage(highWater, result);
     }
 
     public async Task<IReadOnlyList<EntitySyncOperationItem>> GetItemsAsync(
@@ -1600,13 +1659,22 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "unknown_count", NpgsqlDbType.Integer, unknown);
     }
 
-    internal static async Task InsertGraphAsync(
+    internal static async Task<DateTimeOffset> InsertGraphAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         EntitySyncOperation operation,
         IReadOnlyList<EntitySyncOperationItem> items,
         CancellationToken cancellationToken)
     {
+        await using (var barrier = new NpgsqlCommand(
+                         """
+                         SELECT pg_advisory_xact_lock_shared(
+                             hashtextextended(
+                                 'lisstech.entitysync.run-history-high-water-v1', 0))
+                         """,
+                         connection,
+                         transaction))
+            await barrier.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         const string operationSql = """
             INSERT INTO entitysync.sync_operations (
                 tenant_id, operation_id, plan_id, run_id, correlation_id,
@@ -1618,7 +1686,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             SELECT @tenant_id, @operation_id, @plan_id, @run_id, @correlation_id,
                    @approval_id, @route_scope, @source_connection_generation,
                    @target_connection_generation, @mode, @status, @idempotency_key,
-                   @lease_owner, @lease_expires_at, @attempt, @created_at, @queued_at,
+                   @lease_owner, @lease_expires_at, @attempt, @created_at, clock_timestamp(),
                    @started_at, @completed_at, @request_sha256, @total_count,
                    @succeeded_count, @failed_count, @skipped_count, @unknown_count
             FROM entitysync.sync_plans plan
@@ -1630,15 +1698,19 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
               AND plan.target_connection_generation = @target_connection_generation
               AND plan.expires_at > clock_timestamp()
               AND plan.status <> 'Expired'
+            RETURNING queued_at
             """;
+        DateTimeOffset persistedQueuedAt;
         await using (var command = new NpgsqlCommand(
                          operationSql, connection, transaction))
         {
             AddOperation(command, operation);
-            if (await command.ExecuteNonQueryAsync(cancellationToken)
-                    .ConfigureAwait(false) != 1)
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException(
                     "The operation does not bind the exact plan connection identity.");
+            persistedQueuedAt = reader.GetFieldValue<DateTimeOffset>(0);
         }
 
         const string itemSql = """
@@ -1669,6 +1741,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             await command.ExecuteNonQueryAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
+        return persistedQueuedAt;
     }
 
     internal static void ValidateGraph(
@@ -1819,7 +1892,6 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "lease_expires_at", NpgsqlDbType.TimestampTz, operation.LeaseExpiresAt);
         PostgresControlPersistence.Add(command, "attempt", NpgsqlDbType.Integer, operation.Attempt);
         PostgresControlPersistence.Add(command, "created_at", NpgsqlDbType.TimestampTz, operation.CreatedAt);
-        PostgresControlPersistence.Add(command, "queued_at", NpgsqlDbType.TimestampTz, operation.QueuedAt);
         PostgresControlPersistence.Add(command, "started_at", NpgsqlDbType.TimestampTz, operation.StartedAt);
         PostgresControlPersistence.Add(command, "completed_at", NpgsqlDbType.TimestampTz, operation.CompletedAt);
         PostgresControlPersistence.Add(

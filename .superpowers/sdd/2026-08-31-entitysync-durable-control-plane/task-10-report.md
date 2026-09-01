@@ -193,3 +193,62 @@ Changed areas: Application facade/planner/hosting; MCP connection/sync/exclusion
 1. The repeatable worker/reconciler assertion failure described above remains actionable outside Task 10; direct connection/plan/run reconstruction is GREEN.
 2. Minimal builds retain existing MSB3277 and nullable warnings, with no errors.
 3. Named Pester does not perform a successful live PowerShell/PostgreSQL import/export round-trip. Authenticated workbook success/tamper/key isolation/status preservation and Application import replay/conflict/policy/generation validation are covered in the focused C# run; durable paging and live PostgreSQL repository reconstruction are covered separately.
+
+## Run-history keyset stabilization handoff — 2026-09-01
+
+`EntitySyncOperation.CreatedAt` and persisted `QueuedAt` are immutable;
+`StartedAt` and `CompletedAt` remain mutable lifecycle timestamps. New operation
+graphs now assign persisted `queued_at` with PostgreSQL `clock_timestamp()` at
+INSERT and return that value. Remote ordering is `QueuedAt DESC, OperationId
+ASC`. `RunResponse` continues to expose required `queuedAt` separately from
+nullable `startedAt` and `completedAt`; no timestamp was relabelled.
+
+The former run-list chain ended in PostgreSQL `LIMIT/OFFSET`. It is now a clean
+keyset cutover. Every operation-creation transaction acquires the same fixed,
+payload-free shared advisory transaction lock before assigning `queued_at` and
+holds it through commit. A first-page read takes the matching exclusive
+transaction lock, then captures the DB high-water and queries in that
+transaction. It therefore observes every prior creator and prevents a later
+creator from receiving a timestamp below its high-water. Continuations filter
+`queued_at <= high_water`, seek by earlier timestamp or equal timestamp plus
+greater UUID, order UUID ascending, and fetch only `pageSize + 1`.
+
+`RunPageResponse` now contains `items`, required opaque `replayCursor`, and
+nullable `nextCursor`. The first-page replay cursor authenticates the captured
+high-water with no last key; replay reproduces that page. Later pages echo the
+validated input cursor. `nextCursor` remains the after-page position. Neither
+MCP nor PowerShell has a run-list cursor consumer; Orchestra must pass both
+cursors through without decoding them. Its Task 3 fixture change is limited to
+adding required string `replay_cursor`/wire `replayCursor` on the page model;
+the nested run item fixture keeps required `queued_at` distinct from
+`started_at`.
+
+The shared `ControlCursorProtector` emits authenticated URL-safe version-1
+canonical JSON bound to tenant/resource. It validates the optional page-start
+key pair, UTC times, lowercase UUID, exact schema/version, and a 2,048-character
+bound. Malformed, unknown, cross-tenant, tampered, and oversize cursors return
+fixed `INVALID_CURSOR`; no offset fallback remains. Informational ASP.NET
+request-start/finish logs are suppressed so cursor query values are not logged.
+
+RED evidence: missing keyset contract (`artifact://3227`, `artifact://3229`)
+and the delayed-visibility application-time defect found in review
+(`artifact://3282`). The live PostgreSQL/API/OpenAPI run is 11 passed, 0 failed
+(`artifact://3316`). It covers exact UUID ties, one/middle/final pages, a
+two-connection uncommitted creator barrier, post-high-water insertion with an
+old application timestamp, status/start mutation, repository/codec restart,
+first/current-page replay, malformed/version/schema/tamper/oversize rejection,
+bounds 1..100, and explicit offset rejection.
+
+The authenticated actual OpenAPI SHA-256 is
+`a926d0e7edf3d178f442d9e47cbbe667092fa43687a1db60c286079e8100b718`
+(`artifact://3326`). `ListControlRuns` and its path are preserved; schema impact
+is the dedicated `RunPageResponse.replayCursor` requirement. Exact affected
+builds are GREEN: Platform 0 errors (`artifact://3311`), Hosting
+(`artifact://3309`), and MCP (`artifact://3310`).
+
+Security/self-review found no cursor plaintext in payloads, fixed errors, or
+retained application logs. Shared creator locks remain mutually compatible;
+only first-page capture takes the brief exclusive barrier. The operational
+dependency is the already-required persistent Data Protection key ring; losing
+it invalidates outstanding cursors fail-closed. Existing nullable warnings
+remain in the Platform build.

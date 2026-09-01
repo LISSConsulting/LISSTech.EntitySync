@@ -1721,6 +1721,235 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Run_keyset_pages_preserve_ties_and_original_rows_after_concurrent_insert()
+    {
+        var context = await SeedControlContextAsync("run-keyset-ties");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var newestId = Guid.Parse("00000000-0000-0000-0000-000000000010");
+        var tieIds = new[]
+        {
+            Guid.Parse("00000000-0000-0000-0000-000000000001"),
+            Guid.Parse("00000000-0000-0000-0000-000000000002"),
+            Guid.Parse("00000000-0000-0000-0000-000000000003")
+        };
+        var oldestId = Guid.Parse("00000000-0000-0000-0000-000000000020");
+        var tieTime = context.Now.AddTicks(20);
+        var originals = new[]
+        {
+            CreateRun(newestId, tieTime.AddTicks(10), "newest"),
+            CreateRun(tieIds[2], tieTime, "tie-3"),
+            CreateRun(tieIds[0], tieTime, "tie-1"),
+            CreateRun(oldestId, context.Now.AddTicks(10), "oldest"),
+            CreateRun(tieIds[1], tieTime, "tie-2")
+        };
+        foreach (var operation in originals)
+        {
+            await operations.InsertAsync(
+                context.TenantId,
+                operation,
+                OperationItems(operation, manifest.Items, context.Now.AddDays(1)),
+                default);
+        }
+        foreach (var operation in originals)
+        {
+            await using var setTie = Database.CreateCommand(
+                """
+                UPDATE entitysync.sync_operations
+                SET queued_at = @queued_at
+                WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+                """);
+            setTie.Parameters.AddWithValue("queued_at", operation.QueuedAt);
+            setTie.Parameters.AddWithValue("tenant_id", context.TenantId);
+            setTie.Parameters.AddWithValue("operation_id", operation.OperationId);
+            Assert.Equal(1, await setTie.ExecuteNonQueryAsync());
+        }
+
+        var first = await operations.ListPageAsync(
+            context.TenantId, null, 2, default);
+        Assert.Equal([newestId, tieIds[0]], Ids(first));
+        Assert.True(first.HighWater >= originals.Max(value => value.QueuedAt));
+        var afterFirst = Position(first);
+
+        var concurrent = CreateRun(
+            Guid.Parse("00000000-0000-0000-0000-000000000099"),
+            context.Now,
+            "concurrent");
+        await operations.InsertAsync(
+            context.TenantId,
+            concurrent,
+            OperationItems(concurrent, manifest.Items, context.Now.AddDays(1)),
+            default);
+        Assert.True(
+            (await operations.GetAsync(
+                context.TenantId, concurrent.OperationId, default))!.QueuedAt
+            > first.HighWater);
+
+        var restarted = new PostgresSyncOperationRepository(Database);
+        var middle = await restarted.ListPageAsync(
+            context.TenantId, afterFirst, 2, default);
+        Assert.Equal([tieIds[1], tieIds[2]], Ids(middle));
+        Assert.Equal(first.HighWater, middle.HighWater);
+        var replay = await new PostgresSyncOperationRepository(Database).ListPageAsync(
+            context.TenantId, afterFirst, 2, default);
+        Assert.Equal(Ids(middle), Ids(replay));
+        Assert.Equal(middle.HighWater, replay.HighWater);
+
+        var final = await restarted.ListPageAsync(
+            context.TenantId, Position(middle), 2, default);
+        Assert.Equal([oldestId], Ids(final));
+        Assert.Empty((await restarted.ListPageAsync(
+            context.TenantId, Position(final), 2, default)).Items);
+
+        EntitySyncOperation CreateRun(Guid operationId, DateTimeOffset queuedAt, string key) =>
+            EntitySyncOperation.QueueDryRun(
+                context.TenantId,
+                operationId,
+                manifest.Plan.PlanId,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                key,
+                "route-a",
+                context.Source.ConnectionId,
+                1,
+                context.Target.ConnectionId,
+                1,
+                queuedAt);
+    }
+
+    [Fact]
+    public async Task Run_first_page_waits_for_a_prior_uncommitted_creator()
+    {
+        var context = await SeedControlContextAsync("run-keyset-barrier");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var operation = EntitySyncOperation.QueueDryRun(
+            context.TenantId,
+            Guid.Parse("20000000-0000-0000-0000-000000000001"),
+            manifest.Plan.PlanId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "barrier-operation",
+            "route-a",
+            context.Source.ConnectionId,
+            1,
+            context.Target.ConnectionId,
+            1,
+            context.Now);
+        await using var creator = await Database.OpenConnectionAsync(default);
+        await using var creatorTransaction =
+            await creator.BeginTransactionAsync(default);
+        await PostgresSyncOperationRepository.InsertGraphAsync(
+            creator,
+            creatorTransaction,
+            operation,
+            OperationItems(operation, manifest.Items, context.Now.AddDays(1)),
+            default);
+
+        var firstPage = operations.ListPageAsync(
+            context.TenantId, null, 2, default);
+        await AssertStillRunningAsync(firstPage);
+        await creatorTransaction.CommitAsync();
+
+        var page = await firstPage;
+        Assert.Equal([operation.OperationId], Ids(page));
+        Assert.True(page.Items[0].QueuedAt <= page.HighWater);
+    }
+
+    [Fact]
+    public async Task Run_keyset_continuation_ignores_status_and_start_time_changes()
+    {
+        var context = await SeedControlContextAsync("run-keyset-mutation");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var operations = new PostgresSyncOperationRepository(Database);
+        var manifest = Manifest(context, 1);
+        await plans.InsertAsync(context.TenantId, manifest, default);
+        var ids = new[]
+        {
+            Guid.Parse("10000000-0000-0000-0000-000000000001"),
+            Guid.Parse("10000000-0000-0000-0000-000000000002"),
+            Guid.Parse("10000000-0000-0000-0000-000000000003")
+        };
+        var queued = ids.Select((id, index) => EntitySyncOperation.QueueDryRun(
+            context.TenantId,
+            id,
+            manifest.Plan.PlanId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            $"mutation-{index}",
+            "route-a",
+            context.Source.ConnectionId,
+            1,
+            context.Target.ConnectionId,
+            1,
+            context.Now.AddTicks((3 - index) * 10L))).ToArray();
+        foreach (var operation in queued)
+        {
+            await operations.InsertAsync(
+                context.TenantId,
+                operation,
+                OperationItems(operation, manifest.Items, context.Now.AddDays(1)),
+                default);
+        }
+        foreach (var operation in queued)
+        {
+            await using var setOrder = Database.CreateCommand(
+                """
+                UPDATE entitysync.sync_operations
+                SET queued_at = @queued_at
+                WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+                """);
+            setOrder.Parameters.AddWithValue("queued_at", operation.QueuedAt);
+            setOrder.Parameters.AddWithValue("tenant_id", context.TenantId);
+            setOrder.Parameters.AddWithValue("operation_id", operation.OperationId);
+            Assert.Equal(1, await setOrder.ExecuteNonQueryAsync());
+        }
+
+        var first = await operations.ListPageAsync(
+            context.TenantId, null, 1, default);
+        Assert.Equal([ids[0]], Ids(first));
+        var leased = queued[0].Lease("run-history-worker", context.Now.AddMinutes(5));
+        Assert.True(await operations.TryReplaceAsync(
+            context.TenantId,
+            queued[0].OperationId,
+            EntitySyncOperationStatus.Queued,
+            leased,
+            default));
+        var running = leased.Start(context.Now.AddMinutes(1));
+        Assert.True(await operations.TryReplaceAsync(
+            context.TenantId,
+            leased.OperationId,
+            EntitySyncOperationStatus.Leased,
+            running,
+            default));
+
+        var second = await operations.ListPageAsync(
+            context.TenantId, Position(first), 1, default);
+        var final = await operations.ListPageAsync(
+            context.TenantId, Position(second), 1, default);
+        Assert.Equal([ids[1]], Ids(second));
+        Assert.Equal([ids[2]], Ids(final));
+        Assert.Equal(
+            EntitySyncOperationStatus.Running,
+            (await operations.ListPageAsync(
+                context.TenantId, null, 1, default)).Items[0].Status);
+    }
+
+    private static Guid[] Ids(EntitySyncOperationPage page) =>
+        page.Items.Select(value => value.OperationId).ToArray();
+
+    private static EntitySyncOperationListCursor Position(EntitySyncOperationPage page)
+    {
+        var last = Assert.Single(page.Items.TakeLast(1));
+        return new EntitySyncOperationListCursor(
+            page.HighWater, last.QueuedAt, last.OperationId);
+    }
+
+    [Fact]
     public async Task Configured_lease_reclaims_after_database_expiry_across_worker_reconstruction()
     {
         var context = await SeedControlContextAsync("lease");

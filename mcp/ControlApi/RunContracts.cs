@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Mcp.ControlApi;
@@ -36,6 +37,11 @@ public sealed record RunResponse(
         value.StartedAt,
         value.CompletedAt);
 }
+
+public sealed record RunPageResponse(
+    IReadOnlyList<RunResponse> Items,
+    [property: Required] string ReplayCursor,
+    string? NextCursor);
 
 public sealed record RunItemResponse(
     Guid ItemId,
