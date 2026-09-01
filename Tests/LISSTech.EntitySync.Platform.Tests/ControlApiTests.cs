@@ -70,6 +70,42 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         (HttpMethod.Post, "/api/v1/control/expert/custom-properties", ControlPolicies.Expert)
     ];
 
+    [Theory]
+    [InlineData("Production", "true")]
+    [InlineData("Development", null)]
+    [InlineData("Testing", "false")]
+    public void Http_loopback_authority_requires_an_explicit_nonproduction_test_override(
+        string environmentName,
+        string? allowInsecureTestAuthority)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            mcp::McpAuthorityConfiguration.Resolve(
+                "http://127.0.0.1:18082",
+                environmentName,
+                allowInsecureTestAuthority));
+
+        Assert.Contains("absolute HTTPS authority", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Development")]
+    [InlineData("Testing")]
+    public void Explicit_nonproduction_test_override_allows_only_loopback_http(string environmentName)
+    {
+        var authority = mcp::McpAuthorityConfiguration.Resolve(
+            "http://127.0.0.1:18082",
+            environmentName,
+            "true");
+
+        Assert.Equal("http://127.0.0.1:18082/", authority.Value);
+        Assert.False(authority.RequireHttpsMetadata);
+        Assert.Throws<InvalidOperationException>(() =>
+            mcp::McpAuthorityConfiguration.Resolve(
+                "http://identity.example.test",
+                environmentName,
+                "true"));
+    }
+
     [Fact]
     public async Task Complete_business_route_inventory_is_OAuth_protected()
     {
@@ -266,9 +302,9 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         using var unavailableFactory = factory.WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
             {
-                services.RemoveAll<IControlApiQueries>();
-                services.AddSingleton<IControlApiQueries>(
-                    DispatchProxy.Create<IControlApiQueries, DependencyFailureQueryProxy>());
+                services.RemoveAll<IEntitySyncControlCommands>();
+                services.AddSingleton<IEntitySyncControlCommands>(
+                    DispatchProxy.Create<IEntitySyncControlCommands, DependencyFailureControlProxy>());
             }));
         using var client = unavailableFactory.CreateClient();
         AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
@@ -408,10 +444,21 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
         Set("MCP_OAUTH_RESOURCE", "https://entitysync.example.test");
         Set("MCP_OAUTH_AUDIENCE", "api://entitysync-test");
         Set("DATABASE_URL", "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=1");
+        Set(
+            "ORCHESTRA_BASE_URL",
+            "https://directory.example.test/api/v1/internal/client-directory/");
+        Set("ORCHESTRA_AUTHORITY", "https://login.example.test/tenant");
+        Set("ORCHESTRA_TENANT_ID", "tenant");
+        Set("ORCHESTRA_CLIENT_ID", "control-api-test");
+        Set("ORCHESTRA_RESOURCE", "api://orchestra-directory");
+        Set("ORCHESTRA_CLIENT_SECRET", Guid.NewGuid().ToString("N"));
+        Set("ENTITYSYNC_WORKER_LEASE_SECONDS", "60");
+        Set("ENTITYSYNC_WORKER_HEARTBEAT_SECONDS", "10");
+        Set("ENTITYSYNC_WORKER_RETRY_SECONDS", "5");
         Set("ENTITYSYNC_DATA_PROTECTION_KEY_PATH", keyPath);
         Set("ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST", "om-workload");
         Set("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://logfire-us.pydantic.dev/v1/logs");
-        Set("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=test-token");
+        Set("OTEL_EXPORTER_OTLP_HEADERS", $"Authorization={Guid.NewGuid():N}");
         Set("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
         Set("OTEL_SERVICE_NAME", "lisstech-entitysync-mcp-test");
     }
@@ -538,12 +585,17 @@ public class EmptyQueryProxy : DispatchProxy
     }
 }
 
-public class DependencyFailureQueryProxy : DispatchProxy
+public class DependencyFailureControlProxy : DispatchProxy
 {
-    protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args) =>
-        throw new EntitySyncDependencyUnavailableException(
-            "The entity adapter is unavailable.",
-            new InvalidOperationException("vendor-secret-response"));
+    protected override object? Invoke(System.Reflection.MethodInfo? targetMethod, object?[]? args)
+    {
+        if (targetMethod?.Name != nameof(IEntitySyncControlCommands.ListConnectionsAsync))
+            throw new NotSupportedException(targetMethod?.Name);
+        return Task.FromException<IReadOnlyList<EntitySyncConnectionDefinition>>(
+            new EntitySyncDependencyUnavailableException(
+                "The entity adapter is unavailable.",
+                new InvalidOperationException("vendor-secret-response")));
+    }
 }
 
 public sealed class SensitiveLogRecorder : ILoggerProvider

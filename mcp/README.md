@@ -1,129 +1,122 @@
-# LISSTech EntitySync MCP Server
+# LISSTech EntitySync MCP and Control Plane
 
-The MCP server exposes EntitySync connection, discovery, planning, and guarded apply tools to MCP clients. It supports two transports from one executable:
+The MCP executable has two modes:
 
-| Transport | Configuration | Intended use |
+| Mode | Configuration | Scope |
 |---|---|---|
-| stdio | Default, or `MCP_TRANSPORT=stdio` | Local desktop MCP clients |
-| Streamable HTTP | `MCP_TRANSPORT=http` | Coolify and other container platforms |
+| Local stdio | `MCP_TRANSPORT=stdio` (default) | Local MCP tools and a user-local key ring |
+| Production HTTP | `MCP_TRANSPORT=http` | OAuth-protected MCP tools and the durable `/api/v1/control/*` API |
 
-HTTP mode serves:
+The scheduler is a separate lease-based worker. PostgreSQL is authoritative for connections, immutable policy versions, plans and inspections, one-time approvals, operations, item evidence, schedules, canonical changes, work checkpoints, and audit metadata. API and scheduler processes can restart without changing those IDs or losing terminal state.
+
+## HTTP surfaces and authorization
 
 | Route | Authentication | Purpose |
 |---|---|---|
-| `/mcp` | OAuth 2.1 bearer access token | Streamable HTTP MCP endpoint |
-| `/.well-known/oauth-protected-resource/mcp` | None | RFC 9728 protected-resource metadata |
-| `/health` | None | Container and Coolify health probe |
+| `/mcp` | JWT bearer with `MCP_OAUTH_REQUIRED_SCOPE` | Streamable HTTP MCP |
+| `/api/v1/control/*` | JWT bearer plus the endpoint permission | Durable control API |
+| `/openapi/v1.json` | `EntitySync.Read` | Control OpenAPI document |
+| `/.well-known/oauth-protected-resource/mcp` | None | RFC 9728 metadata |
+| `/health` | None | Process liveness only |
+| `/health/ready` | None | Database migration, key-ring and recent worker-heartbeat readiness |
 
-HTTP mode is an OAuth resource server; it does not issue tokens or handle interactive login. It validates signed JWT access tokens through the configured authorization server, including signature, issuer, expiration, audience, and scope. The OAuth access token is never forwarded to vendor APIs.
+JWT validation checks signature, issuer, expiration, audience and the relevant permission. A control identity must contain exactly one `tid` and exactly one actor form:
 
-## Coolify Deployment
+- delegated: one `oid`, no `azp`, and permissions in `scp`;
+- workload: one `azp`, no `oid`, and permissions in `roles`.
 
-1. Configure an OAuth 2.1 authorization server that issues signed JWT access tokens and exposes OAuth authorization-server metadata plus OIDC/JWKS discovery. Register `https://<domain>/mcp` as the resource/audience and allow the `mcp:tools` scope. Enable dynamic client registration when the MCP clients require it, or register those clients manually.
-2. Create a Docker Compose resource from this Git repository and use the root `docker-compose.yaml` Compose file.
-3. Set `MCP_OAUTH_AUTHORITY` to the authorization server issuer URL.
-4. Set `MCP_OAUTH_RESOURCE` to the canonical public MCP URL, such as `https://<domain>/mcp`. This exact value is advertised to MCP clients as the OAuth resource.
-5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
-6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
-   For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
-7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for permanent exclusions, scheduler change-state checkpoints, and migration coordination.
-8. Set the HaloPSA and NetSuite variables listed below. They are required by `entitysync-scheduler`; configure any additional vendors the MCP service will use.
-9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; its unauthenticated health and status routes are intentionally Compose-network-only.
-   The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
-10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server. Coolify should also report `entitysync-scheduler` healthy from its internal `/health` probe.
-11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
+Mixing delegated scopes and application roles, omitting the actor ID, or supplying ambiguous claims fails closed. Permissions are `EntitySync.Read`, `EntitySync.Operate`, `EntitySync.Approve`, `EntitySync.Manage`, `EntitySync.Audit`, and `EntitySync.Expert`. Canonical-change intake additionally requires an `azp` listed in comma-separated `ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST`. The OAuth token is never forwarded to a vendor.
 
-Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
+## Required production configuration
 
-### Scheduled NetSuite-to-Halo Reconciliation
+Compose uses required interpolation for every credential; never add secret defaults or commit a populated `.env`.
 
-`entitysync-scheduler` is a fixed, changed-only NetSuite Customer to HaloPSA Client reconciliation sidecar:
-
-- It runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry; the next attempt waits the normal 12-hour interval.
-- It queries both active and inactive NetSuite customers. It updates only Halo clients already linked by the configured NetSuite customer-ID custom field; `createMissing` is always false, so the sidecar never creates Halo clients.
-- The first successful deployment is an intentional baseline reconciliation: every linked target is updated once, and its desired mapped write is checkpointed. Later runs skip writes whose mapped desired payload is unchanged.
-- PostgreSQL stores the route-scoped target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful target update. A mapper change that changes the desired payload, or a digest schema-version change, forces reconciliation even when an older hash exists.
-- The route scope is derived from the configured NetSuite account and Halo base URL. A PostgreSQL advisory lock keyed with `hashtextextended` over the tenant plus route scope prevents overlapping replicas from applying the same route.
-- Changed-only detection compares the newly mapped desired payload with the successful PostgreSQL checkpoint. It does **not** read back every Halo field, so manual Halo drift is not detected unless NetSuite input or mapping/digest behavior also changes.
-- Every plan is fully paged, digest-checked, approved, and applied by the sidecar. A connection, planning, validation, approval, or apply failure is bounded to the run and recorded without vendor payloads or credentials.
-
-The scheduler exposes only these internal routes:
-
-| Route | Meaning |
+| Group | Variables |
 |---|---|
-| `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
-| `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
+| OAuth resource server | `MCP_OAUTH_AUTHORITY`, `MCP_OAUTH_RESOURCE`, `MCP_OAUTH_AUDIENCE`; optional advertised `MCP_OAUTH_SCOPES`, single `MCP_OAUTH_REQUIRED_SCOPE`, authorization/token endpoint and public-client hints |
+| Durable state | `POSTGRES_PASSWORD`, `DATABASE_URL`, `ENTITYSYNC_TENANT_IDS` |
+| Shared encryption | `ENTITYSYNC_DATA_PROTECTION_KEY_PATH` (Compose fixes both hosts to the same named volume and application name) |
+| Worker bounds | `ENTITYSYNC_WORKER_LEASE_SECONDS` (30–600), `ENTITYSYNC_WORKER_HEARTBEAT_SECONDS` (1–30 and less than the lease), `ENTITYSYNC_WORKER_RETRY_SECONDS` (1–60) |
+| Orchestra Client Directory | `ORCHESTRA_BASE_URL` ending `/api/v1/internal/client-directory/`, `ORCHESTRA_AUTHORITY`, `ORCHESTRA_TENANT_ID`, `ORCHESTRA_CLIENT_ID`, `ORCHESTRA_RESOURCE`, `ORCHESTRA_CLIENT_SECRET` |
+| Telemetry | official Logfire `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, secret `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` |
 
-No authentication is installed on these routes because Compose does not publish the scheduler port. Inspect them only from the private Compose network or Coolify's container console.
+Orchestra authority and Client Directory URLs must be safe HTTPS service URLs. `MCP_OAUTH_AUTHORITY` is HTTPS-only in Production. The executable smoke may use loopback HTTP only when the host environment is `Testing` or `Development` and `ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY=true`; either condition alone still fails closed. Other adapter credentials remain optional until a connection for that vendor is created.
 
-### Vendor Variables
+Non-secret platform IDs such as Orchestra platform-instance IDs, `NCENTRAL_SERVICE_ORG_ID`, connection IDs, tenant IDs, policy IDs and route scopes may be stored in normal configuration. They are identity and fencing inputs, not credentials. Client secrets, tokens, passwords, signing keys and data-protection keys remain secret material.
 
-HaloPSA and NetSuite are mandatory for this Compose stack because the scheduler always uses them. Configure other vendor rows only when the MCP service needs them; `connect_vendor` reads those values when it creates an adapter.
+## Container contract
 
-| Vendor | Required variables |
-|---|---|
-| HaloPSA | `HALO_BASE_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET` |
-| NetSuite | `NETSUITE_ACCOUNT_ID`, `NETSUITE_CONSUMER_KEY`, `NETSUITE_CONSUMER_SECRET`, `NETSUITE_TOKEN_ID`, `NETSUITE_TOKEN_SECRET` |
-| N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID` |
-| AgentController | `AGENTCONTROLLER_AUTH_BASE_URL`, `AGENTCONTROLLER_ENTRA_TENANT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_SECRET`, `AGENTCONTROLLER_ENTRA_SCOPE` |
-| Bill.com | `BILLCOM_API_TOKEN` |
+`docker-compose.yaml` runs pinned PostgreSQL, API and scheduler images. All three containers use explicit numeric non-root users, read-only root filesystems, dropped capabilities, `no-new-privileges`, bounded tmpfs mounts and bounded health/start/stop behavior. There are no source bind mounts.
 
-The root `.env.example` lists the minimal local Compose variables. `docker-compose.yaml` also passes through optional adapter settings documented in the main README.
+Only these named volumes are writable:
 
-DPAPI-backed EntitySync profiles are Windows-only and are intentionally not mounted into the Linux container. Use Coolify secret environment variables for container deployments.
+| Volume | Writers | Purpose |
+|---|---|---|
+| `entitysync-db-data` | PostgreSQL | Durable database cluster |
+| `entitysync-data-protection-keys` | API and scheduler | Shared ASP.NET Data Protection key ring |
 
-Remote `connect_vendor` calls cannot supply endpoints or credentials. Those values are server-managed, and vendor base URLs must use HTTPS. A connection receives a stable ID and generation; use distinct connection IDs when a future configuration provider exposes multiple accounts for the same vendor.
+The API probe targets `/health/ready`; it performs no vendor I/O. Readiness is `503` when migration `018_snapshot_evidence_enrichment` is absent, the key ring cannot protect and unprotect, or the newest worker heartbeat is older than three configured heartbeat intervals. `/health` remains a liveness probe and does not imply safe control operations.
 
-Permanent exclusions are stored in PostgreSQL and scoped to the exact tenant, source/target vendors, connection IDs, and entity types. Manage them with `list_entity_exclusions`, `add_entity_exclusion`, and `remove_entity_exclusion`; use immutable vendor source IDs, never names. An empty exclusion list is valid. If exclusion storage cannot be read, `create_sync_plan` with `createMissing=true` fails before returning a plan, and apply revalidates exclusions before any create. AgentController authoritative customer-scope routes reject exclusions because omitting a row could retire an existing scope.
+Validate and build without starting:
 
-For AgentController, the MCP host uses the configured Entra service principal with the OAuth 2.0 `client_credentials` grant, then exchanges that Entra access token at `POST /v1/operator-token/exchange`. The exchange response supplies the operations/PostgREST base URL and short-lived bearer token; callers cannot provide either value. Configure `AGENTCONTROLLER_ENTRA_SCOPE` as the AgentController application audience plus `/.default`. The service principal must be assigned the `EntitySync.CustomerScopeSync` Entra app role and registered in AgentController with only `customer_scope_sync:write`. Tokens remain in memory and a rejected operations token is exchanged once before one retry.
-
-## Safe Workflow
-
-1. Call `connect_vendor` for the source and target and retain both connection IDs.
-2. Call `create_sync_plan` with those connection IDs. Planning performs no writes. For a focused plan, pass `sourceSearch` and `sourceCount` to bound the vendor query and `sourceEntityId` to require the exact immutable vendor ID. A missing or duplicate exact ID fails before target discovery.
-3. Call `get_sync_plan` until every page has been inspected.
-4. Call `approve_sync_plan` with the final inspected digest.
-5. Call `apply_sync_plan` with `apply=false` for a dry run.
-6. Call `apply_sync_plan` with `apply=true` once, only after review. This starts background execution and immediately returns its current snapshot; it does not wait for writes to finish. Approval is consumed, so the plan cannot be replayed.
-7. Poll `get_sync_plan_apply` with the plan ID until the snapshot status is `Applied` or `Failed`. Repeating `apply_sync_plan` for that plan returns the existing operation; it never retries the operation or duplicates writes.
-
-Plans expire after four hours and are bound to the exact source and target connection generations used during planning. Reconnecting either account invalidates existing plans. Each tenant is limited to 20 retained plans, 32 connections, and 5,000 source or target entities per plan side.
-
-Focused one-customer example:
-
-```json
-{
-  "sourceVendor": "NetSuite",
-  "targetVendor": "HaloPSA",
-  "sourceConnectionId": "netsuite",
-  "targetConnectionId": "halopsa",
-  "sourceEntityType": "Customer",
-  "targetEntityType": "Client",
-  "sourceSearch": "Degmor",
-  "sourceCount": 10,
-  "sourceEntityId": "1816",
-  "createMissing": true
-}
+```powershell
+just mcp-compose-config
+just mcp-docker-build
 ```
 
-Plan pages expose `sourceId` and `targetId` alongside display names so approval can be based on immutable identities. `sourceEntityId` is an assertion over the bounded vendor query, not a name match; combine it with a selective `sourceSearch` when the vendor account is large.
+## Key-ring backup and recovery
 
-HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integration-link writebacks that currently exist only in the reviewed PowerShell executor. The MCP application executor rejects those workflows instead of performing incomplete target-only writes.
+Back up the PostgreSQL volume and data-protection key volume as one recovery set before migration, deployment or key rotation. Restrict key backups like credentials, encrypt them at rest, and test restore to an isolated environment.
 
-## Operational Model
+To restore:
 
-- Run exactly one replica. Connections and plans are partitioned by the validated issuer plus OAuth `sub` claim, so equal subjects from different issuers cannot share in-memory state. Permanent exclusion audit actors use the same immutable identity.
-- A restart clears connections, plans, and in-memory apply-operation snapshots. In-flight applies are not recovered or resumed, and cannot be polled after restart. Reconnect vendors and create a fresh plan after each deployment or restart.
-- Creating a plan and polling apply status are read-only. Applying writes requires digest approval and `apply=true`; the default is a synchronous dry run.
-- `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
-- Credential-bearing vendor clients reject redirects, cap each response at 8 MiB, and share per-origin request spacing and concurrency limits. N-central SOAP endpoints must be relative paths on the configured HTTPS origin. Vendor pagination and Halo site scans fail closed at bounded scan limits.
-- Both application images are framework-dependent and use the same digest-pinned SDK and ASP.NET runtime images; local release builds remain self-contained single files.
-- Access-token lifetime, revocation, user consent, client registration, and signing-key rotation belong to the authorization server. The MCP server refreshes signing keys from its discovery metadata.
+1. Stop both API and scheduler so neither writes state or rotates keys.
+2. Restore PostgreSQL and the matching key-ring backup from the same recovery point.
+3. Mount the key ring at the configured path for both processes with the same `LISSTech.EntitySync.Control` application name.
+4. Start the scheduler, wait for migrations and a fresh heartbeat, then start the API and require `/health/ready` to return `200`.
+5. Test one existing connection and read one retained full audit value before resuming applies.
 
-## Local Development
+Loss of the key ring is not repaired by creating a new empty ring. Existing connection secrets and retained full-value/snapshot ciphertext become undecryptable. Preserve metadata, disable affected work, reconnect credentials, and reconcile every `Unknown` item from authoritative vendor state; never blindly redispatch it.
 
-Build or run either local application:
+## Planning and apply workflow
+
+1. Create and test source and target connections. Remote callers provide identity and non-secret platform-instance values only; server configuration owns endpoints and credentials.
+2. Create an immutable policy version and a bounded plan. Planning performs no writes.
+3. Fetch every plan page. Inspection coverage is persisted and digest-bound.
+4. Approve the exact inspected digest. Approval is one-time and consumed atomically by apply.
+5. Queue a dry run and inspect its terminal operation.
+6. Queue apply once and poll the durable operation. A repeated idempotent request returns the same operation; it does not create another write.
+7. Inspect item snapshots and correlated audit events. Before/desired/result evidence uses the shared key ring.
+
+An item with outcome `Unknown` means dispatch may have reached the vendor but the outcome was not proved. The worker must read authoritative vendor state and prove the desired state before marking it succeeded. Inconclusive reconciliation remains `Unknown`; it must not be blindly retried or redispatched.
+
+## Retention and audit
+
+Audit metadata is immutable and retained after full values expire. Full audit values and operation item snapshots are encrypted and expire after 365 days. The retention worker scrubs ciphertext only after database time reaches `expires_at`, records `values_redacted_at`, and preserves metadata and hashes. Before expiry, ciphertext cannot be cleared or mutated. A snapshot may fill a previously-null before or after half once while preserving identity and expiry; already populated ciphertext is immutable.
+
+Backups can retain older ciphertext beyond the live 365-day window. Apply equivalent backup expiration and destruction controls.
+
+## Start, restart and rollback runbook
+
+### Initial start or forward deployment
+
+1. Back up database and key ring together.
+2. Validate required configuration and `docker compose config --quiet`.
+3. Build both images and inspect their pinned base digests and numeric users.
+4. Start PostgreSQL and wait for `pg_isready`.
+5. Start the scheduler. Startup applies forward-only idempotent migrations before work and then records heartbeats.
+6. Start the API. Require `/health`, then `/health/ready`; do not use vendor probes for readiness.
+7. Test configured connections explicitly, then resume schedules and canonical intake.
+
+### Routine restart
+
+Stop API and scheduler gracefully, leave both named volumes attached, start scheduler first, wait for a fresh heartbeat, then start API. Verify that pre-restart plan, operation and audit IDs return unchanged. Leases expire and are fenced; work checkpoints resume from durable state. Do not manually reset leases or approvals.
+
+### Rollback
+
+Stop both application processes before changing binaries. Database migrations are forward-only: roll back an image only when it is documented compatible with the current schema. Otherwise restore the pre-deployment database and matching key ring together. Never roll back only the database, delete migration rows, reuse a consumed approval, or discard `Unknown` evidence. After rollback, require readiness and reconcile in-flight/Unknown vendor outcomes before enabling work.
+
+## Local development
 
 ```powershell
 just mcp-build
@@ -132,10 +125,4 @@ just scheduler-build
 just scheduler-run
 ```
 
-Run the same Compose deployment locally after populating an ignored `.env` file:
-
-```powershell
-docker compose up --build
-```
-
-Both application containers run as the image's non-root `$APP_UID`, have read-only root filesystems, drop all Linux capabilities, set `no-new-privileges`, use an init process and `unless-stopped` restart policy, and receive only a 64 MiB writable in-memory `/tmp`. The scheduler adds no state or credential volume; PostgreSQL is its only durable state.
+Local stdio mode may create a user-local key directory. Production HTTP and scheduler modes require an explicit durable key path. DPAPI profiles are Windows-only and are not a Linux-container credential mechanism.

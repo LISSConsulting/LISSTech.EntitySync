@@ -397,7 +397,8 @@ public sealed class PlatformTests
 
         connections.Register("tenant", "halo", new FakeAdapter("HaloPSA"));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None));
+        await Assert.ThrowsAsync<StaleConnectionGenerationException>(() =>
+            service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None));
     }
 
     [Fact]
@@ -527,27 +528,37 @@ public sealed class PlatformTests
     }
 
     [Fact]
-    public void ExpiredPlansAreEvicted()
+    public void Legacy_test_plan_repository_leaves_expiration_to_the_durable_service()
     {
         var repository = new TestEntitySyncPlanRepository();
-        var plan = new EntitySyncPlan { TenantId = "tenant", ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1) };
+        var plan = new EntitySyncPlan
+        {
+            TenantId = "tenant",
+            ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(-1)
+        };
         repository.Add(plan);
 
-        Assert.Throws<InvalidOperationException>(() => repository.Get("tenant", plan.Id));
-        Assert.Throws<KeyNotFoundException>(() => repository.Get("tenant", plan.Id));
+        Assert.Equal(plan.Id, repository.Get("tenant", plan.Id).Id);
+        Assert.Equal(plan.Id, repository.Get("tenant", plan.Id).Id);
     }
 
     [Fact]
-    public void ApplyingPlanCanReachTerminalStateAfterExpiration()
+    public void Legacy_test_plan_repository_allows_terminal_transition_after_expiration()
     {
         var repository = new TestEntitySyncPlanRepository();
-        var plan = new EntitySyncPlan { TenantId = "tenant", ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(100) };
+        var plan = new EntitySyncPlan
+        {
+            TenantId = "tenant",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(100)
+        };
         repository.Add(plan);
-        Assert.True(repository.TryTransition("tenant", plan.Id, EntitySyncPlanStatuses.Draft, EntitySyncPlanStatuses.Applying));
+        Assert.True(repository.TryTransition(
+            "tenant", plan.Id, EntitySyncPlanStatuses.Draft, EntitySyncPlanStatuses.Applying));
         Thread.Sleep(200);
 
-        Assert.True(repository.TryTransition("tenant", plan.Id, EntitySyncPlanStatuses.Applying, EntitySyncPlanStatuses.Applied));
-        Assert.Throws<InvalidOperationException>(() => repository.Get("tenant", plan.Id));
+        Assert.True(repository.TryTransition(
+            "tenant", plan.Id, EntitySyncPlanStatuses.Applying, EntitySyncPlanStatuses.Applied));
+        Assert.Equal(EntitySyncPlanStatuses.Applied, repository.Get("tenant", plan.Id).Status);
     }
 
     [Fact]

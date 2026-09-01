@@ -45,7 +45,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "014_idempotency_execution_leases",
                 "015_persist_resolved_target_parent",
                 "016_connection_platform_instance_id",
-                "017_plan_import_receipts"
+                "017_plan_import_receipts",
+                "018_snapshot_evidence_enrichment"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));
@@ -520,20 +521,25 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 'tenant-a', '00000000-0000-0000-0000-000000000010',
                 'expired-ciphertext', now() - interval '1 day');
 
-            DELETE FROM entitysync.sync_operation_item_snapshots
+            UPDATE entitysync.sync_operation_item_snapshots
+            SET encrypted_before_ciphertext = NULL,
+                encrypted_after_ciphertext = NULL,
+                values_redacted_at = clock_timestamp()
             WHERE tenant_id = 'tenant-a'
               AND operation_id = '00000000-0000-0000-0000-000000000301'
               AND item_id = '00000000-0000-0000-0000-000000000302';
 
-            DELETE FROM entitysync.audit_event_full_values
+            UPDATE entitysync.audit_event_full_values
+            SET full_values_ciphertext = NULL,
+                values_redacted_at = clock_timestamp()
             WHERE tenant_id = 'tenant-a'
               AND audit_event_id = '00000000-0000-0000-0000-000000000010';
             """);
         await command.ExecuteNonQueryAsync();
         Assert.Equal(1, await CountAsync("entitysync.sync_operation_items"));
-        Assert.Equal(0, await CountAsync("entitysync.sync_operation_item_snapshots"));
+        Assert.Equal(1, await CountAsync("entitysync.sync_operation_item_snapshots"));
         Assert.Equal(1, await CountAsync("entitysync.audit_events"));
-        Assert.Equal(0, await CountAsync("entitysync.audit_event_full_values"));
+        Assert.Equal(1, await CountAsync("entitysync.audit_event_full_values"));
     }
 
     [Fact]
@@ -1170,8 +1176,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 source_entity_id, source_name, reason, created_by)
             VALUES (
                 '00000000-0000-0000-0000-000000000001', 'tenant-a', 'source', 'source-1', 'company',
-                'target', 'target-1', 'account', 'entity-1', 'ENTITY-1', 'Existing entity',
-                'migration preservation', 'test');
+                'target', 'target-1', 'account', 'existing-entity', 'EXISTING-ENTITY',
+                'Existing entity', 'migration preservation', 'test');
 
             INSERT INTO entitysync.entity_change_state (
                 tenant_id, route_scope, source_vendor, source_connection_id, source_entity_type,
@@ -1179,8 +1185,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 source_entity_id, source_name, target_entity_id, hash_version, payload_hash, applied_at)
             VALUES (
                 'tenant-a', repeat('a', 64), 'source', 'source-1', 'company',
-                'target', 'target-1', 'account', 'entity-1', 'ENTITY-1', 'Existing entity',
-                'TARGET-1', 1, repeat('b', 64), now());
+                'target', 'target-1', 'account', 'existing-entity', 'EXISTING-ENTITY',
+                'Existing entity', 'TARGET-1', 1, repeat('b', 64), now());
             """);
         await command.ExecuteNonQueryAsync();
     }

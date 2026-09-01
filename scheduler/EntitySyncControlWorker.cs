@@ -9,25 +9,50 @@ namespace LISSTech.EntitySync.Scheduler;
 
 public enum ControlWakeReason { Notification, Fallback }
 
-public sealed record EntitySyncControlOptions(IReadOnlyList<string> TenantIds)
+public sealed record EntitySyncControlOptions(
+    IReadOnlyList<string> TenantIds,
+    TimeSpan LeaseDuration,
+    TimeSpan HeartbeatInterval,
+    TimeSpan RetryInterval)
 {
     public static EntitySyncControlOptions FromEnvironment()
     {
         var configured = Environment.GetEnvironmentVariable("ENTITYSYNC_TENANT_IDS");
         var tenants = string.IsNullOrWhiteSpace(configured)
             ? []
-            : configured.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : configured.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
-        return new EntitySyncControlOptions(tenants);
+        if (tenants.Length == 0)
+        {
+            throw new InvalidOperationException(
+                "ENTITYSYNC_TENANT_IDS must contain at least one tenant " +
+                "[ENTITYSYNC_CONFIG_REQUIRED].");
+        }
+        if (tenants.Length > 100)
+        {
+            throw new InvalidOperationException(
+                "ENTITYSYNC_TENANT_IDS cannot contain more than 100 tenants " +
+                "[ENTITYSYNC_CONFIG_TENANT_LIMIT].");
+        }
+
+        var worker = LISSTech.EntitySync.Hosting.EntitySyncWorkerSettings
+            .FromCurrentEnvironment();
+        return new EntitySyncControlOptions(
+            tenants,
+            worker.LeaseDuration,
+            worker.HeartbeatInterval,
+            worker.RetryInterval);
     }
 }
 
 public sealed class EntitySyncControlWorker : BackgroundService
 {
     public static readonly TimeSpan FallbackInterval = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan RouteLeaseDuration = TimeSpan.FromMinutes(10);
+    private readonly TimeSpan routeLeaseDuration;
     private readonly PostgresSyncWorkQueue queue;
     private readonly IEntitySyncRouteLock routeLock;
     private readonly ISyncPolicyRepository policies;
@@ -65,6 +90,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
         this.timeProvider = timeProvider;
         this.options = options;
         this.logger = logger ?? NullLogger<EntitySyncControlWorker>.Instance;
+        routeLeaseDuration = options.LeaseDuration;
     }
 
     public async Task<int> TickAsync(CancellationToken cancellationToken)
@@ -90,11 +116,20 @@ public sealed class EntitySyncControlWorker : BackgroundService
         return false;
     }
 
+    public static Task<ControlWakeReason> WaitForWorkAsync(
+        IEntitySyncWorkSignal signal,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken) =>
+        WaitForWorkAsync(signal, timeProvider, FallbackInterval, cancellationToken);
+
     public static async Task<ControlWakeReason> WaitForWorkAsync(
         IEntitySyncWorkSignal signal,
         TimeProvider timeProvider,
+        TimeSpan retryInterval,
         CancellationToken cancellationToken)
     {
+        if (retryInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(retryInterval));
         ArgumentNullException.ThrowIfNull(signal);
         ArgumentNullException.ThrowIfNull(timeProvider);
         using var notificationCancellation =
@@ -103,7 +138,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var notification = signal.WaitAsync(notificationCancellation.Token);
         var fallback = Task.Delay(
-            FallbackInterval, timeProvider, fallbackCancellation.Token);
+            retryInterval, timeProvider, fallbackCancellation.Token);
         var completed = await Task.WhenAny(notification, fallback).ConfigureAwait(false);
         if (completed == notification)
         {
@@ -119,8 +154,31 @@ public sealed class EntitySyncControlWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.WhenAll(
+            RunHeartbeatLoopAsync(stoppingToken),
             RunEnqueueLoopAsync(stoppingToken),
             RunExecutionLoopAsync(stoppingToken)).ConfigureAwait(false);
+    }
+
+    private async Task RunHeartbeatLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await queue.RecordHeartbeatAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "EntitySync worker heartbeat failed.");
+            }
+
+            await Task.Delay(
+                options.HeartbeatInterval, timeProvider, stoppingToken).ConfigureAwait(false);
+        }
     }
 
     private async Task RunEnqueueLoopAsync(CancellationToken stoppingToken)
@@ -139,7 +197,8 @@ public sealed class EntitySyncControlWorker : BackgroundService
             {
                 logger.LogError(exception, "EntitySync due-work enqueue failed.");
             }
-            await WaitForWorkAsync(queue, timeProvider, stoppingToken).ConfigureAwait(false);
+            await WaitForWorkAsync(
+                queue, timeProvider, options.RetryInterval, stoppingToken).ConfigureAwait(false);
         }
     }
 
@@ -162,7 +221,8 @@ public sealed class EntitySyncControlWorker : BackgroundService
                 logger.LogError(exception, "EntitySync durable work execution failed.");
             }
             if (!executed)
-                await WaitForWorkAsync(queue, timeProvider, stoppingToken).ConfigureAwait(false);
+                await WaitForWorkAsync(
+                    queue, timeProvider, options.RetryInterval, stoppingToken).ConfigureAwait(false);
         }
     }
 
@@ -171,12 +231,12 @@ public sealed class EntitySyncControlWorker : BackgroundService
         CancellationToken cancellationToken)
     {
         var work = await queue.TryLeaseNextAsync(
-            tenantId, owner + ":control", PostgresSyncWorkQueue.DefaultLeaseDuration,
+            tenantId, owner + ":control", options.LeaseDuration,
             cancellationToken).ConfigureAwait(false);
         if (work is null) return false;
         await using var route = await routeLock.TryAcquireAsync(
             work.TenantId, work.RouteScope, owner + ":route",
-            RouteLeaseDuration, cancellationToken).ConfigureAwait(false);
+            routeLeaseDuration, cancellationToken).ConfigureAwait(false);
         if (route is null)
         {
             await queue.TryReleaseAsync(work, cancellationToken).ConfigureAwait(false);
@@ -516,13 +576,12 @@ public sealed class EntitySyncControlWorker : BackgroundService
         try
         {
             var interval = TimeSpan.FromTicks(
-                Math.Min(PostgresSyncWorkQueue.DefaultLeaseDuration.Ticks,
-                    RouteLeaseDuration.Ticks) / 3);
+                Math.Min(options.LeaseDuration.Ticks, routeLeaseDuration.Ticks) / 3);
             while (!ownership.IsCancellationRequested)
             {
                 await Task.Delay(interval, timeProvider, ownership.Token).ConfigureAwait(false);
                 var workRenewed = await queue.TryRenewAsync(
-                    work, PostgresSyncWorkQueue.DefaultLeaseDuration, ownership.Token)
+                    work, options.LeaseDuration, ownership.Token)
                     .ConfigureAwait(false);
                 if (!workRenewed)
                 {
@@ -530,7 +589,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     return;
                 }
                 var routeRenewed = await route.TryRenewAsync(
-                    RouteLeaseDuration, ownership.Token).ConfigureAwait(false);
+                    routeLeaseDuration, ownership.Token).ConfigureAwait(false);
                 if (!routeRenewed)
                 {
                     await ownership.CancelAsync().ConfigureAwait(false);

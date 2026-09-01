@@ -22,6 +22,8 @@ namespace LISSTech.EntitySync.Scheduler
                     "lisstech-entitysync-scheduler");
             }
 
+            EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment();
+
             var builder = WebApplication.CreateBuilder(args);
             builder.Host.UseDefaultServiceProvider(options =>
             {

@@ -496,7 +496,7 @@ namespace EntitySyncTests
 
 
 
-  It 'Saves DPAPI-protected connection profiles and reconnects from them' {
+  It 'Saves DPAPI-protected connection profiles and reconnects from them' -Skip:(-not $IsWindows) {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-profile-{0}.json" -f [guid]::NewGuid())
     $oldProfilePath = [Environment]::GetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH')
     try {
@@ -560,7 +560,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Saves AgentController profiles through the DeviceAssetOps profile parameter' {
+  It 'Saves AgentController profiles through the DeviceAssetOps profile parameter' -Skip:(-not $IsWindows) {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-agentcontroller-deviceassetops-profile-{0}.json" -f [guid]::NewGuid())
     $oldProfilePath = [Environment]::GetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH')
     try {
@@ -4993,7 +4993,7 @@ namespace EntitySyncTests
 
     $file = $plan | Export-EntitySyncPlan -Path ([System.IO.Path]::GetTempPath()) -PassThru
     try {
-      $file.Name | Should -Match '^EntitySync-NetSuite-Customer-to-HaloPSA-Client-\d{8}-\d{6}\.xlsx$'
+      $file.Name | Should -Match '^EntitySync-NetSuite-Customer-to-HaloPSA-Client-[0-9a-f]{32}-\d{8}-\d{6}\.xlsx$'
       $file.Exists | Should -BeTrue
     }
     finally {

@@ -1175,9 +1175,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Inspection_completion_uses_the_exact_union_of_overlapping_ranges()
+    public async Task Inspection_completion_requires_exact_nonoverlapping_range_coverage()
     {
-        var context = await SeedControlContextAsync("inspection-union");
+        var context = await SeedControlContextAsync("inspection-nonoverlap");
         var plans = new PostgresDurableSyncPlanRepository(Database);
         var manifest = Manifest(context, itemCount: 684);
         await plans.InsertAsync(context.TenantId, manifest, default);
@@ -1188,7 +1188,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
             context.Target.ConnectionId, 1, new EntitySyncActor("reviewer"), now, default);
 
-        foreach (var range in new[] { (0, 99), (50, 149), (150, 399), (350, 683) })
+        foreach (var range in new[] { (0, 99), (100, 149), (150, 399), (400, 683) })
         {
             await plans.RecordInspectionRangeAsync(
                 context.TenantId,
@@ -1371,7 +1371,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var plans = new PostgresDurableSyncPlanRepository(Database);
         var manifest = Manifest(context, itemCount: 1);
         await plans.InsertAsync(context.TenantId, manifest, default);
-        var now = context.Now.AddMinutes(1);
+        var now = context.Now.AddMinutes(-10);
         var inspectionId = Guid.NewGuid();
         await plans.GetOrOpenInspectionAsync(context.TenantId, inspectionId, manifest.Plan.PlanId,
         manifest.Plan.PlanDigestSha256, context.Source.ConnectionId, 1,
@@ -1700,6 +1700,16 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             operations.TryLeaseNextAsync(context.TenantId, "worker-b", now, now.AddMinutes(1), default));
         Assert.Single(firstRace, value => value is not null);
         var firstLease = firstRace.Single(value => value is not null)!;
+        await using (var expireLease = Database.CreateCommand("""
+            UPDATE entitysync.sync_operations
+            SET lease_expires_at = clock_timestamp() - interval '1 second'
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+            """))
+        {
+            expireLease.Parameters.AddWithValue("tenant_id", context.TenantId);
+            expireLease.Parameters.AddWithValue("operation_id", operation.OperationId);
+            Assert.Equal(1, await expireLease.ExecuteNonQueryAsync());
+        }
         var reclaimed = await operations.TryLeaseNextAsync(
             context.TenantId, "worker-c", now.AddMinutes(2), now.AddMinutes(3), default);
         Assert.NotNull(reclaimed);
@@ -2128,8 +2138,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.Single(secondAuditPage.Events);
         Assert.Null(secondAuditPage.ContinuationEventId);
         Assert.Null(await audits.GetFullValuesAsync("other-tenant", eventId, default));
-        Assert.Equal(fullCiphertext,
-            (await audits.GetFullValuesAsync(context.TenantId, eventId, default))!.FullValuesCiphertext);
+        Assert.Null(await audits.GetFullValuesAsync(context.TenantId, eventId, default));
         Assert.Equal(1, await audits.DeleteExpiredFullValuesAsync(
             context.TenantId, DateTimeOffset.UtcNow, 1, default));
 
@@ -2709,6 +2718,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
+            PinnedCanonicalVersion = request.PinnedCanonicalSource?.CanonicalVersion,
+            PinnedCanonicalEntitySha256 = request.PinnedCanonicalSource is null
+                ? null
+                : EntitySyncCanonicalDigest.Compute(request.PinnedCanonicalSource.Entity).Value,
             PlanLifetimeTicks = request.PlanLifetime.Ticks,
             CreatedBy = actor.ActorId
         });

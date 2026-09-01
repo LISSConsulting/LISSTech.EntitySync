@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.OpenApi.Models;
@@ -59,7 +60,12 @@ static async Task RunStdioAsync(string[] args)
 
 static async Task RunHttpAsync(string[] args)
 {
-    var authority = RequireHttpsUri("MCP_OAUTH_AUTHORITY");
+    var builder = WebApplication.CreateBuilder(args);
+    var authorityConfiguration = McpAuthorityConfiguration.Resolve(
+        Environment.GetEnvironmentVariable("MCP_OAUTH_AUTHORITY"),
+        builder.Environment.EnvironmentName,
+        Environment.GetEnvironmentVariable("ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY"));
+    var authority = authorityConfiguration.Value;
     var resource = RequireHttpsUri("MCP_OAUTH_RESOURCE");
     var audience = (Environment.GetEnvironmentVariable("MCP_OAUTH_AUDIENCE") ?? resource).Trim();
     if (string.IsNullOrWhiteSpace(audience))
@@ -83,7 +89,10 @@ static async Task RunHttpAsync(string[] args)
     if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
         throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
-    var builder = WebApplication.CreateBuilder(args);
+    EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment();
+    var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
+
+
     var serviceVersion = typeof(McpRequestContext).Assembly.GetName().Version?.ToString(3)
         ?? throw new InvalidOperationException("EntitySync MCP assembly version is unavailable.");
     var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
@@ -112,6 +121,7 @@ static async Task RunHttpAsync(string[] args)
                 NameClaimType = "name",
                 RoleClaimType = "roles"
             };
+            options.RequireHttpsMetadata = authorityConfiguration.RequireHttpsMetadata;
         })
         .AddMcp(options =>
         {
@@ -139,6 +149,7 @@ static async Task RunHttpAsync(string[] args)
     builder.Services.AddScoped<IControlApiQueries, ControlApiQueries>();
     builder.Services.AddScoped<IdempotencyEndpointFilter>();
     builder.Services.AddSingleton<ControlCursorProtector>();
+    builder.Services.AddSingleton(workerSettings);
     builder.Services.AddSingleton<IControlReadinessProbe, ControlReadinessProbe>();
     builder.Services.AddSingleton<
         Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler,
@@ -249,6 +260,50 @@ static string RequireHttpsUri(string variableName)
     return uri.AbsoluteUri;
 }
 
+internal sealed record McpAuthority(string Value, bool RequireHttpsMetadata);
+
+internal static class McpAuthorityConfiguration
+{
+    internal static McpAuthority Resolve(
+        string? configuredValue,
+        string environmentName,
+        string? allowInsecureTestAuthority)
+    {
+        var value = configuredValue?.Trim();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw InvalidAuthority();
+        }
+
+        if (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return new McpAuthority(uri.AbsoluteUri, true);
+
+        var explicitlyAllowedForTests =
+            (environmentName.Equals(Environments.Development, StringComparison.OrdinalIgnoreCase)
+             || environmentName.Equals("Testing", StringComparison.OrdinalIgnoreCase))
+            && bool.TryParse(allowInsecureTestAuthority, out var allow)
+            && allow;
+        if (!explicitlyAllowedForTests
+            || !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            || !IPAddress.TryParse(uri.Host, out var address)
+            || !IPAddress.IsLoopback(address))
+        {
+            throw InvalidAuthority();
+        }
+
+        return new McpAuthority(uri.AbsoluteUri, false);
+    }
+
+    private static InvalidOperationException InvalidAuthority() =>
+        new(
+            "MCP_OAUTH_AUTHORITY must be an absolute HTTPS authority without user info, " +
+            "a query, or a fragment when MCP_TRANSPORT=http. Loopback HTTP is available " +
+            "only to explicitly enabled Development and Testing hosts.");
+}
+
 
 internal sealed class OAuthChallengeHints
 {
@@ -260,6 +315,7 @@ internal sealed class OAuthChallengeHints
         string? scopes)
     {
         ResourceMetadataEndpoint = resourceMetadataEndpoint;
+
         AuthorizationEndpoint = authorizationEndpoint;
         TokenEndpoint = tokenEndpoint;
         ClientId = clientId;

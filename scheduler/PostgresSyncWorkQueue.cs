@@ -27,6 +27,13 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
     private readonly string heartbeatWorkerId =
         $"{Environment.MachineName}:{Environment.ProcessId}";
 
+    public async Task RecordHeartbeatAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await RecordHeartbeatAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<CanonicalChangeReceipt> AcceptAsync(
         CanonicalChangeRequest request,
         DateTimeOffset receivedAt,

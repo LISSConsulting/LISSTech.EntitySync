@@ -122,10 +122,12 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
         PostgresControlPersistence.RequireTenant(tenantId, changeEvent.TenantId, nameof(changeEvent));
         const string sql = """
             INSERT INTO entitysync.canonical_change_events (
-                tenant_id, event_id, canonical_entity_type, canonical_entity_id,
-                canonical_version, changed_fields, occurred_at, received_at, status)
-            VALUES (@tenant_id, @event_id, @canonical_entity_type, @canonical_entity_id,
-                @canonical_version, @changed_fields, @occurred_at, @received_at, @status)
+                tenant_id, event_id, receipt_id, om_event_id, canonical_entity_type,
+                canonical_entity_id, canonical_version, changed_fields, payload_sha256,
+                occurred_at, received_at, status)
+            VALUES (@tenant_id, @event_id, @receipt_id, @om_event_id,
+                @canonical_entity_type, @canonical_entity_id, @canonical_version,
+                @changed_fields, @payload_sha256, @occurred_at, @received_at, @status)
             """;
         await using var command = dataSource.CreateCommand(sql);
         AddChangeEvent(command, changeEvent);
@@ -202,10 +204,27 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
     {
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, changeEvent.TenantId);
         PostgresControlPersistence.Add(command, "event_id", NpgsqlDbType.Uuid, changeEvent.EventId);
+        PostgresControlPersistence.Add(
+            command, "receipt_id", NpgsqlDbType.Uuid, changeEvent.EventId);
+        PostgresControlPersistence.Add(
+            command, "om_event_id", NpgsqlDbType.Text, changeEvent.EventId.ToString("D"));
         PostgresControlPersistence.Add(command, "canonical_entity_type", NpgsqlDbType.Text, changeEvent.CanonicalEntityType);
         PostgresControlPersistence.Add(command, "canonical_entity_id", NpgsqlDbType.Text, changeEvent.CanonicalEntityId);
         PostgresControlPersistence.Add(command, "canonical_version", NpgsqlDbType.Bigint, changeEvent.CanonicalVersion);
         PostgresControlPersistence.Add(command, "changed_fields", NpgsqlDbType.Jsonb, changeEvent.ChangedFields.Json);
+        PostgresControlPersistence.Add(
+            command,
+            "payload_sha256",
+            NpgsqlDbType.Char,
+            EntitySyncCanonicalDigest.Compute(new
+            {
+                SchemaVersion = 1,
+                changeEvent.CanonicalEntityType,
+                changeEvent.CanonicalEntityId,
+                changeEvent.CanonicalVersion,
+                ChangedFields = changeEvent.ChangedFields.Json,
+                changeEvent.OccurredAt
+            }).Value);
         PostgresControlPersistence.Add(command, "occurred_at", NpgsqlDbType.TimestampTz, changeEvent.OccurredAt);
         PostgresControlPersistence.Add(command, "received_at", NpgsqlDbType.TimestampTz, changeEvent.ReceivedAt);
         PostgresControlPersistence.Add(command, "status", NpgsqlDbType.Text, changeEvent.Status.ToString());

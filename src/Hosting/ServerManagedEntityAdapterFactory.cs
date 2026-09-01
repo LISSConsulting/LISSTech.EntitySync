@@ -1,3 +1,4 @@
+using System.Net;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -742,10 +743,14 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
     private static string RequireHttps(string value, string vendor)
     {
         if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
-            || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            || (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                && !(uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                     && IPAddress.TryParse(uri.Host, out var address)
+                     && IPAddress.IsLoopback(address))))
         {
             throw new InvalidOperationException(
-                $"{vendor} server configuration must use an absolute HTTPS URL.");
+                $"{vendor} server configuration must use HTTPS " +
+                "except for an explicit loopback test endpoint.");
         }
 
         return uri.AbsoluteUri;

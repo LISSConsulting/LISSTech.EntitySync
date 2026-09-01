@@ -432,12 +432,10 @@ public sealed class ConnectionDefinitionServiceTests
                 Assert.IsType<ConnectionRuntimeFactory>(http.GetRequiredService<IConnectionRuntimeFactory>());
                 Assert.IsType<ConnectionRuntimeFactory>(scheduler.GetRequiredService<IConnectionRuntimeFactory>());
                 Assert.NotNull(http.GetRequiredService<EntitySyncPlanner>());
-                Assert.NotNull(http.GetRequiredService<EntitySyncService>());
                 Assert.NotNull(http.GetRequiredService<EntityExclusionService>());
                 Assert.NotNull(http.GetRequiredService<PlanManifestBuilder>());
                 Assert.NotNull(http.GetRequiredService<DurablePlanService>());
                 Assert.NotNull(scheduler.GetRequiredService<EntitySyncPlanner>());
-                Assert.NotNull(scheduler.GetRequiredService<EntitySyncService>());
                 Assert.NotNull(scheduler.GetRequiredService<EntityExclusionService>());
             }
             finally

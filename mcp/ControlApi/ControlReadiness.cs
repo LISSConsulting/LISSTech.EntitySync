@@ -1,3 +1,4 @@
+using LISSTech.EntitySync.Hosting;
 using Microsoft.AspNetCore.DataProtection;
 using Npgsql;
 
@@ -19,9 +20,9 @@ public interface IControlReadinessProbe
 public sealed class ControlReadinessProbe(
     NpgsqlDataSource dataSource,
     IDataProtectionProvider dataProtection,
-    TimeProvider timeProvider) : IControlReadinessProbe
+    TimeProvider timeProvider,
+    EntitySyncWorkerSettings workerSettings) : IControlReadinessProbe
 {
-    private static readonly TimeSpan MaximumHeartbeatAge = TimeSpan.FromSeconds(30);
 
     public async Task<ControlReadinessResult> CheckAsync(
         CancellationToken cancellationToken)
@@ -33,12 +34,12 @@ public sealed class ControlReadinessProbe(
         {
             await using var command = dataSource.CreateCommand(
                 "SELECT " +
-                "EXISTS (SELECT 1 FROM entitysync.schema_migrations WHERE version = '014_idempotency_execution_leases'), " +
+                "EXISTS (SELECT 1 FROM entitysync.schema_migrations WHERE version = '018_snapshot_evidence_enrichment'), " +
                 "COALESCE(max(observed_at) >= @minimum_heartbeat, false) " +
                 "FROM entitysync.control_worker_heartbeats");
             command.Parameters.AddWithValue(
                 "minimum_heartbeat",
-                timeProvider.GetUtcNow() - MaximumHeartbeatAge);
+                timeProvider.GetUtcNow() - workerSettings.MaximumHeartbeatAge);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

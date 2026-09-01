@@ -53,6 +53,7 @@ BEGIN
     )
     SELECT count(*) FILTER (
                WHERE (position = 1 AND range_start <> 0)
+                  OR (position > 1 AND range_start <= previous_max_end)
                   OR (position > 1 AND range_start > previous_max_end + 1)
                   OR range_end >= item_count),
            max(range_end)

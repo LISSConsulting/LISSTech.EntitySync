@@ -29,7 +29,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine@sha256:b288317d8ed45bb763fa95dbc
 WORKDIR /app
 COPY --from=build /app/publish .
 RUN mkdir -p /var/lib/entitysync-dataprotection \
-    && chown "$APP_UID" /var/lib/entitysync-dataprotection \
+    && chown 1654:1654 /var/lib/entitysync-dataprotection \
     && chmod 0700 /var/lib/entitysync-dataprotection
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
@@ -37,6 +37,6 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
 
 EXPOSE 8080
 
-USER $APP_UID
+USER 1654:1654
 
 ENTRYPOINT ["dotnet", "lisstech-entitysync-scheduler.dll"]

@@ -283,7 +283,7 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
             queue, route, new PostgresSyncPolicyRepository(Database),
             new PostgresConnectionDefinitionRepository(Database),
             new SingleConnectionRuntime(source, adapter),
-            null!, null!, null!, time, new EntitySyncControlOptions([tenant]));
+            null!, null!, null!, time, WorkerOptions(tenant));
         var execution = worker.ExecuteOneAsync(default);
         await adapter.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -665,10 +665,16 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
             operationService,
             null!,
             TimeProvider.System,
-            new EntitySyncControlOptions([tenant]));
+            WorkerOptions(tenant));
         return new ControlRecoverySetup(
             policy, manifest.Plan, approval, operationService, worker);
     }
+
+    private static EntitySyncControlOptions WorkerOptions(string tenant) => new(
+        [tenant],
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(5));
 
     private async Task SetWorkCheckpointAsync(
         string tenant,

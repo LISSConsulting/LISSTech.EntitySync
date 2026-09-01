@@ -200,13 +200,16 @@ test: build
     Invoke-JustTimed -Icon '🧪' -Fallback '[test]' -Text 'Running Pester suite against Build\Module' -Script {
         if (-not (Get-Command Invoke-Pester -ErrorAction SilentlyContinue)) { throw 'Pester is not installed. Install-Module Pester -Scope CurrentUser.' }
         $old = $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH
+        $oldDatabaseUrl = $env:DATABASE_URL
         try {
+            $env:DATABASE_URL = $null
             $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH = '{{ build_manifest }}'
             $result = Invoke-Pester -Path '{{ project_root }}\Tests' -Output Detailed -PassThru
             if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) test(s) failed." }
             Write-JustStep -Icon '🧾' -Fallback '[tests]' -Text "$($result.PassedCount) test(s) passed" -ForegroundColor Green
         } finally {
             $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH = $old
+            $env:DATABASE_URL = $oldDatabaseUrl
         }
         dotnet test '{{ platform_tests }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
