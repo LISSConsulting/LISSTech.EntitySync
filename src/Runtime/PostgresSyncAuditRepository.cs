@@ -160,22 +160,36 @@ public sealed class PostgresSyncAuditRepository(NpgsqlDataSource dataSource) : I
             WITH expired AS (
                 SELECT tenant_id, audit_event_id
                 FROM entitysync.audit_event_full_values
-                WHERE tenant_id = @tenant_id AND expires_at <= @now
+                WHERE tenant_id = @tenant_id
+                  AND expires_at <= clock_timestamp()
+                  AND values_redacted_at IS NULL
                 ORDER BY expires_at, audit_event_id
                 LIMIT @maximum_rows
                 FOR UPDATE SKIP LOCKED
+            ), scrubbed AS (
+                UPDATE entitysync.audit_event_full_values value
+                SET full_values_ciphertext = NULL,
+                    values_redacted_at = clock_timestamp()
+                FROM expired
+                WHERE value.tenant_id = expired.tenant_id
+                  AND value.audit_event_id = expired.audit_event_id
+                RETURNING value.tenant_id, value.audit_event_id,
+                          value.values_redacted_at
+            ), marked AS (
+                UPDATE entitysync.audit_events event
+                SET values_redacted_at = scrubbed.values_redacted_at
+                FROM scrubbed
+                WHERE event.tenant_id = scrubbed.tenant_id
+                  AND event.audit_event_id = scrubbed.audit_event_id
+                RETURNING event.audit_event_id
             )
-            DELETE FROM entitysync.audit_event_full_values value
-            USING expired
-            WHERE value.tenant_id = expired.tenant_id
-              AND value.audit_event_id = expired.audit_event_id
-              AND value.tenant_id = @tenant_id
+            SELECT count(*)::integer FROM marked
             """;
         await using var command = dataSource.CreateCommand(sql);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
-        PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
         PostgresControlPersistence.Add(command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
     }
 
     internal static void AddEvent(NpgsqlCommand command, EntitySyncAuditEvent auditEvent)

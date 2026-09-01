@@ -1,3 +1,4 @@
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Scheduler;
 using Microsoft.AspNetCore.Builder;
@@ -28,8 +29,10 @@ namespace LISSTech.EntitySync.Scheduler
                 options.ValidateScopes = true;
             });
 
-            var serviceVersion = typeof(EntitySyncSchedulerWorker).Assembly.GetName().Version?.ToString(3)
-                ?? throw new InvalidOperationException("EntitySync scheduler assembly version is unavailable.");
+            var serviceVersion = typeof(EntitySyncControlWorker).Assembly
+                .GetName().Version?.ToString(3)
+                ?? throw new InvalidOperationException(
+                    "EntitySync scheduler assembly version is unavailable.");
             var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
                 builder.Environment.EnvironmentName,
                 serviceVersion);
@@ -38,25 +41,40 @@ namespace LISSTech.EntitySync.Scheduler
             builder.Services.AddEntitySyncPlatform(
                 Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
                 EntitySyncHostMode.Scheduler);
-            builder.Services.AddSingleton<EntitySyncSchedulerOptions>();
-            builder.Services.AddSingleton<EntitySyncSchedulerStatus>();
-            builder.Services.AddSingleton<IEntitySyncSchedulerRunLock, PostgresEntitySyncSchedulerRunLock>();
-            builder.Services.AddSingleton<IEntitySyncScheduledRun, EntitySyncScheduledRun>();
-            builder.Services.AddSingleton<EntitySyncSchedulerWorker>();
+            builder.Services.AddSingleton(EntitySyncControlOptions.FromEnvironment());
+            builder.Services.AddSingleton<PostgresSyncWorkQueue>();
+            builder.Services.AddSingleton<ICanonicalChangeRepository>(
+                services => services.GetRequiredService<PostgresSyncWorkQueue>());
+            builder.Services.AddSingleton<IEntitySyncWorkSignal>(
+                services => services.GetRequiredService<PostgresSyncWorkQueue>());
+            builder.Services.AddSingleton<IEntitySyncRouteLock, PostgresRouteLock>();
+            builder.Services.AddSingleton<CanonicalChangeService>();
+            builder.Services.AddSingleton<EntitySyncControlWorker>();
             builder.Services.AddHostedService(
-                services => services.GetRequiredService<EntitySyncSchedulerWorker>());
+                services => services.GetRequiredService<EntitySyncControlWorker>());
+            builder.Services.AddSingleton<AuditRetentionWorker>(services =>
+                new AuditRetentionWorker(
+                    services.GetRequiredService<LISSTech.EntitySync.Ports.ISyncAuditRepository>(),
+                    services.GetRequiredService<LISSTech.EntitySync.Ports.ISyncOperationRepository>(),
+                    services.GetRequiredService<EntitySyncControlOptions>().TenantIds,
+                    services.GetRequiredService<TimeProvider>(),
+                    services.GetRequiredService<
+                        Microsoft.Extensions.Logging.ILogger<AuditRetentionWorker>>()));
+            builder.Services.AddHostedService(
+                services => services.GetRequiredService<AuditRetentionWorker>());
 
             var app = builder.Build();
-            app.Services
-                .GetRequiredService<IServerManagedEntityAdapterFactory>()
-                .ValidateNetSuiteHaloFixedRouteConfiguration();
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);
             app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
             app.MapGet(
                 "/status",
-                (EntitySyncSchedulerStatus status) => Results.Ok(status.Snapshot));
+                (EntitySyncControlOptions options) => Results.Ok(new
+                {
+                    state = "running",
+                    tenantCount = options.TenantIds.Count
+                }));
             return app;
         }
     }

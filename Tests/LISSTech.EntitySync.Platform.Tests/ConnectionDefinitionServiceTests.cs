@@ -433,7 +433,7 @@ public sealed class ConnectionDefinitionServiceTests
     public async Task Scheduler_host_constructs_with_durable_runtime_and_no_in_memory_repository()
     {
         await using var environment = SchedulerHostEnvironment.Create();
-        var hostType = typeof(EntitySyncSchedulerWorker).Assembly.GetType(
+        var hostType = typeof(EntitySyncControlWorker).Assembly.GetType(
             "LISSTech.EntitySync.Scheduler.EntitySyncSchedulerHost");
         Assert.NotNull(hostType);
         var build = hostType.GetMethod(
@@ -447,8 +447,8 @@ public sealed class ConnectionDefinitionServiceTests
         Assert.Null(app.Services.GetService<IEntityConnectionRepository>());
         Assert.IsType<ConnectionRuntimeFactory>(
             app.Services.GetRequiredService<IConnectionRuntimeFactory>());
-        Assert.IsType<EntitySyncScheduledRun>(
-            app.Services.GetRequiredService<IEntitySyncScheduledRun>());
+        Assert.IsType<EntitySyncControlWorker>(
+            app.Services.GetRequiredService<EntitySyncControlWorker>());
     }
 
     private static ServiceProvider BuildProvider(EntitySyncHostMode mode)

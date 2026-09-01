@@ -1079,23 +1079,30 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             WITH expired AS (
                 SELECT tenant_id, operation_id, item_id
                 FROM entitysync.sync_operation_item_snapshots
-                WHERE tenant_id = @tenant_id AND expires_at <= @now
+                WHERE tenant_id = @tenant_id
+                  AND expires_at <= clock_timestamp()
+                  AND values_redacted_at IS NULL
                 ORDER BY expires_at, operation_id, item_id
                 LIMIT @maximum_rows
                 FOR UPDATE SKIP LOCKED
+            ), scrubbed AS (
+                UPDATE entitysync.sync_operation_item_snapshots snapshot
+                SET encrypted_before_ciphertext = NULL,
+                    encrypted_after_ciphertext = NULL,
+                    values_redacted_at = clock_timestamp()
+                FROM expired
+                WHERE snapshot.tenant_id = expired.tenant_id
+                  AND snapshot.operation_id = expired.operation_id
+                  AND snapshot.item_id = expired.item_id
+                RETURNING snapshot.item_id
             )
-            DELETE FROM entitysync.sync_operation_item_snapshots snapshot
-            USING expired
-            WHERE snapshot.tenant_id = expired.tenant_id
-              AND snapshot.operation_id = expired.operation_id
-              AND snapshot.item_id = expired.item_id
-              AND snapshot.tenant_id = @tenant_id
+            SELECT count(*)::integer FROM scrubbed
             """;
         await using var command = dataSource.CreateCommand(sql);
         PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
-        PostgresControlPersistence.Add(command, "now", NpgsqlDbType.TimestampTz, now);
         PostgresControlPersistence.Add(command, "maximum_rows", NpgsqlDbType.Integer, maximumRows);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<EntitySyncOperation?> FinishAttemptAsync(

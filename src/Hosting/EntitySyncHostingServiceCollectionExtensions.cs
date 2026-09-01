@@ -80,6 +80,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<SyncOperationService>();
         services.AddSingleton<VendorOutcomeReconciler>();
         services.AddSingleton<EntitySyncOperationWorker>();
+        services.AddSingleton<SyncScheduleService>();
         services.AddSingleton<EntityExclusionService>();
         services.AddScoped<ConnectionDefinitionService>();
         services.AddScoped<SyncPolicyService>();

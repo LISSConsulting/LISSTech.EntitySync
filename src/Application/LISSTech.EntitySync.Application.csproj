@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Cronos" Version="0.11.1" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Core\LISSTech.EntitySync.Core.csproj" />
     <ProjectReference Include="..\Ports\LISSTech.EntitySync.Ports.csproj" />
     <ProjectReference Include="..\Planning\LISSTech.EntitySync.Planning.csproj" />
