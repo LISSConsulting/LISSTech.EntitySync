@@ -41,6 +41,13 @@ public interface IDurableSyncPlanRepository
         EntitySyncDurablePlanManifest manifest,
         CancellationToken cancellationToken);
 
+    Task<DurablePlanImportPersistenceResult> ImportAsync(
+        string tenantId,
+        EntitySyncDurablePlanManifest manifest,
+        string callerKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken);
+
     Task<EntitySyncDurablePlan?> GetAsync(
         string tenantId,
         Guid planId,
@@ -177,3 +184,16 @@ public sealed record DurablePlanCreationClaim(
     DateTimeOffset? LeaseExpiresAt,
     Guid? ResultPlanId,
     EntitySyncSha256? ResultPlanDigestSha256);
+
+public enum DurablePlanImportPersistenceState
+{
+    Inserted,
+    Replayed,
+    Conflict,
+    PolicyChanged,
+    ConnectionChanged
+}
+
+public sealed record DurablePlanImportPersistenceResult(
+    DurablePlanImportPersistenceState State,
+    EntitySyncDurablePlan? Plan);

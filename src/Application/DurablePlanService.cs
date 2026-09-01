@@ -155,20 +155,30 @@ public sealed class DurablePlanService(
             plan.TargetConnectionGeneration,
             cancellationToken).ConfigureAwait(false);
 
-        var existing = await plans.GetAsync(
-            tenantId, plan.PlanId, cancellationToken).ConfigureAwait(false);
-        if (existing is not null)
-        {
-            if (existing != plan)
-                throw new DurablePlanIdempotencyConflictException(plan.PlanId);
-            return existing;
-        }
-        await plans.InsertAsync(tenantId, verified, cancellationToken)
+        var result = await plans.ImportAsync(
+                tenantId,
+                verified,
+                idempotencyKey.Trim(),
+                actor,
+                cancellationToken)
             .ConfigureAwait(false);
-        return await plans.GetAsync(tenantId, plan.PlanId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException(
-                "The imported durable plan is unavailable.");
+        return result.State switch
+        {
+            DurablePlanImportPersistenceState.Inserted
+                or DurablePlanImportPersistenceState.Replayed =>
+                result.Plan
+                ?? throw new InvalidOperationException(
+                    "The imported durable plan is unavailable."),
+            DurablePlanImportPersistenceState.Conflict =>
+                throw new DurablePlanIdempotencyConflictException(plan.PlanId),
+            DurablePlanImportPersistenceState.PolicyChanged =>
+                throw new DurablePlanPolicyChangedException(plan.PlanId),
+            DurablePlanImportPersistenceState.ConnectionChanged =>
+                throw new DurablePlanConnectionChangedException(
+                    plan.SourceConnectionId),
+            _ => throw new InvalidOperationException(
+                "The durable plan import result is invalid.")
+        };
     }
 
 

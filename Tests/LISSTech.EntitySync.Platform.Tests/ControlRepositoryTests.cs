@@ -285,6 +285,108 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
 
     [Fact]
+    public async Task Durable_import_receipt_replays_and_conflicts_after_repository_reconstruction()
+    {
+        var context = await SeedControlContextAsync("import-receipt");
+        var actor = new EntitySyncActor("importer");
+        var manifest = Manifest(context, 1);
+        const string key = "import-receipt-key";
+        IDurableSyncPlanRepository firstRepository =
+            new PostgresDurableSyncPlanRepository(Database);
+        var first = await firstRepository.ImportAsync(
+            context.TenantId, manifest, key, actor, default);
+        IDurableSyncPlanRepository replayRepository =
+            new PostgresDurableSyncPlanRepository(Database);
+        var replay = await replayRepository.ImportAsync(
+            context.TenantId, manifest, key, actor, default);
+        IDurableSyncPlanRepository differentPlanRepository =
+            new PostgresDurableSyncPlanRepository(Database);
+        var differentPlan = await differentPlanRepository.ImportAsync(
+            context.TenantId, Manifest(context, 1), key, actor, default);
+        IDurableSyncPlanRepository differentActorRepository =
+            new PostgresDurableSyncPlanRepository(Database);
+        var differentActor = await differentActorRepository.ImportAsync(
+            context.TenantId, manifest, key, new EntitySyncActor("other-importer"), default);
+
+        Assert.Equal(DurablePlanImportPersistenceState.Inserted, first.State);
+        Assert.Equal(DurablePlanImportPersistenceState.Replayed, replay.State);
+        Assert.Equal(manifest.Plan, replay.Plan);
+        Assert.Equal(DurablePlanImportPersistenceState.Conflict, differentPlan.State);
+        Assert.Equal(DurablePlanImportPersistenceState.Conflict, differentActor.State);
+    }
+
+    [Fact]
+    public async Task Durable_import_rechecks_policy_after_application_validation()
+    {
+        var context = await SeedControlContextAsync("import-policy-race");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var innerPolicies = new PostgresSyncPolicyRepository(Database);
+        var policies = new PausingPolicyRepository(innerPolicies);
+        var source = new BlockingReadAdapter("NetSuite", []);
+        var service = RecoveryService(context, plans, source, policies);
+        var manifest = Manifest(context, 1);
+        const string key = "import-policy-race-key";
+
+        var import = service.ImportManifestAsync(
+            context.TenantId, manifest, key, new EntitySyncActor("importer"), default);
+        await policies.ReadCompleted;
+        await innerPolicies.InsertAsync(
+            context.TenantId,
+            context.Policy.NextVersion(
+                new EntitySyncActor("disabler"),
+                context.Policy.Definition,
+                context.Now.AddMinutes(1),
+                enabled: false),
+            default);
+        policies.Release();
+
+        await Assert.ThrowsAsync<DurablePlanPolicyChangedException>(() => import);
+        Assert.Null(await new PostgresDurableSyncPlanRepository(Database).GetAsync(
+            context.TenantId, manifest.Plan.PlanId, default));
+        Assert.Null(await new PostgresIdempotencyRepository(Database).GetAsync(
+            context.TenantId, $"plan.import:{key}", default));
+    }
+
+    [Fact]
+    public async Task Durable_import_rechecks_connections_after_application_validation()
+    {
+        var context = await SeedControlContextAsync("import-connection-race");
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var innerConnections =
+            new PostgresConnectionDefinitionRepository(Database);
+        var connections = new PausingConnectionRepository(innerConnections);
+        var source = new BlockingReadAdapter("NetSuite", []);
+        var service = RecoveryService(
+            context, plans, source, connections: connections);
+        var manifest = Manifest(context, 1);
+        const string key = "import-connection-race-key";
+
+        var import = service.ImportManifestAsync(
+            context.TenantId, manifest, key, new EntitySyncActor("importer"), default);
+        await connections.ReadsCompleted;
+        var rotated = context.Source.NextGeneration(
+            context.Source.DisplayName,
+            context.Source.Enabled,
+            context.Source.PublicConfiguration,
+            context.Source.SecretCiphertext,
+            new EntitySyncActor("rotator"),
+            context.Now.AddMinutes(1));
+        Assert.NotNull(await innerConnections.TryReplaceAsync(
+            context.TenantId,
+            context.Source.ConnectionId,
+            context.Source.Generation,
+            rotated,
+            default));
+        connections.Release();
+
+        await Assert.ThrowsAsync<DurablePlanConnectionChangedException>(() => import);
+        Assert.Null(await new PostgresDurableSyncPlanRepository(Database).GetAsync(
+            context.TenantId, manifest.Plan.PlanId, default));
+        Assert.Null(await new PostgresIdempotencyRepository(Database).GetAsync(
+            context.TenantId, $"plan.import:{key}", default));
+    }
+
+    [Fact]
     public async Task Manifest_round_trips_and_item_failure_rolls_back_plan()
     {
         var context = await SeedControlContextAsync("manifest");
@@ -2174,7 +2276,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     private DurablePlanService RecoveryService(
         ControlContext context,
         IDurableSyncPlanRepository plans,
-        BlockingReadAdapter sourceAdapter)
+        BlockingReadAdapter sourceAdapter,
+        ISyncPolicyRepository? policies = null,
+        IConnectionDefinitionRepository? connections = null)
     {
         var runtime = new TestRuntimeFactory(
             context.Source,
@@ -2192,8 +2296,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 mapper,
                 new InMemoryEntitySyncChangeStateRepository()),
             new PlanManifestBuilder(mapper),
-            new PostgresSyncPolicyRepository(Database),
-            new PostgresConnectionDefinitionRepository(Database),
+            policies ?? new PostgresSyncPolicyRepository(Database),
+            connections ?? new PostgresConnectionDefinitionRepository(Database),
             runtime,
             exclusions,
             plans,
@@ -2516,6 +2620,160 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
 
     private NpgsqlDataSource Database =>
         database ?? throw new InvalidOperationException("The test database is not initialized.");
+
+    private sealed class PausingConnectionRepository(
+        IConnectionDefinitionRepository inner)
+        : IConnectionDefinitionRepository
+    {
+        private readonly TaskCompletionSource readsCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int readCount;
+
+        internal Task ReadsCompleted => readsCompleted.Task;
+        internal void Release() => released.TrySetResult();
+
+        public Task<EntitySyncConnectionDefinition> InsertAsync(
+            string tenantId,
+            EntitySyncConnectionDefinition definition,
+            CancellationToken cancellationToken) =>
+            inner.InsertAsync(tenantId, definition, cancellationToken);
+
+        public async Task<EntitySyncConnectionDefinition?> GetAsync(
+            string tenantId,
+            string connectionId,
+            CancellationToken cancellationToken)
+        {
+            var definition = await inner.GetAsync(
+                tenantId, connectionId, cancellationToken);
+            if (Interlocked.Increment(ref readCount) == 2)
+            {
+                readsCompleted.TrySetResult();
+                await released.Task.WaitAsync(cancellationToken);
+            }
+            return definition;
+        }
+
+        public Task<IReadOnlyList<EntitySyncConnectionDefinition>> ListAsync(
+            string tenantId,
+            string? vendor,
+            bool? enabled,
+            CancellationToken cancellationToken) =>
+            inner.ListAsync(tenantId, vendor, enabled, cancellationToken);
+
+        public Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            EntitySyncConnectionDefinition nextGeneration,
+            CancellationToken cancellationToken) =>
+            inner.TryReplaceAsync(
+                tenantId,
+                connectionId,
+                expectedGeneration,
+                nextGeneration,
+                cancellationToken);
+
+        public Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            CancellationToken cancellationToken) =>
+            inner.TryDeleteAsync(
+                tenantId,
+                connectionId,
+                expectedGeneration,
+                cancellationToken);
+    }
+
+    private sealed class PausingPolicyRepository(
+        ISyncPolicyRepository inner) : ISyncPolicyRepository
+    {
+        private readonly TaskCompletionSource readCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task ReadCompleted => readCompleted.Task;
+        internal void Release() => released.TrySetResult();
+
+        public Task InsertAsync(
+            string tenantId,
+            EntitySyncPolicy policy,
+            CancellationToken cancellationToken) =>
+            inner.InsertAsync(tenantId, policy, cancellationToken);
+
+        public Task<bool> TryInsertValidatedAsync(
+            string tenantId,
+            EntitySyncPolicy policy,
+            string sourceConnectionId,
+            long sourceGeneration,
+            string targetConnectionId,
+            long targetGeneration,
+            CancellationToken cancellationToken) =>
+            inner.TryInsertValidatedAsync(
+                tenantId, policy, sourceConnectionId, sourceGeneration,
+                targetConnectionId, targetGeneration, cancellationToken);
+
+        public Task<bool> TryInsertValidatedWithTokenAsync(
+            string tenantId,
+            EntitySyncPolicy policy,
+            string sourceConnectionId,
+            long sourceGeneration,
+            string targetConnectionId,
+            long targetGeneration,
+            string idempotencyToken,
+            CancellationToken cancellationToken) =>
+            inner.TryInsertValidatedWithTokenAsync(
+                tenantId, policy, sourceConnectionId, sourceGeneration,
+                targetConnectionId, targetGeneration, idempotencyToken,
+                cancellationToken);
+
+        public Task<EntitySyncPolicy?> GetByIdempotencyTokenAsync(
+            string tenantId,
+            Guid policyId,
+            string idempotencyToken,
+            CancellationToken cancellationToken) =>
+            inner.GetByIdempotencyTokenAsync(
+                tenantId, policyId, idempotencyToken, cancellationToken);
+
+        public Task<EntitySyncPolicy?> GetAsync(
+            string tenantId,
+            Guid policyId,
+            int version,
+            CancellationToken cancellationToken) =>
+            inner.GetAsync(tenantId, policyId, version, cancellationToken);
+
+        public async Task<EntitySyncPolicy?> GetLatestAsync(
+            string tenantId,
+            Guid policyId,
+            CancellationToken cancellationToken)
+        {
+            var policy = await inner.GetLatestAsync(
+                tenantId, policyId, cancellationToken);
+            readCompleted.TrySetResult();
+            await released.Task.WaitAsync(cancellationToken);
+            return policy;
+        }
+
+        public Task<IReadOnlyList<EntitySyncPolicy>> ListLatestAsync(
+            string tenantId,
+            string? routeScope,
+            bool? enabled,
+            CancellationToken cancellationToken) =>
+            inner.ListLatestAsync(
+                tenantId, routeScope, enabled, cancellationToken);
+
+        public Task<IReadOnlyList<EntitySyncPolicy>> ListVersionsAsync(
+            string tenantId,
+            Guid policyId,
+            int offset,
+            int maximumRows,
+            CancellationToken cancellationToken) =>
+            inner.ListVersionsAsync(
+                tenantId, policyId, offset, maximumRows, cancellationToken);
+    }
 
 
     private sealed record ControlContext(

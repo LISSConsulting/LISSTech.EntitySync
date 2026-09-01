@@ -1052,6 +1052,10 @@ public sealed class DurablePlanServiceTests
             creationClaims = [];
         private readonly Dictionary<Guid, EntitySyncInspectionSession> sessions = [];
         private readonly Dictionary<Guid, Dictionary<Guid, EntitySyncInspectionRange>> ranges = [];
+        private readonly Dictionary<
+            (string TenantId, string CallerKey),
+            (EntitySyncSha256 RequestSha256, EntitySyncDurablePlanManifest Manifest)>
+            importReceipts = [];
         private EntitySyncDurablePlan? currentPlan;
 
         public EntitySyncDurablePlanManifest? Manifest { get; private set; }
@@ -1223,6 +1227,48 @@ public sealed class DurablePlanServiceTests
             Manifest = manifest;
             currentPlan = manifest.Plan;
             return Task.CompletedTask;
+        }
+
+        public async Task<DurablePlanImportPersistenceResult> ImportAsync(
+            string tenantId,
+            EntitySyncDurablePlanManifest manifest,
+            string callerKey,
+            EntitySyncActor actor,
+            CancellationToken cancellationToken)
+        {
+            var requestSha256 = EntitySyncCanonicalDigest.Compute(new
+            {
+                TenantId = tenantId,
+                CallerKey = callerKey,
+                PlanId = manifest.Plan.PlanId,
+                PlanDigestSha256 = manifest.Plan.PlanDigestSha256.Value,
+                ActorId = actor.ActorId
+            });
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var key = (tenantId, callerKey);
+                if (importReceipts.TryGetValue(key, out var receipt))
+                    return receipt.RequestSha256 == requestSha256
+                        ? new(
+                            DurablePlanImportPersistenceState.Replayed,
+                            receipt.Manifest.Plan)
+                        : new(
+                            DurablePlanImportPersistenceState.Conflict,
+                            null);
+                if (currentPlan?.PlanId == manifest.Plan.PlanId)
+                    return new(DurablePlanImportPersistenceState.Conflict, null);
+                Manifest = manifest;
+                currentPlan = manifest.Plan;
+                importReceipts.Add(key, (requestSha256, manifest));
+                return new(
+                    DurablePlanImportPersistenceState.Inserted,
+                    manifest.Plan);
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
 
         public Task<EntitySyncDurablePlan?> GetAsync(
