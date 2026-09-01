@@ -9,6 +9,17 @@ public interface ISyncAuditRepository
         EntitySyncAuditEvent auditEvent,
         EntitySyncAuditEventFullValues? fullValues,
         CancellationToken cancellationToken);
+    async Task<bool> TryAppendAsync(
+        string tenantId,
+        EntitySyncAuditEvent auditEvent,
+        EntitySyncAuditEventFullValues? fullValues,
+        CancellationToken cancellationToken)
+    {
+        await AppendAsync(tenantId, auditEvent, fullValues, cancellationToken)
+            .ConfigureAwait(false);
+        return true;
+    }
+
 
     Task<EntitySyncAuditPage> ListAsync(
         string tenantId,

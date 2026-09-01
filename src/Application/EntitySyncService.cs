@@ -10,9 +10,29 @@ public sealed class EntitySyncService(
     IEntityExclusionRepository exclusions,
     IEntityMapper mapper,
     IEntitySyncChangeStateRepository changeStates,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    SyncOperationService? operationService = null)
 {
     public Task<EntitySyncPlan> CreatePlanAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken) => planner.CreateAsync(request, cancellationToken);
+    public Task<EntitySyncOperation> QueueDryRunAsync(
+        string tenantId,
+        Guid planId,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        RequireOperationService().QueueDryRunAsync(
+            tenantId, planId, idempotencyKey, actor, cancellationToken);
+
+    public Task<EntitySyncOperation> QueueApplyAsync(
+        string tenantId,
+        Guid planId,
+        Guid approvalId,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        RequireOperationService().QueueApplyAsync(
+            tenantId, planId, approvalId, idempotencyKey, actor, cancellationToken);
+
 
     public EntitySyncPlanPage GetPlan(string tenantId, string planId, int page = 1, int pageSize = 25)
     {
@@ -277,6 +297,10 @@ public sealed class EntitySyncService(
 
         return route;
     }
+
+    private SyncOperationService RequireOperationService() =>
+        operationService ?? throw new InvalidOperationException(
+            "The durable operation control plane is not configured.");
 
     private static bool IsLowercaseSha256(string? value) =>
         value is { Length: 64 }

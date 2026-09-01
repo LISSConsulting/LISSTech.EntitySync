@@ -194,5 +194,19 @@ public interface IEntityAdapter
     Task<EntityWriteResult> UpdateEntityAsync(
         EntityWriteRequest request,
         CancellationToken cancellationToken);
+    Task<EntityWriteResult> LookupWriteByRequestIdAsync(
+        EntityWriteRequest request,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new EntityWriteResult
+        {
+            Vendor = Vendor,
+            EntityType = request.EntityType,
+            Id = request.Id,
+            VendorRequestId = request.VendorRequestId,
+            Action = request.Id is null ? EntityAdapterActions.Create : EntityAdapterActions.Update,
+            Success = false,
+            RequestLookupOutcome = VendorRequestLookupOutcome.Unsupported,
+            SafeCode = "REQUEST_ID_LOOKUP_UNSUPPORTED"
+        });
     Task<bool> TestConnectionAsync(CancellationToken cancellationToken);
 }

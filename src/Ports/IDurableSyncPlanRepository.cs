@@ -126,6 +126,12 @@ public interface IDurableSyncPlanRepository
         EntitySyncAuditEvent auditEvent,
         CancellationToken cancellationToken);
 
+    Task<EntitySyncApproval?> GetApprovalAsync(
+        string tenantId,
+        Guid approvalId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<EntitySyncApproval?>(null);
+
     Task<bool> TryConsumeApprovalAsync(
         string tenantId,
         Guid approvalId,

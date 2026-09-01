@@ -34,19 +34,47 @@ public sealed class EntitySyncApplyCoordinator
     private readonly IEntitySyncPlanRepository plans;
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly TimeProvider timeProvider;
+    private readonly ISyncOperationRepository? operationRepository;
     private readonly ConcurrentDictionary<string, ApplyOperation> operations = new(StringComparer.Ordinal);
 
     public EntitySyncApplyCoordinator(
         EntitySyncService service,
         IEntitySyncPlanRepository plans,
         IHostApplicationLifetime applicationLifetime,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ISyncOperationRepository? operationRepository = null)
     {
         this.service = service;
         this.plans = plans;
         this.applicationLifetime = applicationLifetime;
         this.timeProvider = timeProvider ?? TimeProvider.System;
+        this.operationRepository = operationRepository;
     }
+
+    public Task<EntitySyncOperation> QueueAsync(
+        string tenantId,
+        Guid planId,
+        Guid? approvalId,
+        string idempotencyKey,
+        EntitySyncActor actor,
+        bool apply,
+        CancellationToken cancellationToken) =>
+        apply
+            ? service.QueueApplyAsync(
+                tenantId, planId,
+                approvalId ?? throw new ArgumentException(
+                    "Approval ID is required for apply.", nameof(approvalId)),
+                idempotencyKey, actor, cancellationToken)
+            : service.QueueDryRunAsync(
+                tenantId, planId, idempotencyKey, actor, cancellationToken);
+
+    public Task<EntitySyncOperation?> GetOperationAsync(
+        string tenantId,
+        Guid operationId,
+        CancellationToken cancellationToken) =>
+        (operationRepository ?? throw new InvalidOperationException(
+            "The durable operation repository is not configured."))
+        .GetAsync(tenantId, operationId, cancellationToken);
 
     public EntitySyncApplySnapshot Start(string tenantId, string planId)
     {

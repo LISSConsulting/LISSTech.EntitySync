@@ -846,6 +846,39 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         return approval;
     }
 
+    public async Task<EntitySyncApproval?> GetApprovalAsync(
+        string tenantId,
+        Guid approvalId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT approval.tenant_id, approval.approval_id, approval.inspection_id,
+                   approval.plan_id, approval.plan_digest_sha256,
+                   plan.source_connection_id, approval.source_connection_generation,
+                   plan.target_connection_id, approval.target_connection_generation,
+                   approval.approved_at, approval.approved_by, approval.expires_at
+            FROM entitysync.sync_approvals approval
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = approval.tenant_id
+             AND plan.plan_id = approval.plan_id
+            WHERE approval.tenant_id = @tenant_id
+              AND approval.approval_id = @approval_id
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "approval_id", NpgsqlDbType.Uuid, approvalId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            return null;
+        return new EntitySyncApproval(
+            reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetGuid(3),
+            new EntitySyncSha256(reader.GetString(4)), reader.GetString(5),
+            reader.GetInt64(6), reader.GetString(7), reader.GetInt64(8),
+            reader.GetFieldValue<DateTimeOffset>(9), new EntitySyncActor(reader.GetString(10)),
+            PostgresControlPersistence.NullableTime(reader, 11));
+    }
+
     public async Task<bool> TryConsumeApprovalAsync(
         string tenantId, Guid approvalId, Guid inspectionId, Guid planId,
         EntitySyncSha256 planDigestSha256, string sourceConnectionId,

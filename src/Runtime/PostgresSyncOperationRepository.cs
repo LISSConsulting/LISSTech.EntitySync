@@ -19,6 +19,59 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         await InsertGraphAsync(connection, transaction, operation, items, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
+    public async Task<bool> TryInsertAsync(
+        string tenantId,
+        EntitySyncOperation operation,
+        IReadOnlyList<EntitySyncOperationItem> items,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await InsertAsync(tenantId, operation, items, cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (PostgresException exception) when (
+            exception.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            return false;
+        }
+    }
+
+    public async Task<EntitySyncOperation?> FindByIdempotencyKeyAsync(
+        string tenantId,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT operation.tenant_id, operation.operation_id, operation.plan_id,
+                   operation.approval_id, operation.route_scope,
+                   plan.source_connection_id, operation.source_connection_generation,
+                   plan.target_connection_id, operation.target_connection_generation,
+                   operation.mode, operation.status, operation.idempotency_key,
+                   operation.lease_owner, operation.lease_expires_at, operation.attempt,
+                   operation.created_at, operation.queued_at, operation.started_at,
+                   operation.completed_at, operation.request_sha256,
+                   operation.total_count, operation.succeeded_count,
+                   operation.failed_count, operation.skipped_count, operation.unknown_count
+            FROM entitysync.sync_operations operation
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = operation.tenant_id
+             AND plan.plan_id = operation.plan_id
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.idempotency_key = @idempotency_key
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(
+            command, "idempotency_key", NpgsqlDbType.Text, idempotencyKey);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadOperation(reader)
+            : null;
+    }
+
 
     public async Task<EntitySyncOperation?> GetAsync(
         string tenantId,
@@ -33,7 +86,9 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    operation.mode, operation.status, operation.idempotency_key,
                    operation.lease_owner, operation.lease_expires_at, operation.attempt,
                    operation.created_at, operation.queued_at, operation.started_at,
-                   operation.completed_at
+                   operation.completed_at, operation.request_sha256,
+                   operation.total_count, operation.succeeded_count,
+                   operation.failed_count, operation.skipped_count, operation.unknown_count
             FROM entitysync.sync_operations operation
             JOIN entitysync.sync_plans plan
               ON plan.tenant_id = operation.tenant_id AND plan.plan_id = operation.plan_id
@@ -58,7 +113,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    redacted_desired::text, before_payload_sha256,
                    desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
                    vendor_request_id, outcome, error_code, error_message, started_at,
-                   completed_at
+                   completed_at, dispatch_started_at, vendor_target_entity_id,
+                   safe_write_code
             FROM entitysync.sync_operation_items
             WHERE tenant_id = @tenant_id AND operation_id = @operation_id
             ORDER BY item_id
@@ -70,6 +126,37 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(ReadItem(reader));
         return result;
     }
+    public async Task<EntitySyncOperationItem?> GetItemAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT tenant_id, operation_id, plan_id, item_id, source_vendor,
+                   source_connection_id, source_entity_type, source_entity_key,
+                   source_entity_id, target_vendor, target_connection_id,
+                   target_entity_type, target_entity_id, action, redacted_before::text,
+                   redacted_desired::text, before_payload_sha256,
+                   desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
+                   vendor_request_id, outcome, error_code, error_message, started_at,
+                   completed_at, dispatch_started_at, vendor_target_entity_id,
+                   safe_write_code
+            FROM entitysync.sync_operation_items
+            WHERE tenant_id = @tenant_id
+              AND operation_id = @operation_id
+              AND item_id = @item_id
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadItem(reader)
+            : null;
+    }
+
 
     public async Task<EntitySyncOperation?> TryLeaseNextAsync(
         string tenantId,
@@ -113,7 +200,10 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    plan.target_connection_id, leased.target_connection_generation,
                    leased.mode, leased.status, leased.idempotency_key,
                    leased.lease_owner, leased.lease_expires_at, leased.attempt,
-                   leased.created_at, leased.queued_at, leased.started_at, leased.completed_at
+                   leased.created_at, leased.queued_at, leased.started_at,
+                   leased.completed_at, leased.request_sha256, leased.total_count,
+                   leased.succeeded_count, leased.failed_count, leased.skipped_count,
+                   leased.unknown_count
             FROM leased
             JOIN entitysync.sync_plans plan
               ON plan.tenant_id = leased.tenant_id AND plan.plan_id = leased.plan_id
@@ -159,7 +249,9 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    operation.mode, operation.status, operation.idempotency_key,
                    operation.lease_owner, operation.lease_expires_at, operation.attempt,
                    operation.created_at, operation.queued_at, operation.started_at,
-                   operation.completed_at
+                   operation.completed_at, operation.request_sha256,
+                   operation.total_count, operation.succeeded_count,
+                   operation.failed_count, operation.skipped_count, operation.unknown_count
             FROM entitysync.sync_operations operation
             JOIN entitysync.sync_plans plan
               ON plan.tenant_id = operation.tenant_id
@@ -278,10 +370,10 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.RequireTenant(tenantId, replacement.TenantId, nameof(replacement));
         if (replacement.OperationId != operationId || replacement.PlanId != planId || replacement.ItemId != itemId)
             throw new ArgumentException("Replacement item identity must match.", nameof(replacement));
-        if (expectedOutcome != EntitySyncItemOutcome.Pending
+        if (expectedOutcome is not (EntitySyncItemOutcome.Pending or EntitySyncItemOutcome.Unknown)
             || replacement.Outcome == EntitySyncItemOutcome.Pending)
             throw new InvalidOperationException(
-                "Operation items allow only one Pending-to-terminal transition.");
+                "Operation items allow only Pending/Unknown-to-terminal transitions.");
         if (string.IsNullOrWhiteSpace(leaseOwner))
             throw new ArgumentException("Lease owner is required.", nameof(leaseOwner));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
@@ -328,8 +420,13 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
 
         const string sql = """
             UPDATE entitysync.sync_operation_items item
-            SET after_payload_sha256 = @after_payload_sha256,
+            SET redacted_before = @redacted_before,
+                before_payload_sha256 = @before_payload_sha256,
+                after_payload_sha256 = @after_payload_sha256,
                 vendor_request_id = @vendor_request_id,
+                dispatch_started_at = @dispatch_started_at,
+                vendor_target_entity_id = @vendor_target_entity_id,
+                safe_write_code = @safe_write_code,
                 outcome = @outcome,
                 error_code = @error_code,
                 error_message = @error_message,
@@ -354,6 +451,410 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return replaced;
     }
+
+    public async Task<DispatchPreparationResult> TryPrepareDispatchAsync(
+        string tenantId,
+        Guid operationId,
+        Guid planId,
+        Guid itemId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        Guid policyId,
+        int policyVersion,
+        EntitySyncSha256 policyDefinitionSha256,
+        EntitySyncOperationItem preparedItem,
+        EntitySyncOperationItemSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        PostgresControlPersistence.RequireTenant(tenantId, preparedItem.TenantId, nameof(preparedItem));
+        PostgresControlPersistence.RequireTenant(tenantId, snapshot.TenantId, nameof(snapshot));
+        if (preparedItem.OperationId != operationId || preparedItem.PlanId != planId
+            || preparedItem.ItemId != itemId || snapshot.OperationId != operationId
+            || snapshot.ItemId != itemId || preparedItem.DispatchStartedAt is null
+            || preparedItem.VendorRequestId is null)
+            throw new ArgumentException("Prepared dispatch identity and boundary are incomplete.");
+
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await AcquireDispatchLocksAsync(
+            connection, transaction, tenantId, planId, policyId, cancellationToken)
+            .ConfigureAwait(false);
+
+        const string stateSql = """
+            SELECT operation.attempt = @expected_attempt
+                       AND operation.lease_owner = @lease_owner
+                       AND operation.status = 'Running'
+                       AND operation.lease_expires_at > clock_timestamp() AS lease_valid,
+                   policy.enabled
+                       AND policy.version = @policy_version
+                       AND policy.definition_sha256 = @policy_definition_sha256
+                       AND policy.version = (
+                           SELECT max(latest.version)
+                           FROM entitysync.sync_policies latest
+                           WHERE latest.tenant_id = policy.tenant_id
+                             AND latest.policy_id = policy.policy_id) AS policy_valid,
+                   source_connection.enabled
+                       AND source_connection.generation = operation.source_connection_generation
+                       AND target_connection.enabled
+                       AND target_connection.generation = operation.target_connection_generation
+                       AS connections_valid,
+                   item.dispatch_started_at IS NOT NULL AS already_started,
+                   item.outcome,
+                   EXISTS (
+                       SELECT 1
+                       FROM entitysync.entity_exclusions exclusion
+                       WHERE item.action = 'Create'
+                         AND exclusion.tenant_id = item.tenant_id
+                         AND exclusion.source_vendor = item.source_vendor
+                         AND exclusion.source_connection_id = item.source_connection_id
+                         AND exclusion.source_entity_type = item.source_entity_type
+                         AND exclusion.target_vendor = item.target_vendor
+                         AND exclusion.target_connection_id = item.target_connection_id
+                         AND exclusion.target_entity_type = item.target_entity_type
+                         AND exclusion.source_entity_key = lower(item.source_entity_id)
+                         AND exclusion.revoked_at IS NULL) AS excluded
+            FROM entitysync.sync_operations operation
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = operation.tenant_id AND plan.plan_id = operation.plan_id
+            JOIN entitysync.sync_policies policy
+              ON policy.tenant_id = plan.tenant_id AND policy.policy_id = plan.policy_id
+             AND policy.version = plan.policy_version
+            JOIN entitysync.connection_definitions source_connection
+              ON source_connection.tenant_id = operation.tenant_id
+             AND source_connection.connection_id = plan.source_connection_id
+            JOIN entitysync.connection_definitions target_connection
+              ON target_connection.tenant_id = operation.tenant_id
+             AND target_connection.connection_id = plan.target_connection_id
+            JOIN entitysync.sync_operation_items item
+              ON item.tenant_id = operation.tenant_id
+             AND item.operation_id = operation.operation_id
+             AND item.item_id = @item_id
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.operation_id = @operation_id
+              AND operation.plan_id = @plan_id
+              AND plan.policy_id = @policy_id
+            FOR UPDATE OF operation, item
+            """;
+        bool leaseValid;
+        bool policyValid;
+        bool connectionsValid;
+        bool alreadyStarted;
+        bool excluded;
+        EntitySyncItemOutcome outcome;
+        await using (var state = new NpgsqlCommand(stateSql, connection, transaction))
+        {
+            AddDispatchIdentity(
+                state, tenantId, operationId, planId, itemId, expectedOperationAttempt,
+                leaseOwner, policyId, policyVersion, policyDefinitionSha256);
+            await using var reader = await state.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return new DispatchPreparationResult(DispatchPreparationOutcome.NotFound, null);
+            }
+            leaseValid = reader.GetBoolean(0);
+            policyValid = reader.GetBoolean(1);
+            connectionsValid = reader.GetBoolean(2);
+            alreadyStarted = reader.GetBoolean(3);
+            outcome = PostgresControlPersistence.ParseEnum<EntitySyncItemOutcome>(
+                reader.GetString(4));
+            excluded = reader.GetBoolean(5);
+        }
+        var rejection = !leaseValid
+            ? DispatchPreparationOutcome.StaleLease
+            : !policyValid
+                ? DispatchPreparationOutcome.PolicyChanged
+                : !connectionsValid
+                    ? DispatchPreparationOutcome.ConnectionChanged
+                    : alreadyStarted
+                        ? DispatchPreparationOutcome.AlreadyDispatchStarted
+                        : excluded
+                            ? DispatchPreparationOutcome.Excluded
+                            : outcome != EntitySyncItemOutcome.Pending
+                                ? DispatchPreparationOutcome.NotFound
+                                : DispatchPreparationOutcome.Prepared;
+        if (rejection != DispatchPreparationOutcome.Prepared)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return new DispatchPreparationResult(rejection, null);
+        }
+        await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
+            .ConfigureAwait(false);
+        const string updateSql = """
+            UPDATE entitysync.sync_operation_items
+            SET redacted_before = @redacted_before,
+                before_payload_sha256 = @before_payload_sha256,
+                vendor_request_id = @vendor_request_id,
+                dispatch_started_at = @dispatch_started_at,
+                started_at = @started_at
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND plan_id = @plan_id AND item_id = @item_id
+              AND outcome = 'Pending' AND dispatch_started_at IS NULL
+            """;
+        await using (var update = new NpgsqlCommand(updateSql, connection, transaction))
+        {
+            AddItemMutable(update, preparedItem);
+            PostgresControlPersistence.Add(update, "tenant_id", NpgsqlDbType.Text, tenantId);
+            PostgresControlPersistence.Add(update, "operation_id", NpgsqlDbType.Uuid, operationId);
+            PostgresControlPersistence.Add(update, "plan_id", NpgsqlDbType.Uuid, planId);
+            PostgresControlPersistence.Add(update, "item_id", NpgsqlDbType.Uuid, itemId);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return new DispatchPreparationResult(
+                    DispatchPreparationOutcome.AlreadyDispatchStarted, null);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new DispatchPreparationResult(DispatchPreparationOutcome.Prepared, preparedItem);
+    }
+
+    public async Task<bool> TryRecordItemAsync(
+        string tenantId,
+        Guid operationId,
+        Guid planId,
+        Guid itemId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        EntitySyncItemOutcome expectedOutcome,
+        EntitySyncOperationItem replacement,
+        EntitySyncOperationItemSnapshot? snapshot,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (snapshot is not null)
+            await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
+                .ConfigureAwait(false);
+        const string sql = """
+            UPDATE entitysync.sync_operation_items item
+            SET redacted_before = @redacted_before,
+                before_payload_sha256 = @before_payload_sha256,
+                after_payload_sha256 = @after_payload_sha256,
+                vendor_request_id = @vendor_request_id,
+                dispatch_started_at = @dispatch_started_at,
+                vendor_target_entity_id = @vendor_target_entity_id,
+                safe_write_code = @safe_write_code,
+                outcome = @outcome,
+                error_code = @error_code,
+                error_message = @error_message,
+                started_at = @started_at,
+                completed_at = @completed_at
+            FROM entitysync.sync_operations operation
+            WHERE item.tenant_id = @tenant_id AND item.operation_id = @operation_id
+              AND item.plan_id = @plan_id AND item.item_id = @item_id
+              AND item.outcome = @expected_outcome
+              AND operation.tenant_id = item.tenant_id
+              AND operation.operation_id = item.operation_id
+              AND operation.attempt = @expected_attempt
+              AND operation.lease_owner = @lease_owner
+              AND operation.status = 'Running'
+              AND operation.lease_expires_at > clock_timestamp()
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddItemMutable(command, replacement);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "operation_id", NpgsqlDbType.Uuid, operationId);
+        PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, planId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(
+            command, "expected_outcome", NpgsqlDbType.Text, expectedOutcome.ToString());
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer, expectedOperationAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken)
+            .ConfigureAwait(false) == 1;
+        if (updated)
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        else
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+        return updated;
+    }
+
+    public Task<EntitySyncOperation?> TryFinalizeAttemptAsync(
+        string tenantId,
+        Guid operationId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken) =>
+        FinishAttemptAsync(
+            tenantId, operationId, expectedOperationAttempt, leaseOwner, completedAt,
+            cancel: false, cancellationToken);
+
+    public Task<EntitySyncOperation?> TryCancelAttemptAsync(
+        string tenantId,
+        Guid operationId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken) =>
+        FinishAttemptAsync(
+            tenantId, operationId, expectedOperationAttempt, leaseOwner, completedAt,
+            cancel: true, cancellationToken);
+
+    public async Task<UnknownItemLease?> TryLeaseUnknownItemAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        string leaseOwner,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE entitysync.sync_operation_items item
+            SET reconcile_lease_owner = @lease_owner,
+                reconcile_lease_expires_at = @lease_expires_at,
+                reconcile_attempt = item.reconcile_attempt + 1
+            WHERE item.tenant_id = @tenant_id
+              AND item.operation_id = @operation_id
+              AND item.item_id = @item_id
+              AND item.outcome = 'Unknown'
+              AND (item.reconcile_lease_owner IS NULL
+                   OR item.reconcile_lease_expires_at <= clock_timestamp())
+            RETURNING item.tenant_id, item.operation_id, item.plan_id, item.item_id,
+                      item.source_vendor, item.source_connection_id,
+                      item.source_entity_type, item.source_entity_key,
+                      item.source_entity_id, item.target_vendor,
+                      item.target_connection_id, item.target_entity_type,
+                      item.target_entity_id, item.action, item.redacted_before::text,
+                      item.redacted_desired::text, item.before_payload_sha256,
+                      item.desired_payload_sha256, item.after_payload_sha256,
+                      item.snapshots_expires_at, item.vendor_request_id, item.outcome,
+                      item.error_code, item.error_message, item.started_at,
+                      item.completed_at, item.dispatch_started_at,
+                      item.vendor_target_entity_id, item.safe_write_code,
+                      item.reconcile_attempt
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        PostgresControlPersistence.Add(
+            command, "lease_expires_at", NpgsqlDbType.TimestampTz, leaseExpiresAt);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            return null;
+        return new UnknownItemLease(
+            ReadItem(reader), reader.GetInt32(29), leaseOwner, leaseExpiresAt);
+    }
+
+    public async Task<bool> TryRecordReconciliationEvidenceAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string leaseOwner,
+        EntitySyncSha256 afterPayloadSha256,
+        string? vendorTargetEntityId,
+        EntitySyncOperationItemSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        PostgresControlPersistence.RequireTenant(
+            tenantId, snapshot.TenantId, nameof(snapshot));
+        if (snapshot.OperationId != operationId || snapshot.ItemId != itemId
+            || snapshot.EncryptedAfterCiphertext is null)
+            throw new ArgumentException(
+                "Reconciliation evidence must bind the leased item and include an after snapshot.",
+                nameof(snapshot));
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
+            .ConfigureAwait(false);
+        const string sql = """
+            UPDATE entitysync.sync_operation_items
+            SET after_payload_sha256 = @after_payload_sha256,
+                vendor_target_entity_id = COALESCE(
+                    @vendor_target_entity_id, vendor_target_entity_id)
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND item_id = @item_id AND outcome = 'Unknown'
+              AND reconcile_attempt = @expected_attempt
+              AND reconcile_lease_owner = @lease_owner
+              AND reconcile_lease_expires_at > clock_timestamp()
+              AND (after_payload_sha256 IS NULL
+                   OR after_payload_sha256 = @after_payload_sha256)
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer,
+            expectedReconciliationAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        PostgresControlPersistence.Add(
+            command, "after_payload_sha256", NpgsqlDbType.Char, afterPayloadSha256.Value);
+        PostgresControlPersistence.Add(
+            command, "vendor_target_entity_id", NpgsqlDbType.Text, vendorTargetEntityId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    public async Task<bool> TryCompleteReconciliationAsync(
+        string tenantId,
+        Guid operationId,
+        Guid itemId,
+        int expectedReconciliationAttempt,
+        string leaseOwner,
+        EntitySyncOperationItem replacement,
+        EntitySyncOperationItemSnapshot? snapshot,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (snapshot is not null)
+            await UpsertSnapshotAsync(connection, transaction, snapshot, cancellationToken)
+                .ConfigureAwait(false);
+        const string sql = """
+            UPDATE entitysync.sync_operation_items
+            SET after_payload_sha256 = @after_payload_sha256,
+                vendor_target_entity_id = @vendor_target_entity_id,
+                safe_write_code = @safe_write_code,
+                outcome = @outcome,
+                error_code = @error_code,
+                error_message = @error_message,
+                completed_at = @completed_at,
+                reconcile_lease_owner = NULL,
+                reconcile_lease_expires_at = NULL
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND item_id = @item_id AND outcome = 'Unknown'
+              AND reconcile_attempt = @expected_attempt
+              AND reconcile_lease_owner = @lease_owner
+              AND reconcile_lease_expires_at > clock_timestamp()
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddItemMutable(command, replacement);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer, expectedReconciliationAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        await RefreshTerminalOperationAsync(
+            connection, transaction, tenantId, operationId, replacement.CompletedAt
+                ?? DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
 
     public async Task InsertSnapshotAsync(
         string tenantId,
@@ -430,6 +931,280 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<EntitySyncOperation?> FinishAttemptAsync(
+        string tenantId,
+        Guid operationId,
+        int expectedOperationAttempt,
+        string leaseOwner,
+        DateTimeOffset completedAt,
+        bool cancel,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        const string stateSql = """
+            SELECT count(*)::integer,
+                   count(*) FILTER (WHERE outcome = 'Pending')::integer,
+                   count(*) FILTER (WHERE outcome = 'Succeeded')::integer,
+                   count(*) FILTER (WHERE outcome = 'Failed')::integer,
+                   count(*) FILTER (WHERE outcome = 'Skipped')::integer,
+                   count(*) FILTER (WHERE outcome = 'Unknown')::integer,
+                   count(*) FILTER (WHERE dispatch_started_at IS NOT NULL)::integer
+            FROM entitysync.sync_operation_items
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND EXISTS (
+                  SELECT 1 FROM entitysync.sync_operations operation
+                  WHERE operation.tenant_id = @tenant_id
+                    AND operation.operation_id = @operation_id
+                    AND operation.attempt = @expected_attempt
+                    AND operation.lease_owner = @lease_owner
+                    AND operation.status = 'Running'
+                    AND operation.lease_expires_at > clock_timestamp())
+            """;
+        int total;
+        int pending;
+        int succeeded;
+        int failed;
+        int skipped;
+        int unknown;
+        int dispatched;
+        await using (var state = new NpgsqlCommand(stateSql, connection, transaction))
+        {
+            AddOperationKey(state, tenantId, operationId);
+            PostgresControlPersistence.Add(
+                state, "expected_attempt", NpgsqlDbType.Integer, expectedOperationAttempt);
+            PostgresControlPersistence.Add(state, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+            await using var reader = await state.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            total = reader.GetInt32(0);
+            pending = reader.GetInt32(1);
+            succeeded = reader.GetInt32(2);
+            failed = reader.GetInt32(3);
+            skipped = reader.GetInt32(4);
+            unknown = reader.GetInt32(5);
+            dispatched = reader.GetInt32(6);
+        }
+        if (total == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        if (cancel && dispatched != 0)
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        var status = cancel
+            ? EntitySyncOperationStatus.Cancelled
+            : pending > 0
+                ? EntitySyncOperationStatus.Queued
+                : succeeded + skipped == total
+                    ? EntitySyncOperationStatus.Succeeded
+                    : succeeded + skipped > 0
+                        ? EntitySyncOperationStatus.Partial
+                        : EntitySyncOperationStatus.Failed;
+        const string updateSql = """
+            UPDATE entitysync.sync_operations
+            SET status = @status,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                completed_at = CASE WHEN @status IN (
+                    'Succeeded','Partial','Failed','Cancelled') THEN @completed_at ELSE NULL END,
+                total_count = @total_count,
+                succeeded_count = @succeeded_count,
+                failed_count = @failed_count,
+                skipped_count = @skipped_count,
+                unknown_count = @unknown_count
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND attempt = @expected_attempt AND lease_owner = @lease_owner
+              AND status = 'Running' AND lease_expires_at > clock_timestamp()
+            """;
+        await using (var update = new NpgsqlCommand(updateSql, connection, transaction))
+        {
+            AddOperationKey(update, tenantId, operationId);
+            PostgresControlPersistence.Add(
+                update, "expected_attempt", NpgsqlDbType.Integer, expectedOperationAttempt);
+            PostgresControlPersistence.Add(update, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+            PostgresControlPersistence.Add(update, "status", NpgsqlDbType.Text, status.ToString());
+            PostgresControlPersistence.Add(
+                update, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
+            AddCounts(update, total, succeeded, failed, skipped, unknown);
+            if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return null;
+            }
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return await GetAsync(tenantId, operationId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task AcquireDispatchLocksAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid planId,
+        Guid policyId,
+        CancellationToken cancellationToken)
+    {
+        await using (var policyLock = new NpgsqlCommand(
+                         "SELECT pg_advisory_xact_lock(hashtextextended(@identity, 1))",
+                         connection, transaction))
+        {
+            PostgresControlPersistence.Add(
+                policyLock, "identity", NpgsqlDbType.Text, $"{tenantId}:{policyId:N}");
+            await policyLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        const string connectionsSql = """
+            SELECT definition.connection_id
+            FROM entitysync.connection_definitions definition
+            JOIN entitysync.sync_plans plan
+              ON plan.tenant_id = definition.tenant_id
+             AND definition.connection_id IN (
+                 plan.source_connection_id, plan.target_connection_id)
+            WHERE plan.tenant_id = @tenant_id AND plan.plan_id = @plan_id
+            ORDER BY definition.connection_id
+            FOR KEY SHARE OF definition
+            """;
+        await using (var connectionLocks = new NpgsqlCommand(
+                         connectionsSql, connection, transaction))
+        {
+            PostgresControlPersistence.Add(
+                connectionLocks, "tenant_id", NpgsqlDbType.Text, tenantId);
+            PostgresControlPersistence.Add(connectionLocks, "plan_id", NpgsqlDbType.Uuid, planId);
+            await connectionLocks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        const string routeSql = """
+            SELECT pg_advisory_xact_lock(entitysync.entity_route_lock_key(
+                plan.tenant_id, plan.source_connection_id, plan.target_connection_id))
+            FROM entitysync.sync_plans plan
+            WHERE plan.tenant_id = @tenant_id AND plan.plan_id = @plan_id
+            """;
+        await using var routeLock = new NpgsqlCommand(routeSql, connection, transaction);
+        PostgresControlPersistence.Add(routeLock, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(routeLock, "plan_id", NpgsqlDbType.Uuid, planId);
+        await routeLock.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task UpsertSnapshotAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        EntitySyncOperationItemSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO entitysync.sync_operation_item_snapshots (
+                tenant_id, operation_id, item_id, encrypted_before_ciphertext,
+                encrypted_after_ciphertext, expires_at)
+            VALUES (
+                @tenant_id, @operation_id, @item_id, @encrypted_before_ciphertext,
+                @encrypted_after_ciphertext, @expires_at)
+            ON CONFLICT (tenant_id, operation_id, item_id)
+            DO UPDATE SET
+                encrypted_before_ciphertext = COALESCE(
+                    entitysync.sync_operation_item_snapshots.encrypted_before_ciphertext,
+                    EXCLUDED.encrypted_before_ciphertext),
+                encrypted_after_ciphertext = COALESCE(
+                    EXCLUDED.encrypted_after_ciphertext,
+                    entitysync.sync_operation_item_snapshots.encrypted_after_ciphertext)
+            WHERE entitysync.sync_operation_item_snapshots.expires_at = EXCLUDED.expires_at
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddSnapshot(command, snapshot);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task RefreshTerminalOperationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid operationId,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH counts AS (
+                SELECT count(*)::integer AS total_count,
+                       count(*) FILTER (WHERE outcome = 'Succeeded')::integer
+                           AS succeeded_count,
+                       count(*) FILTER (WHERE outcome = 'Failed')::integer AS failed_count,
+                       count(*) FILTER (WHERE outcome = 'Skipped')::integer AS skipped_count,
+                       count(*) FILTER (WHERE outcome = 'Unknown')::integer AS unknown_count,
+                       count(*) FILTER (WHERE outcome = 'Pending')::integer AS pending_count
+                FROM entitysync.sync_operation_items
+                WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+            )
+            UPDATE entitysync.sync_operations operation
+            SET status = CASE
+                    WHEN counts.succeeded_count + counts.skipped_count = counts.total_count
+                        THEN 'Succeeded'
+                    WHEN counts.succeeded_count + counts.skipped_count > 0 THEN 'Partial'
+                    ELSE 'Failed'
+                END,
+                completed_at = @completed_at,
+                total_count = counts.total_count,
+                succeeded_count = counts.succeeded_count,
+                failed_count = counts.failed_count,
+                skipped_count = counts.skipped_count,
+                unknown_count = counts.unknown_count
+            FROM counts
+            WHERE operation.tenant_id = @tenant_id
+              AND operation.operation_id = @operation_id
+              AND counts.pending_count = 0
+              AND operation.status IN ('Succeeded','Partial','Failed')
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(
+            command, "completed_at", NpgsqlDbType.TimestampTz, completedAt);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddDispatchIdentity(
+        NpgsqlCommand command,
+        string tenantId,
+        Guid operationId,
+        Guid planId,
+        Guid itemId,
+        int expectedAttempt,
+        string leaseOwner,
+        Guid policyId,
+        int policyVersion,
+        EntitySyncSha256 policyDefinitionSha256)
+    {
+        AddOperationKey(command, tenantId, operationId);
+        PostgresControlPersistence.Add(command, "plan_id", NpgsqlDbType.Uuid, planId);
+        PostgresControlPersistence.Add(command, "item_id", NpgsqlDbType.Uuid, itemId);
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer, expectedAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner);
+        PostgresControlPersistence.Add(command, "policy_id", NpgsqlDbType.Uuid, policyId);
+        PostgresControlPersistence.Add(
+            command, "policy_version", NpgsqlDbType.Integer, policyVersion);
+        PostgresControlPersistence.Add(
+            command, "policy_definition_sha256", NpgsqlDbType.Char,
+            policyDefinitionSha256.Value);
+    }
+
+    private static void AddCounts(
+        NpgsqlCommand command,
+        int total,
+        int succeeded,
+        int failed,
+        int skipped,
+        int unknown)
+    {
+        PostgresControlPersistence.Add(command, "total_count", NpgsqlDbType.Integer, total);
+        PostgresControlPersistence.Add(
+            command, "succeeded_count", NpgsqlDbType.Integer, succeeded);
+        PostgresControlPersistence.Add(command, "failed_count", NpgsqlDbType.Integer, failed);
+        PostgresControlPersistence.Add(command, "skipped_count", NpgsqlDbType.Integer, skipped);
+        PostgresControlPersistence.Add(command, "unknown_count", NpgsqlDbType.Integer, unknown);
+    }
+
     internal static async Task InsertGraphAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -442,11 +1217,13 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 tenant_id, operation_id, plan_id, approval_id, route_scope,
                 source_connection_generation, target_connection_generation, mode, status,
                 idempotency_key, lease_owner, lease_expires_at, attempt, created_at,
-                queued_at, started_at, completed_at)
+                queued_at, started_at, completed_at, request_sha256, total_count,
+                succeeded_count, failed_count, skipped_count, unknown_count)
             SELECT @tenant_id, @operation_id, @plan_id, @approval_id, @route_scope,
                    @source_connection_generation, @target_connection_generation, @mode, @status,
                    @idempotency_key, @lease_owner, @lease_expires_at, @attempt, @created_at,
-                   @queued_at, @started_at, @completed_at
+                   @queued_at, @started_at, @completed_at, @request_sha256, @total_count,
+                   @succeeded_count, @failed_count, @skipped_count, @unknown_count
             FROM entitysync.sync_plans plan
             WHERE plan.tenant_id = @tenant_id
               AND plan.plan_id = @plan_id
@@ -469,14 +1246,16 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 target_vendor, target_connection_id, target_entity_type, target_entity_id, action,
                 redacted_before, redacted_desired, before_payload_sha256,
                 desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
-                vendor_request_id, outcome, error_code, error_message, started_at, completed_at)
+                vendor_request_id, outcome, error_code, error_message, started_at,
+                completed_at, dispatch_started_at, vendor_target_entity_id, safe_write_code)
             VALUES (
                 @tenant_id, @operation_id, @plan_id, @item_id, @source_vendor,
                 @source_connection_id, @source_entity_type, @source_entity_key, @source_entity_id,
                 @target_vendor, @target_connection_id, @target_entity_type, @target_entity_id, @action,
                 @redacted_before, @redacted_desired, @before_payload_sha256,
                 @desired_payload_sha256, @after_payload_sha256, @snapshots_expires_at,
-                @vendor_request_id, @outcome, @error_code, @error_message, @started_at, @completed_at)
+                @vendor_request_id, @outcome, @error_code, @error_message, @started_at,
+                @completed_at, @dispatch_started_at, @vendor_target_entity_id, @safe_write_code)
             """;
         foreach (var item in items)
         {
@@ -613,6 +1392,11 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "queued_at", NpgsqlDbType.TimestampTz, operation.QueuedAt);
         PostgresControlPersistence.Add(command, "started_at", NpgsqlDbType.TimestampTz, operation.StartedAt);
         PostgresControlPersistence.Add(command, "completed_at", NpgsqlDbType.TimestampTz, operation.CompletedAt);
+        PostgresControlPersistence.Add(
+            command, "request_sha256", NpgsqlDbType.Char, operation.RequestSha256?.Value);
+        AddCounts(
+            command, operation.TotalCount, operation.SucceededCount, operation.FailedCount,
+            operation.SkippedCount, operation.UnknownCount);
     }
 
     private static void AddItem(NpgsqlCommand command, EntitySyncOperationItem item)
@@ -631,9 +1415,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "target_entity_type", NpgsqlDbType.Text, item.TargetEntityType);
         PostgresControlPersistence.Add(command, "target_entity_id", NpgsqlDbType.Text, item.TargetEntityId);
         PostgresControlPersistence.Add(command, "action", NpgsqlDbType.Text, item.Action);
-        PostgresControlPersistence.Add(command, "redacted_before", NpgsqlDbType.Jsonb, item.RedactedBefore.Json);
         PostgresControlPersistence.Add(command, "redacted_desired", NpgsqlDbType.Jsonb, item.RedactedDesired.Json);
-        PostgresControlPersistence.Add(command, "before_payload_sha256", NpgsqlDbType.Char, item.BeforePayloadSha256?.Value);
         PostgresControlPersistence.Add(command, "desired_payload_sha256", NpgsqlDbType.Char, item.DesiredPayloadSha256.Value);
         PostgresControlPersistence.Add(command, "snapshots_expires_at", NpgsqlDbType.TimestampTz, item.SnapshotsExpireAt);
         AddItemMutable(command, item);
@@ -641,8 +1423,21 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
 
     private static void AddItemMutable(NpgsqlCommand command, EntitySyncOperationItem item)
     {
+        PostgresControlPersistence.Add(
+            command, "redacted_before", NpgsqlDbType.Jsonb, item.RedactedBefore.Json);
+        PostgresControlPersistence.Add(
+            command, "before_payload_sha256", NpgsqlDbType.Char,
+            item.BeforePayloadSha256?.Value);
         PostgresControlPersistence.Add(command, "after_payload_sha256", NpgsqlDbType.Char, item.AfterPayloadSha256?.Value);
         PostgresControlPersistence.Add(command, "vendor_request_id", NpgsqlDbType.Text, item.VendorRequestId);
+        PostgresControlPersistence.Add(
+            command, "dispatch_started_at", NpgsqlDbType.TimestampTz,
+            item.DispatchStartedAt);
+        PostgresControlPersistence.Add(
+            command, "vendor_target_entity_id", NpgsqlDbType.Text,
+            item.VendorTargetEntityId);
+        PostgresControlPersistence.Add(
+            command, "safe_write_code", NpgsqlDbType.Text, item.SafeWriteCode);
         PostgresControlPersistence.Add(command, "outcome", NpgsqlDbType.Text, item.Outcome.ToString());
         PostgresControlPersistence.Add(command, "error_code", NpgsqlDbType.Text, item.ErrorCode);
         PostgresControlPersistence.Add(command, "error_message", NpgsqlDbType.Text, item.ErrorMessage);
@@ -660,8 +1455,9 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "expires_at", NpgsqlDbType.TimestampTz, snapshot.ExpiresAt);
     }
 
-    private static EntitySyncOperation ReadOperation(NpgsqlDataReader reader) =>
-        EntitySyncOperation.Rehydrate(
+    private static EntitySyncOperation ReadOperation(NpgsqlDataReader reader)
+    {
+        var operation = EntitySyncOperation.Rehydrate(
             reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2),
             PostgresControlPersistence.NullableGuid(reader, 3), reader.GetString(4),
             reader.GetString(5), reader.GetInt64(6), reader.GetString(7), reader.GetInt64(8),
@@ -672,9 +1468,20 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             reader.GetFieldValue<DateTimeOffset>(15), reader.GetFieldValue<DateTimeOffset>(16),
             PostgresControlPersistence.NullableTime(reader, 17),
             PostgresControlPersistence.NullableTime(reader, 18));
+        return operation with
+        {
+            RequestSha256 = PostgresControlPersistence.NullableHash(reader, 19),
+            TotalCount = reader.GetInt32(20),
+            SucceededCount = reader.GetInt32(21),
+            FailedCount = reader.GetInt32(22),
+            SkippedCount = reader.GetInt32(23),
+            UnknownCount = reader.GetInt32(24)
+        };
+    }
 
-    private static EntitySyncOperationItem ReadItem(NpgsqlDataReader reader) =>
-        EntitySyncOperationItem.Rehydrate(
+    private static EntitySyncOperationItem ReadItem(NpgsqlDataReader reader)
+    {
+        var item = EntitySyncOperationItem.Rehydrate(
             reader.GetString(0), reader.GetGuid(1), reader.GetGuid(2), reader.GetGuid(3),
             reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
             reader.GetString(8), reader.GetString(9), reader.GetString(10), reader.GetString(11),
@@ -688,4 +1495,11 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             PostgresControlPersistence.NullableString(reader, 23),
             PostgresControlPersistence.NullableTime(reader, 24),
             PostgresControlPersistence.NullableTime(reader, 25));
+        return item with
+        {
+            DispatchStartedAt = PostgresControlPersistence.NullableTime(reader, 26),
+            VendorTargetEntityId = PostgresControlPersistence.NullableString(reader, 27),
+            SafeWriteCode = PostgresControlPersistence.NullableString(reader, 28)
+        };
+    }
 }

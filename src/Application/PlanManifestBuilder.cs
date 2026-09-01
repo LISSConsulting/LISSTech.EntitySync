@@ -161,6 +161,13 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
                 plannerOutput.Execution.MatchOptions);
         }
 
+        return CreateAllowedDesiredPayload(request, policy.Definition);
+    }
+
+    internal static Dictionary<string, JsonElement> CreateAllowedDesiredPayload(
+        EntityWriteRequest request,
+        EntitySyncPolicyDefinition definition)
+    {
         var mapped = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
             ["name"] = request.Name
@@ -171,21 +178,21 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
         AddMappedFields(mapped, request.CustomFields);
 
         var desired = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-        foreach (var allowedField in policy.Definition.AllowedFields
+        foreach (var allowedField in definition.AllowedFields
                      .Order(StringComparer.OrdinalIgnoreCase)
                      .ThenBy(value => value, StringComparer.Ordinal))
         {
-            if (policy.Definition.BlockedFields.Contains(allowedField))
+            if (definition.BlockedFields.Contains(allowedField))
                 continue;
             mapped.TryGetValue(allowedField, out var value);
             desired.Add(
                 allowedField,
-                RemoveBlockedProperties(Canonicalize(value), policy.Definition.BlockedFields));
+                RemoveBlockedProperties(Canonicalize(value), definition.BlockedFields));
         }
         return desired;
     }
 
-    private static Dictionary<string, JsonElement> BuildBeforePayload(
+    internal static Dictionary<string, JsonElement> BuildBeforePayload(
         ExternalEntity? target,
         IEnumerable<string> desiredFields,
         IReadOnlySet<string> blockedFields)
@@ -231,7 +238,7 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
         return changes;
     }
 
-    private static Dictionary<string, JsonElement> Redact(
+    internal static Dictionary<string, JsonElement> Redact(
         IReadOnlyDictionary<string, JsonElement> payload)
     {
         var redacted = new Dictionary<string, JsonElement>(payload.Count, StringComparer.OrdinalIgnoreCase);
@@ -289,10 +296,12 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
         return sensitive;
     }
 
-    private static EntitySyncSha256 HashPayload(IReadOnlyDictionary<string, JsonElement> payload) =>
+    internal static EntitySyncSha256 HashPayload(
+        IReadOnlyDictionary<string, JsonElement> payload) =>
         EntitySyncCanonicalDigest.Compute(ToCanonicalElement(payload));
 
-    private static EntitySyncJsonValue ToJsonValue(IReadOnlyDictionary<string, JsonElement> payload) =>
+    internal static EntitySyncJsonValue ToJsonValue(
+        IReadOnlyDictionary<string, JsonElement> payload) =>
         new(ToCanonicalElement(payload).GetRawText());
 
     private static EntitySyncJsonValue ToJsonValue(JsonElement value) =>

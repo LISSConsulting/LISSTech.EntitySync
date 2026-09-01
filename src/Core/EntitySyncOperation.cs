@@ -159,6 +159,12 @@ public sealed record EntitySyncOperation
     public DateTimeOffset QueuedAt { get; }
     public DateTimeOffset? StartedAt { get; }
     public DateTimeOffset? CompletedAt { get; }
+    public EntitySyncSha256? RequestSha256 { get; init; }
+    public int TotalCount { get; init; }
+    public int SucceededCount { get; init; }
+    public int FailedCount { get; init; }
+    public int SkippedCount { get; init; }
+    public int UnknownCount { get; init; }
 
     public static EntitySyncOperation Rehydrate(
         string tenantId,
@@ -451,6 +457,9 @@ public sealed record EntitySyncOperationItem
     public string? ErrorMessage { get; }
     public DateTimeOffset? StartedAt { get; }
     public DateTimeOffset? CompletedAt { get; }
+    public DateTimeOffset? DispatchStartedAt { get; init; }
+    public string? VendorTargetEntityId { get; init; }
+    public string? SafeWriteCode { get; init; }
 
     public static EntitySyncOperationItem Rehydrate(
         string tenantId,

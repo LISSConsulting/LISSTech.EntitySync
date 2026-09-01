@@ -52,6 +52,49 @@ public sealed class PostgresSyncAuditRepository(NpgsqlDataSource dataSource) : I
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
+    public async Task<bool> TryAppendAsync(
+        string tenantId,
+        EntitySyncAuditEvent auditEvent,
+        EntitySyncAuditEventFullValues? fullValues,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await AppendAsync(tenantId, auditEvent, fullValues, cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (PostgresException exception) when (
+            exception.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            const string sql = """
+                SELECT event.event_type = @event_type
+                       AND event.actor_id = @actor_id
+                       AND event.operation_id IS NOT DISTINCT FROM @operation_id
+                       AND event.plan_id IS NOT DISTINCT FROM @plan_id
+                       AND event.item_id IS NOT DISTINCT FROM @item_id
+                       AND event.correlation_id = @correlation_id
+                       AND event.redacted_values_sha256 = @redacted_values_sha256
+                       AND event.full_values_sha256 IS NOT DISTINCT FROM @full_values_sha256
+                       AND ((@has_full_values = false)
+                            OR EXISTS (
+                                SELECT 1
+                                FROM entitysync.audit_event_full_values values
+                                WHERE values.tenant_id = event.tenant_id
+                                  AND values.audit_event_id = event.audit_event_id))
+                FROM entitysync.audit_events event
+                WHERE event.tenant_id = @tenant_id
+                  AND event.audit_event_id = @audit_event_id
+                """;
+            await using var command = dataSource.CreateCommand(sql);
+            AddEvent(command, auditEvent);
+            PostgresControlPersistence.Add(
+                command, "has_full_values", NpgsqlDbType.Boolean, fullValues is not null);
+            return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+                is true;
+        }
+    }
+
 
     public async Task<EntitySyncAuditPage> ListAsync(string tenantId,
         DateTimeOffset? continuationOccurredAt, Guid? continuationEventId, int pageSize,
