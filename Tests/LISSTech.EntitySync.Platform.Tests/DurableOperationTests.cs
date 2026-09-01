@@ -366,6 +366,87 @@ public sealed class DurableOperationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ControlSchedulerTests_delayed_vendor_io_renews_operation_and_forced_loss_cancels_once()
+    {
+        var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
+        var queued = await Fixture.Service.QueueApplyAsync(
+            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
+            "operation-renewal-worker", Fixture.Actor, default);
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var worker = Fixture.CreateWorker(time, TimeSpan.FromSeconds(3));
+        Fixture.Target.BlockWrites = true;
+        Fixture.Target.HideReads = true;
+        var execution = worker.ExecuteOneAsync(Fixture.Tenant, "renewing-worker", default);
+        await Fixture.Target.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var initiallyLeased = await Fixture.Operations.GetAsync(
+            Fixture.Tenant, queued.OperationId, default);
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        var renewed = await AwaitRenewalAsync(
+            queued.OperationId, initiallyLeased!.LeaseExpiresAt!.Value);
+        Assert.True(renewed.LeaseExpiresAt > initiallyLeased.LeaseExpiresAt);
+
+        await using (var steal = Database.CreateCommand("""
+            SET session_replication_role = replica;
+            UPDATE entitysync.sync_operations
+            SET lease_owner = 'takeover-worker', attempt = attempt + 1,
+                lease_expires_at = clock_timestamp() + interval '1 minute'
+            WHERE tenant_id = @tenant AND operation_id = @operation;
+            SET session_replication_role = origin;
+            """))
+        {
+            steal.Parameters.AddWithValue("tenant", Fixture.Tenant);
+            steal.Parameters.AddWithValue("operation", queued.OperationId);
+            await steal.ExecuteNonQueryAsync();
+        }
+        time.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.Null(await execution.WaitAsync(TimeSpan.FromSeconds(5)));
+        var takeover = await Fixture.Operations.GetAsync(
+            Fixture.Tenant, queued.OperationId, default);
+        Assert.Equal("takeover-worker", takeover!.LeaseOwner);
+        Assert.Equal(1, Fixture.Target.WriteCalls);
+    }
+    [Fact]
+    public async Task ControlSchedulerTests_renewal_exception_cancels_inflight_vendor_io()
+    {
+        var plan = await Fixture.CreatePlanAsync(approved: true, action: "Update");
+        await Fixture.Service.QueueApplyAsync(
+            Fixture.Tenant, plan.Plan.PlanId, plan.Approval!.ApprovalId,
+            "operation-renewal-exception", Fixture.Actor, default);
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var routeLock = new ThrowingOperationRouteLock();
+        var worker = Fixture.CreateWorker(time, TimeSpan.FromSeconds(3), routeLock);
+        Fixture.Target.BlockWrites = true;
+        Fixture.Target.HideReads = true;
+        var execution = worker.ExecuteOneAsync(
+            Fixture.Tenant, "renewal-exception-worker", default);
+        await Fixture.Target.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        time.Advance(TimeSpan.FromSeconds(1));
+        await routeLock.RenewAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => execution.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, Fixture.Target.WriteCalls);
+    }
+
+
+    private async Task<EntitySyncOperation> AwaitRenewalAsync(
+        Guid operationId,
+        DateTimeOffset initialExpiry)
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            await Task.Yield();
+            var operation = await Fixture.Operations.GetAsync(
+                Fixture.Tenant, operationId, default);
+            if (operation!.LeaseExpiresAt > initialExpiry) return operation;
+        }
+        throw new TimeoutException("Operation lease renewal was not persisted.");
+    }
+
+    [Fact]
     public async Task Repository_fences_stale_lease_owner_and_reconciliation_attempt()
     {
         var plan = await Fixture.CreatePlanAsync(approved: false, action: "Update");
@@ -509,8 +590,21 @@ public sealed class DurableOperationTests : IAsyncLifetime
                 Operations, Plans, Policies, runtime, mapper, protector,
                 Reconciler, auditService,
                 options: new EntitySyncOperationWorkerOptions(TimeSpan.FromSeconds(2)));
-            
         }
+
+        internal EntitySyncOperationWorker CreateWorker(
+            TimeProvider timeProvider,
+            TimeSpan leaseDuration,
+            IEntitySyncOperationRouteLock? operationRouteLock = null)
+        {
+            var auditService = new SyncAuditService(AuditRepository, protector);
+            return new EntitySyncOperationWorker(
+                Operations, Plans, Policies, runtime, mapper, protector,
+                Reconciler, auditService, timeProvider,
+                new EntitySyncOperationWorkerOptions(leaseDuration),
+                operationRouteLock);
+        }
+
 
         internal async Task DelayCheckpointWritesAsync(bool delay)
         {
@@ -874,4 +968,94 @@ public sealed class DurableOperationTests : IAsyncLifetime
             return Task.CompletedTask;
         }
     }
+
+    private sealed class ThrowingOperationRouteLock : IEntitySyncOperationRouteLock
+    {
+        internal TaskCompletionSource RenewAttempted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<IEntitySyncOperationRouteLease?> TryAcquireAsync(
+            EntitySyncOperation operation,
+            string owner,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IEntitySyncOperationRouteLease?>(
+                new ThrowingOperationRouteLease(RenewAttempted));
+
+        private sealed class ThrowingOperationRouteLease(
+            TaskCompletionSource renewAttempted) : IEntitySyncOperationRouteLease
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+            public Task<bool> TryRenewAsync(
+                TimeSpan leaseDuration,
+                CancellationToken cancellationToken)
+            {
+                renewAttempted.TrySetResult();
+                throw new InvalidOperationException("renewal failed");
+            }
+        }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset initial) : TimeProvider
+    {
+        private readonly object sync = new();
+        private DateTimeOffset now = initial;
+        private readonly List<ManualTimer> timers = [];
+        public override DateTimeOffset GetUtcNow() { lock (sync) return now; }
+
+        internal void Advance(TimeSpan amount)
+        {
+            ManualTimer[] due;
+            lock (sync)
+            {
+                now += amount;
+                due = timers.Where(timer => timer.DueAt <= now).ToArray();
+            }
+            foreach (var timer in due) timer.Fire();
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state, GetUtcNow() + dueTime);
+            lock (sync) timers.Add(timer);
+            return timer;
+        }
+
+        private void Remove(ManualTimer timer) { lock (sync) timers.Remove(timer); }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            DateTimeOffset dueAt) : ITimer
+        {
+            private int disposed;
+            internal DateTimeOffset DueAt { get; } = dueAt;
+            public bool Change(TimeSpan dueTime, TimeSpan period) =>
+                throw new NotSupportedException();
+            internal void Fire()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) == 0)
+                {
+                    owner.Remove(this);
+                    callback(state);
+                }
+            }
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) == 0) owner.Remove(this);
+            }
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
+
 }

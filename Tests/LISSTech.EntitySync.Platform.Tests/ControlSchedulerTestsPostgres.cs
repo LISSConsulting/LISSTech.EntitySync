@@ -36,6 +36,55 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Legacy_canonical_replay_returns_stored_receipt_and_work_links()
+    {
+        const string tenant = "legacy-replay";
+        var policy = Policy(tenant);
+        await new PostgresSyncPolicyRepository(Database).InsertAsync(tenant, policy, default);
+        var request = CanonicalRequest(tenant, "legacy-om");
+        var eventId = Guid.NewGuid();
+        var receiptId = Guid.NewGuid();
+        var workId = Guid.NewGuid();
+        await using (var seed = Database.CreateCommand("""
+            INSERT INTO entitysync.canonical_change_events (
+                tenant_id, event_id, receipt_id, om_event_id, canonical_entity_type,
+                canonical_entity_id, canonical_version, changed_fields, payload_sha256,
+                occurred_at, received_at, status)
+            VALUES (@tenant, @event, @receipt, @outbox, @type, @entity::text, @version,
+                    @fields, @hash, @occurred, clock_timestamp(), 'Planned');
+            INSERT INTO entitysync.sync_control_work (
+                tenant_id, work_id, work_kind, state, policy_id, policy_version,
+                route_scope, canonical_event_id, canonical_entity_type,
+                canonical_entity_id, canonical_version, changed_fields, payload_sha256)
+            VALUES (@tenant, @work, 'CanonicalChange', 'Queued', @policy, 1,
+                    @route, @event, @type, @entity, @version, @fields, @hash);
+            """))
+        {
+            seed.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+            seed.Parameters.AddWithValue("event", NpgsqlDbType.Uuid, eventId);
+            seed.Parameters.AddWithValue("receipt", NpgsqlDbType.Uuid, receiptId);
+            seed.Parameters.AddWithValue("outbox", NpgsqlDbType.Text, request.OutboxEventId);
+            seed.Parameters.AddWithValue("type", NpgsqlDbType.Text, request.CanonicalEntityType);
+            seed.Parameters.AddWithValue("entity", NpgsqlDbType.Uuid, request.CanonicalEntityId);
+            seed.Parameters.AddWithValue("version", NpgsqlDbType.Bigint, request.CanonicalVersion);
+            seed.Parameters.AddWithValue("fields", NpgsqlDbType.Jsonb,
+                System.Text.Json.JsonSerializer.Serialize(request.ChangedFields));
+            seed.Parameters.AddWithValue("hash", NpgsqlDbType.Char, request.PayloadSha256.Value);
+            seed.Parameters.AddWithValue("occurred", NpgsqlDbType.TimestampTz, request.OccurredAt);
+            seed.Parameters.AddWithValue("work", NpgsqlDbType.Uuid, workId);
+            seed.Parameters.AddWithValue("policy", NpgsqlDbType.Uuid, policy.PolicyId);
+            seed.Parameters.AddWithValue("route", NpgsqlDbType.Text, policy.RouteScope);
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var replay = await new PostgresSyncWorkQueue(Database).AcceptAsync(
+            request, DateTimeOffset.UtcNow, default);
+
+        Assert.Equal(receiptId, replay.ReceiptId);
+        Assert.Equal([workId], replay.WorkIds);
+    }
+
+    [Fact]
     public async Task Work_checkpoints_survive_expired_claim_recovery()
     {
         const string tenant = "checkpoint-recovery";
@@ -179,6 +228,49 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         Assert.Equal(operationId, reader.GetGuid(0));
         Assert.Equal(itemId, reader.GetGuid(1));
         Assert.False(reader.IsDBNull(3));
+    }
+
+    [Fact]
+    public async Task Operation_lease_renewal_is_database_clock_and_attempt_fenced()
+    {
+        const string tenant = "operation-renewal";
+        var operationId = Guid.NewGuid();
+        await using (var seed = Database.CreateCommand("""
+            SET session_replication_role = replica;
+            INSERT INTO entitysync.sync_operations (
+                tenant_id, operation_id, plan_id, route_scope,
+                source_connection_generation, target_connection_generation,
+                mode, status, idempotency_key, lease_owner, lease_expires_at,
+                attempt, created_at, queued_at, started_at)
+            VALUES (@tenant, @operation, @plan, 'route', 1, 1, 'DryRun', 'Running',
+                    'renewal-key', 'owner-a', clock_timestamp() + interval '2 seconds',
+                    1, clock_timestamp(), clock_timestamp(), clock_timestamp());
+            SET session_replication_role = origin;
+            """))
+        {
+            seed.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+            seed.Parameters.AddWithValue("operation", NpgsqlDbType.Uuid, operationId);
+            seed.Parameters.AddWithValue("plan", NpgsqlDbType.Uuid, Guid.NewGuid());
+            await seed.ExecuteNonQueryAsync();
+        }
+        var repository = new PostgresSyncOperationRepository(Database);
+        Assert.True(await repository.TryRenewLeaseAsync(
+            tenant, operationId, 1, "owner-a", TimeSpan.FromMinutes(1), default));
+        await using (var steal = Database.CreateCommand("""
+            SET session_replication_role = replica;
+            UPDATE entitysync.sync_operations
+            SET lease_owner = 'owner-b', attempt = 2,
+                lease_expires_at = clock_timestamp() + interval '1 minute'
+            WHERE tenant_id = @tenant AND operation_id = @operation;
+            SET session_replication_role = origin;
+            """))
+        {
+            steal.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+            steal.Parameters.AddWithValue("operation", NpgsqlDbType.Uuid, operationId);
+            await steal.ExecuteNonQueryAsync();
+        }
+        Assert.False(await repository.TryRenewLeaseAsync(
+            tenant, operationId, 1, "owner-a", TimeSpan.FromMinutes(1), default));
     }
 
     [Fact]

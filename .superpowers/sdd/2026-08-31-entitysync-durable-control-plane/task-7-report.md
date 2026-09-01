@@ -85,3 +85,43 @@
 ### Remaining concern
 
 - The real OrchestraMSP generation-pinned adapter and its production registration remain assigned to Task 9 by the written durable-control-plane plan.
+
+## Fix Round 2
+
+### RED
+
+- The focused live-PostgreSQL filter failed to compile after adding the wished
+  operation renewal contract (`artifact://1503`), proving that operation ownership
+  had no durable heartbeat API.
+- A legacy canonical receipt regression fixture seeded a receipt whose persisted
+  identity differs from the current deterministic candidate, so replay could prove
+  that the stored identity is authoritative.
+
+### Fixes
+
+- Canonical replay now returns the persisted receipt ID and its persisted work links;
+  the deterministic candidate is used only for the first insert.
+- `ISyncOperationRepository.TryRenewLeaseAsync` and its PostgreSQL implementation
+  renew only a live `Leased`/`Running` row fenced by tenant, operation, attempt,
+  owner, and DB-clock expiry.
+- `EntitySyncOperationWorker` now renews operation ownership and route ownership
+  together. False results or exceptions from either renewal cancel the linked
+  vendor-I/O token; the worker awaits that cancellation before disposing the route
+  lease, observes renewal faults, and cannot mutate through the stale operation fence.
+- Existing phase recovery was rechecked: recovered plan checkpoints use durable
+  plan pages without calling the planner, recovered approval checkpoints skip
+  approval creation, and recovered operation checkpoints complete the work link;
+  pre-checkpoint crashes replay deterministic plan/approval/operation identities.
+- Added live-PostgreSQL coverage for stored legacy receipt replay, repository lease
+  renewal/takeover fencing, and delayed vendor I/O driven by TCS plus manual time,
+  including forced ownership loss with exactly one dispatch.
+- A focused renewal-exception regression first failed because vendor I/O remained
+  live until the test timeout (`artifact://1518`), then passed after renewal faults
+  were made fail-closed (`artifact://1520`).
+
+### GREEN
+
+- Exact focused filter against isolated PostgreSQL 18: 26 passed, 0 failed,
+  0 skipped, 1 second (`artifact://1522`).
+- Minimal scheduler Release build passed (`artifact://1524`).
+- No formatter, linter, broad build, Pester, or project-wide test suite was run.

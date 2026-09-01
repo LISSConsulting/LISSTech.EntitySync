@@ -76,6 +76,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             FOR UPDATE
             """;
         Guid storedEventId;
+        Guid storedReceiptId;
         DateTimeOffset storedReceivedAt;
         await using (var read = new NpgsqlCommand(readEventSql, connection, transaction))
         {
@@ -86,6 +87,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("Canonical receipt disappeared during intake.");
             storedEventId = reader.GetGuid(0);
+            storedReceiptId = reader.GetGuid(1);
             var storedFields = JsonSerializer.Deserialize<string[]>(reader.GetString(5)) ?? [];
             var identical = reader.GetString(2).Equals(
                                 request.CanonicalEntityType, StringComparison.OrdinalIgnoreCase)
@@ -162,7 +164,7 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
                 .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new CanonicalChangeReceipt(
-            eventId, request.TenantId, request.OutboxEventId,
+            storedReceiptId, request.TenantId, request.OutboxEventId,
             request.CanonicalEntityId, request.CanonicalVersion,
             request.PayloadSha256, workIds, storedReceivedAt);
     }

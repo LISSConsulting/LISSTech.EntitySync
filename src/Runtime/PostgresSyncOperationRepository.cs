@@ -225,6 +225,38 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         return leasedOperation;
     }
 
+    public async Task<bool> TryRenewLeaseAsync(
+        string tenantId,
+        Guid operationId,
+        int expectedAttempt,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
+    {
+        if (expectedAttempt <= 0) throw new ArgumentOutOfRangeException(nameof(expectedAttempt));
+        if (string.IsNullOrWhiteSpace(leaseOwner))
+            throw new ArgumentException("Lease owner is required.", nameof(leaseOwner));
+        if (leaseDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(leaseDuration));
+        const string sql = """
+            UPDATE entitysync.sync_operations
+            SET lease_expires_at = clock_timestamp() + @lease_duration
+            WHERE tenant_id = @tenant_id AND operation_id = @operation_id
+              AND attempt = @expected_attempt AND lease_owner = @lease_owner
+              AND lease_expires_at > clock_timestamp()
+              AND status IN ('Leased','Running')
+            """;
+        await using var command = dataSource.CreateCommand(sql);
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "operation_id", NpgsqlDbType.Uuid, operationId);
+        PostgresControlPersistence.Add(
+            command, "expected_attempt", NpgsqlDbType.Integer, expectedAttempt);
+        PostgresControlPersistence.Add(command, "lease_owner", NpgsqlDbType.Text, leaseOwner.Trim());
+        PostgresControlPersistence.Add(
+            command, "lease_duration", NpgsqlDbType.Interval, leaseDuration);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
     public async Task<bool> TryReplaceAsync(
         string tenantId,
         Guid operationId,

@@ -65,6 +65,15 @@ public interface ISyncOperationRepository
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken);
 
+    Task<bool> TryRenewLeaseAsync(
+        string tenantId,
+        Guid operationId,
+        int expectedAttempt,
+        string leaseOwner,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(false);
+
     Task<bool> TryReplaceAsync(
         string tenantId,
         Guid operationId,
