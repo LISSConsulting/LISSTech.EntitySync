@@ -190,6 +190,28 @@ public sealed class EntitySyncControlWorker : BackgroundService
         var renewal = MaintainOwnershipAsync(work, route, ownership);
         try
         {
+            var actor = new EntitySyncActor("entitysync-control-worker");
+            EntitySyncDurablePlan? persistedPlan = null;
+            if (work.PlanId is not null)
+            {
+                if (work.PlanDigestSha256 is null)
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                persistedPlan = await durablePlans.GetControlPlanAsync(
+                    work.TenantId, work.PlanId.Value, cancellationToken)
+                    .ConfigureAwait(false);
+                if (!IsExpectedPlan(work, persistedPlan))
+                    return await HoldAsync(
+                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                        .ConfigureAwait(false);
+                if (work.OperationId is not null
+                    || persistedPlan!.Status == EntitySyncDurablePlanStatus.Consumed)
+                    return await CompleteCommittedOperationAsync(
+                        work, persistedPlan!, actor, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+
             var policy = await policies.GetAsync(
                 work.TenantId, work.PolicyId, work.PolicyVersion, cancellationToken)
                 .ConfigureAwait(false);
@@ -239,7 +261,6 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     work.CanonicalEntityId.Value, work.CanonicalVersion.Value, read.Entity);
             }
 
-            var actor = new EntitySyncActor("entitysync-control-worker");
             DurablePlanResult plan;
             if (work.PlanId is null)
             {
@@ -272,49 +293,20 @@ public sealed class EntitySyncControlWorker : BackgroundService
                     .ConfigureAwait(false);
             }
 
-            var persistedPlan = await durablePlans.GetControlPlanAsync(
+            persistedPlan ??= await durablePlans.GetControlPlanAsync(
                 work.TenantId, work.PlanId!.Value, cancellationToken).ConfigureAwait(false);
-            if (persistedPlan is null
-                || persistedPlan.PlanDigestSha256 != work.PlanDigestSha256
-                || persistedPlan.PolicyId != work.PolicyId
-                || persistedPlan.PolicyVersion != work.PolicyVersion
-                || !persistedPlan.RouteScope.Equals(
-                    work.RouteScope, StringComparison.OrdinalIgnoreCase))
+            if (!IsExpectedPlan(work, persistedPlan))
                 return await HoldAsync(
                     work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
                     .ConfigureAwait(false);
-            plan = ToPlanResult(persistedPlan);
+            var activePlan = persistedPlan!;
+            plan = ToPlanResult(activePlan);
 
-            if (work.OperationId is not null)
-            {
-                if (work.ApprovalId is null
-                    || persistedPlan.Status != EntitySyncDurablePlanStatus.Consumed)
-                    return await HoldAsync(
-                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
-                        .ConfigureAwait(false);
-                var approval = await durablePlans.RecoverControlApprovalAsync(
-                    work.TenantId, plan.PlanId, plan.Digest, work.ApprovalId.Value,
-                    cancellationToken).ConfigureAwait(false);
-                var operation = await operationService.GetControlOperationAsync(
-                    work.TenantId, work.OperationId.Value, cancellationToken)
-                    .ConfigureAwait(false);
-                if (approval is null
-                    || !IsExpectedOperation(work, operation, approval.ApprovalId))
-                    return await HoldAsync(
-                        work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
-                        .ConfigureAwait(false);
-                if (!await queue.TryCompleteAsync(
-                        work, plan.PlanId, approval.ApprovalId, operation!.OperationId,
-                        cancellationToken).ConfigureAwait(false))
-                    throw new InvalidOperationException(
-                        "Control work lost its owner/attempt/lease completion fence.");
-                return true;
-            }
 
             Guid approvalId;
             if (work.ApprovalId is not null)
             {
-                if (persistedPlan.Status is not (
+                if (activePlan.Status is not (
                     EntitySyncDurablePlanStatus.Approved
                     or EntitySyncDurablePlanStatus.Consumed))
                     return await HoldAsync(
@@ -329,7 +321,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
                         .ConfigureAwait(false);
                 approvalId = recovered.ApprovalId;
             }
-            else if (persistedPlan.Status == EntitySyncDurablePlanStatus.Approved)
+            else if (activePlan.Status == EntitySyncDurablePlanStatus.Approved)
             {
                 approvalId = PostgresSyncWorkQueue.CreateControlApprovalId(work.WorkId);
                 var recovered = await durablePlans.RecoverControlApprovalAsync(
@@ -343,7 +335,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
                         .ConfigureAwait(false);
                 work = work with { ApprovalId = approvalId };
             }
-            else if (persistedPlan.Status == EntitySyncDurablePlanStatus.Draft)
+            else if (activePlan.Status == EntitySyncDurablePlanStatus.Draft)
             {
                 var items = new List<EntitySyncDurablePlanItem>(plan.ItemCount);
                 for (var page = 1; page <= plan.PageCount(100); page++)
@@ -394,6 +386,18 @@ public sealed class EntitySyncControlWorker : BackgroundService
         {
             throw;
         }
+        catch (Exception exception) when (
+            exception is DurablePlanApprovalConflictException
+                or SyncOperationIdempotencyConflictException)
+        {
+            logger.LogWarning(
+                exception,
+                "EntitySync control work {WorkId} has contradictory durable checkpoints.",
+                work.WorkId);
+            return await HoldAsync(
+                work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                .ConfigureAwait(false);
+        }
         catch (Exception exception)
         {
             logger.LogWarning(
@@ -415,6 +419,81 @@ public sealed class EntitySyncControlWorker : BackgroundService
         }
     }
 
+    private async Task<bool> CompleteCommittedOperationAsync(
+        SyncControlWork work,
+        EntitySyncDurablePlan plan,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken)
+    {
+        if (plan.Status != EntitySyncDurablePlanStatus.Consumed
+            || work.ApprovalId is null)
+            return await HoldAsync(
+                work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                .ConfigureAwait(false);
+        try
+        {
+            var approval = await durablePlans.RecoverControlApprovalAsync(
+                work.TenantId,
+                plan.PlanId,
+                plan.PlanDigestSha256.Value,
+                work.ApprovalId.Value,
+                cancellationToken).ConfigureAwait(false);
+            if (approval is null)
+                return await HoldAsync(
+                    work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                    .ConfigureAwait(false);
+            var operation = await operationService.QueueApplyAsync(
+                work.TenantId,
+                plan.PlanId,
+                approval.ApprovalId,
+                $"control-work:{work.WorkId:N}:apply",
+                actor,
+                cancellationToken).ConfigureAwait(false);
+            if (work.OperationId is not null
+                && work.OperationId != operation.OperationId)
+                return await HoldAsync(
+                    work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                    .ConfigureAwait(false);
+            if (work.OperationId is null)
+            {
+                if (!await queue.TryCheckpointOperationAsync(
+                        work, operation.OperationId, cancellationToken).ConfigureAwait(false))
+                    throw new InvalidOperationException(
+                        "Control work lost its operation checkpoint fence.");
+                work = work with { OperationId = operation.OperationId };
+            }
+            if (!await queue.TryCompleteAsync(
+                    work, plan.PlanId, approval.ApprovalId, operation.OperationId,
+                    cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException(
+                    "Control work lost its owner/attempt/lease completion fence.");
+            return true;
+        }
+        catch (DurablePlanApprovalConflictException)
+        {
+            return await HoldAsync(
+                work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SyncOperationIdempotencyConflictException)
+        {
+            return await HoldAsync(
+                work, "CONTROL_WORK_CHECKPOINT_CONFLICT", cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsExpectedPlan(
+        SyncControlWork work,
+        EntitySyncDurablePlan? plan) =>
+        plan is not null
+        && plan.PlanId == work.PlanId
+        && plan.PlanDigestSha256 == work.PlanDigestSha256
+        && plan.PolicyId == work.PolicyId
+        && plan.PolicyVersion == work.PolicyVersion
+        && plan.RouteScope.Equals(
+            work.RouteScope, StringComparison.OrdinalIgnoreCase);
+
     private static DurablePlanResult ToPlanResult(EntitySyncDurablePlan plan) =>
         new(
             plan.TenantId,
@@ -428,17 +507,6 @@ public sealed class EntitySyncControlWorker : BackgroundService
             plan.CreatedAt,
             plan.ExpiresAt);
 
-    private static bool IsExpectedOperation(
-        SyncControlWork work,
-        EntitySyncOperation? operation,
-        Guid approvalId) =>
-        operation is not null
-        && operation.OperationId == work.OperationId
-        && operation.PlanId == work.PlanId
-        && operation.ApprovalId == approvalId
-        && operation.Mode == EntitySyncOperationMode.Apply
-        && operation.IdempotencyKey.Equals(
-            $"control-work:{work.WorkId:N}:apply", StringComparison.Ordinal);
 
     private async Task MaintainOwnershipAsync(
         SyncControlWork work,

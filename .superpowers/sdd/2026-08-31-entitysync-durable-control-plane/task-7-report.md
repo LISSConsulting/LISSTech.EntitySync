@@ -160,3 +160,37 @@
   0 skipped, 3 seconds (`artifact://1541`).
 - Minimal scheduler Release build passed (`artifact://1543`).
 - No formatter, linter, broad build, Pester, or project-wide test suite was run.
+
+## Fix Round 4
+
+### RED
+
+- Reintroducing the latest-policy gate before committed-operation recovery caused
+  the stale-policy worker fixture to hold an already durable operation instead of
+  linking it (`artifact://1556`).
+- The wrong-plan approval fixture initially remained `Planning`, demonstrating
+  that a thrown approval conflict bypassed the visible contradiction hold
+  (`artifact://1552`).
+
+### Fixes
+
+- Persisted plan identity and committed `Consumed`/operation-checkpoint recovery
+  now run before latest-policy usability checks. A disabled or newer policy cannot
+  orphan an operation already created atomically with approval consumption.
+- The recovery router always replays the deterministic apply request, even for an
+  operation checkpoint, so the persisted mode, plan, approval, idempotency key, and
+  request hash are validated before linkage.
+- Missing consumed operations, wrong-plan/digest approvals, and operation
+  idempotency conflicts are fenced into `Held` with
+  `CONTROL_WORK_CHECKPOINT_CONFLICT` in one attempt instead of lease cycling.
+- Live-PostgreSQL worker fixtures prove stale-policy recovery links the exact
+  existing operation with one operation and one work row, while wrong approval and
+  missing consumed-operation contradictions hold without creating an operation
+  (`artifact://1554`).
+
+### GREEN
+
+- Exact focused filter against isolated PostgreSQL 18: 31 passed, 0 failed,
+  0 skipped, 2 seconds (`artifact://1558`).
+- Minimal scheduler Release build passed (`artifact://1560`).
+- No formatter, linter, broad build, Pester, or project-wide test suite was run.

@@ -163,6 +163,13 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
             tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
             $"control-work:{workId:N}:apply",
             new EntitySyncActor("entitysync-control-worker"), default);
+        var disabled = setup.Policy.NextVersion(
+            new EntitySyncActor("disable"),
+            setup.Policy.Definition,
+            DateTimeOffset.UtcNow.AddSeconds(1),
+            enabled: false);
+        await new PostgresSyncPolicyRepository(Database).InsertAsync(
+            tenant, disabled, default);
         await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
         await SetWorkCheckpointAsync(
             tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
@@ -177,6 +184,8 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
             "entitysync.sync_approvals", tenant));
         Assert.Equal(1, await CountAsync(
             "entitysync.sync_operations", tenant));
+        Assert.Equal(1, await CountAsync(
+            "entitysync.sync_control_work", tenant));
     }
 
     [Fact]
@@ -200,6 +209,51 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         Assert.Equal(SyncControlWorkState.Completed, work.State);
         Assert.Equal(operation.OperationId, work.OperationId);
         Assert.Equal(1, await CountAsync("entitysync.sync_operations", tenant));
+    }
+
+    [Fact]
+    public async Task Worker_holds_wrong_plan_approval_checkpoint_in_one_attempt()
+    {
+        const string tenant = "wrong-approval-checkpoint";
+        var workId = Guid.NewGuid();
+        var setup = await CreateApprovedControlPlanAsync(tenant, workId);
+        var wrongApprovalId = Guid.NewGuid();
+        await InsertWrongPlanApprovalAsync(tenant, wrongApprovalId);
+        await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
+        await SetWorkCheckpointAsync(
+            tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
+            wrongApprovalId);
+
+        Assert.True(await setup.Worker.ExecuteOneAsync(default));
+
+        var work = await ReadWorkAsync(tenant, workId);
+        Assert.Equal(SyncControlWorkState.Held, work.State);
+        Assert.Equal("CONTROL_WORK_CHECKPOINT_CONFLICT", work.HoldReason);
+        Assert.Equal(0, await CountAsync("entitysync.sync_operations", tenant));
+    }
+
+    [Fact]
+    public async Task Worker_holds_consumed_plan_when_deterministic_operation_is_missing()
+    {
+        const string tenant = "missing-consumed-operation";
+        var workId = Guid.NewGuid();
+        var setup = await CreateApprovedControlPlanAsync(tenant, workId);
+        var operation = await setup.OperationService.QueueApplyAsync(
+            tenant, setup.Plan.PlanId, setup.Approval.ApprovalId,
+            $"control-work:{workId:N}:apply",
+            new EntitySyncActor("entitysync-control-worker"), default);
+        await DeleteOperationGraphAsync(tenant, operation.OperationId);
+        await InsertScheduleWorkAsync(tenant, workId, setup.Policy);
+        await SetWorkCheckpointAsync(
+            tenant, workId, setup.Plan.PlanId, setup.Plan.PlanDigestSha256,
+            setup.Approval.ApprovalId);
+
+        Assert.True(await setup.Worker.ExecuteOneAsync(default));
+
+        var work = await ReadWorkAsync(tenant, workId);
+        Assert.Equal(SyncControlWorkState.Held, work.State);
+        Assert.Equal("CONTROL_WORK_CHECKPOINT_CONFLICT", work.HoldReason);
+        Assert.Equal(0, await CountAsync("entitysync.sync_operations", tenant));
     }
 
     [Fact]
@@ -578,10 +632,65 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         await command.ExecuteNonQueryAsync();
     }
 
+    private async Task InsertWrongPlanApprovalAsync(string tenant, Guid approvalId)
+    {
+        await using var command = Database.CreateCommand("""
+            SET session_replication_role = replica;
+            WITH original AS (
+                SELECT * FROM entitysync.sync_plans
+                WHERE tenant_id = @tenant
+                ORDER BY created_at
+                LIMIT 1
+            )
+            INSERT INTO entitysync.sync_plans (
+                tenant_id, plan_id, policy_id, policy_version, route_scope,
+                source_connection_id, target_connection_id,
+                source_connection_generation, target_connection_generation,
+                source_search, source_count, source_entity_id,
+                plan_digest_sha256, status, created_at, created_by, expires_at)
+            SELECT tenant_id, @wrong_plan, policy_id, policy_version, route_scope,
+                   source_connection_id, target_connection_id,
+                   source_connection_generation, target_connection_generation,
+                   source_search, source_count, source_entity_id,
+                   @wrong_digest, 'Draft', created_at, created_by, expires_at
+            FROM original;
+            INSERT INTO entitysync.sync_approvals (
+                tenant_id, approval_id, inspection_id, plan_id,
+                plan_digest_sha256, source_connection_generation,
+                target_connection_generation, approved_at, approved_by, expires_at)
+            VALUES (@tenant, @approval, @inspection, @wrong_plan, @wrong_digest,
+                    1, 1, clock_timestamp(), 'wrong-plan', clock_timestamp() + interval '1 hour');
+            SET session_replication_role = origin;
+            """);
+        command.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        command.Parameters.AddWithValue("wrong_plan", NpgsqlDbType.Uuid, Guid.NewGuid());
+        command.Parameters.AddWithValue("wrong_digest", NpgsqlDbType.Char, new string('c', 64));
+        command.Parameters.AddWithValue("approval", NpgsqlDbType.Uuid, approvalId);
+        command.Parameters.AddWithValue("inspection", NpgsqlDbType.Uuid, Guid.NewGuid());
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task DeleteOperationGraphAsync(string tenant, Guid operationId)
+    {
+        await using var command = Database.CreateCommand("""
+            SET session_replication_role = replica;
+            DELETE FROM entitysync.sync_operation_item_snapshots
+            WHERE tenant_id = @tenant AND operation_id = @operation;
+            DELETE FROM entitysync.sync_operation_items
+            WHERE tenant_id = @tenant AND operation_id = @operation;
+            DELETE FROM entitysync.sync_operations
+            WHERE tenant_id = @tenant AND operation_id = @operation;
+            SET session_replication_role = origin;
+            """);
+        command.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
+        command.Parameters.AddWithValue("operation", NpgsqlDbType.Uuid, operationId);
+        await command.ExecuteNonQueryAsync();
+    }
+
     private async Task<WorkSnapshot> ReadWorkAsync(string tenant, Guid workId)
     {
         await using var command = Database.CreateCommand("""
-            SELECT state, approval_id, operation_id
+            SELECT state, approval_id, operation_id, hold_reason
             FROM entitysync.sync_control_work
             WHERE tenant_id = @tenant AND work_id = @work
             """);
@@ -592,7 +701,8 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         return new WorkSnapshot(
             Enum.Parse<SyncControlWorkState>(reader.GetString(0)),
             reader.IsDBNull(1) ? null : reader.GetGuid(1),
-            reader.IsDBNull(2) ? null : reader.GetGuid(2));
+            reader.IsDBNull(2) ? null : reader.GetGuid(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3));
     }
 
     private async Task<int> CountAsync(string table, string tenant)
@@ -606,7 +716,8 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     private sealed record WorkSnapshot(
         SyncControlWorkState State,
         Guid? ApprovalId,
-        Guid? OperationId);
+        Guid? OperationId,
+        string? HoldReason);
 
     private sealed record ControlRecoverySetup(
         EntitySyncPolicy Policy,
