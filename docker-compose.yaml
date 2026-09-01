@@ -111,6 +111,7 @@ services:
       NETSUITE_CONSUMER_SECRET: "${NETSUITE_CONSUMER_SECRET:?NETSUITE_CONSUMER_SECRET is required by scheduler}"
       NETSUITE_TOKEN_ID: "${NETSUITE_TOKEN_ID:?NETSUITE_TOKEN_ID is required by scheduler}"
       NETSUITE_TOKEN_SECRET: "${NETSUITE_TOKEN_SECRET:?NETSUITE_TOKEN_SECRET is required by scheduler}"
+      SCHEDULER_RUN_TOKEN: "${SCHEDULER_RUN_TOKEN:?SCHEDULER_RUN_TOKEN is required by scheduler}"
     expose:
       - "8080"
     healthcheck:

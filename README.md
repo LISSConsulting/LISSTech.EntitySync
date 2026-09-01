@@ -397,7 +397,7 @@ just scheduler-build # self-contained local scheduler binary
 just scheduler-run   # internal HTTP scheduler
 ```
 
-The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure an OAuth authorization server for MCP, set the required shared PostgreSQL/Logfire/NetSuite/Halo variables, and map a domain only to `entitysync-mcp` port `8080`. Do not publish or route `entitysync-scheduler`; its unauthenticated `/health` and bounded aggregate `/status` endpoints remain private to the Compose network.
+The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure an OAuth authorization server for MCP, set the required shared PostgreSQL/Logfire/NetSuite/Halo variables plus a high-entropy `SCHEDULER_RUN_TOKEN`, and map a domain only to `entitysync-mcp` port `8080`. Do not publish or route `entitysync-scheduler`; its unauthenticated `/health`, bounded aggregate `/status`, and bearer-authenticated `POST /run` endpoints remain private to the Compose network.
 
 See [`mcp/README.md`](mcp/README.md) for the exact Coolify procedure, scheduler status allowlist, security controls, variables, transports, and operational constraints.
 

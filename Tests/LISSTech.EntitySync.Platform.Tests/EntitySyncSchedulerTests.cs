@@ -455,6 +455,79 @@ public sealed class EntitySyncSchedulerTests
         await worker.StopAsync(default);
     }
 
+    [Fact]
+    public async Task OnDemandRunPreservesFutureScheduledDeadlineAndRejectsDuplicateQueue()
+    {
+        var startedAt = new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero);
+        var time = new ManualTimeProvider(startedAt);
+        var status = new EntitySyncSchedulerStatus();
+        var secondRunCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var runCalls = 0;
+        var run = new DelegateScheduledRun(token =>
+        {
+            token.ThrowIfCancellationRequested();
+            var call = Interlocked.Increment(ref runCalls);
+            var terminal = status.Snapshot with
+            {
+                State = "Applied",
+                LastStartedAt = time.GetUtcNow(),
+                LastCompletedAt = time.GetUtcNow()
+            };
+            status.Publish(terminal);
+            if (call == 2) secondRunCompleted.TrySetResult();
+            return Task.FromResult(terminal);
+        });
+        using var worker = new EntitySyncSchedulerWorker(run, status, time);
+
+        await worker.StartAsync(default);
+        await time.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        time.Advance(TimeSpan.FromHours(1));
+
+        Assert.True(worker.TryRequestRun());
+        Assert.False(worker.TryRequestRun());
+        await secondRunCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await time.SecondTimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, runCalls);
+        Assert.Equal(startedAt.AddHours(12), status.Snapshot.NextRunAt);
+        Assert.Equal(TimeSpan.FromHours(11), time.LastDueTime);
+        await worker.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task OnDemandRunIsRejectedWhileScheduledRunIsActive()
+    {
+        var time = new ManualTimeProvider(
+            new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var status = new EntitySyncSchedulerStatus();
+        var runStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRun = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var run = new DelegateScheduledRun(async token =>
+        {
+            runStarted.TrySetResult();
+            await releaseRun.Task.WaitAsync(token);
+            var terminal = status.Snapshot with
+            {
+                State = "Applied",
+                LastStartedAt = time.GetUtcNow(),
+                LastCompletedAt = time.GetUtcNow()
+            };
+            status.Publish(terminal);
+            return terminal;
+        });
+        using var worker = new EntitySyncSchedulerWorker(run, status, time);
+
+        await worker.StartAsync(default);
+        await runStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(worker.TryRequestRun());
+
+        releaseRun.TrySetResult();
+        await time.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await worker.StopAsync(default);
+    }
+
     private sealed class SchedulerFixture : IDisposable
     {
         public const string Scope = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

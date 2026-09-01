@@ -39,6 +39,8 @@ namespace LISSTech.EntitySync.Scheduler
                 Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
             builder.Services.AddSingleton<EntitySyncSchedulerOptions>();
             builder.Services.AddSingleton<EntitySyncSchedulerStatus>();
+            builder.Services.AddSingleton(
+                EntitySyncSchedulerRunAuthorization.FromCurrentEnvironment());
             builder.Services.AddSingleton<IEntitySyncSchedulerRunLock, PostgresEntitySyncSchedulerRunLock>();
             builder.Services.AddSingleton<IEntitySyncScheduledRun, EntitySyncScheduledRun>();
             builder.Services.AddSingleton<EntitySyncSchedulerWorker>();
@@ -56,6 +58,22 @@ namespace LISSTech.EntitySync.Scheduler
             app.MapGet(
                 "/status",
                 (EntitySyncSchedulerStatus status) => Results.Ok(status.Snapshot));
+            app.MapPost(
+                "/run",
+                (HttpContext context,
+                    EntitySyncSchedulerRunAuthorization authorization,
+                    EntitySyncSchedulerWorker worker) =>
+                {
+                    if (!authorization.IsAuthorized(context.Request))
+                    {
+                        context.Response.Headers.WWWAuthenticate = "Bearer";
+                        return Results.Unauthorized();
+                    }
+
+                    return worker.TryRequestRun()
+                        ? Results.Accepted("/status", new { accepted = true, status = "Queued" })
+                        : Results.Conflict(new { accepted = false, status = "Busy" });
+                });
             return app;
         }
     }

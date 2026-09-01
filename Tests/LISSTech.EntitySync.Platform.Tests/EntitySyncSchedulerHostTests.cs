@@ -75,6 +75,25 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.Contains(expectedMessage, configurationError.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("short")]
+    [InlineData("scheduler token with whitespace 0123456789abcdef")]
+    public async Task SchedulerHostBuildRejectsInvalidRunToken(string? token)
+    {
+        await using var environment = SchedulerHostEnvironment.Create(
+            EntitySyncSchedulerRunAuthorization.EnvironmentVariable,
+            token);
+
+        var error = Assert.Throws<TargetInvocationException>(BuildSchedulerApplication);
+        var configurationError = Assert.IsType<InvalidOperationException>(error.InnerException);
+
+        Assert.Contains(
+            EntitySyncSchedulerRunAuthorization.EnvironmentVariable,
+            configurationError.Message,
+            StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task StatusEndpointReturnsOnlyBoundedAggregateAllowlist()
     {
@@ -129,6 +148,58 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.Equal("Failed", status.Snapshot.State);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("wrong-scheduler-run-token-0123456789abcdef")]
+    public async Task RunEndpointRejectsMissingOrIncorrectBearerWithoutQueuing(string? token)
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+
+        var rejected = await InvokeEndpointAsync(app, "/run", HttpMethods.Post, token);
+        var accepted = await InvokeEndpointAsync(
+            app,
+            "/run",
+            HttpMethods.Post,
+            SchedulerHostEnvironment.RunToken);
+
+        Assert.Equal(StatusCodes.Status401Unauthorized, rejected.StatusCode);
+        Assert.Equal("Bearer", rejected.WwwAuthenticate);
+        Assert.Equal(StatusCodes.Status202Accepted, accepted.StatusCode);
+    }
+
+    [Fact]
+    public async Task RunEndpointQueuesOnlyOneRunAndAdvertisesStatusLocation()
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+
+        var endpoint = FindEndpoint(app, "/run");
+        var methods = Assert.IsAssignableFrom<IHttpMethodMetadata>(
+            endpoint.Metadata.GetMetadata<IHttpMethodMetadata>());
+        var first = await InvokeEndpointAsync(
+            app,
+            "/run",
+            HttpMethods.Post,
+            SchedulerHostEnvironment.RunToken);
+        var second = await InvokeEndpointAsync(
+            app,
+            "/run",
+            HttpMethods.Post,
+            SchedulerHostEnvironment.RunToken);
+        using var firstJson = JsonDocument.Parse(first.Body);
+        using var secondJson = JsonDocument.Parse(second.Body);
+
+        Assert.Equal([HttpMethods.Post], methods.HttpMethods);
+        Assert.Equal(StatusCodes.Status202Accepted, first.StatusCode);
+        Assert.Equal("/status", first.Location);
+        Assert.True(firstJson.RootElement.GetProperty("accepted").GetBoolean());
+        Assert.Equal("Queued", firstJson.RootElement.GetProperty("status").GetString());
+        Assert.Equal(StatusCodes.Status409Conflict, second.StatusCode);
+        Assert.False(secondJson.RootElement.GetProperty("accepted").GetBoolean());
+        Assert.Equal("Busy", secondJson.RootElement.GetProperty("status").GetString());
+    }
+
     private static WebApplication BuildSchedulerApplication()
     {
         var hostType = typeof(EntitySyncSchedulerWorker).Assembly.GetType(
@@ -142,25 +213,41 @@ public sealed class EntitySyncSchedulerHostTests
         return Assert.IsType<WebApplication>(build.Invoke(null, [Array.Empty<string>()]));
     }
 
-    private static async Task<(int StatusCode, string Body)> InvokeEndpointAsync(
-        WebApplication app,
-        string route)
-    {
-        var endpoint = ((IEndpointRouteBuilder)app)
+    private static RouteEndpoint FindEndpoint(WebApplication app, string route) =>
+        ((IEndpointRouteBuilder)app)
             .DataSources
             .SelectMany(source => source.Endpoints)
             .OfType<RouteEndpoint>()
             .Single(candidate => candidate.RoutePattern.RawText == route);
+
+    private static async Task<(
+        int StatusCode,
+        string Body,
+        string? WwwAuthenticate,
+        string? Location)> InvokeEndpointAsync(
+        WebApplication app,
+        string route,
+        string method = "GET",
+        string? bearerToken = null)
+    {
+        var endpoint = FindEndpoint(app, route);
         var context = new DefaultHttpContext
         {
             RequestServices = app.Services,
             Response = { Body = new MemoryStream() }
         };
+        context.Request.Method = method;
+        if (bearerToken is not null)
+            context.Request.Headers.Authorization = $"Bearer {bearerToken}";
 
         await endpoint.RequestDelegate!(context);
         context.Response.Body.Position = 0;
         using var reader = new StreamReader(context.Response.Body);
-        return (context.Response.StatusCode, await reader.ReadToEndAsync());
+        return (
+            context.Response.StatusCode,
+            await reader.ReadToEndAsync(),
+            context.Response.Headers.WWWAuthenticate,
+            context.Response.Headers.Location);
     }
 }
 
@@ -169,6 +256,8 @@ public sealed class SchedulerHostEnvironmentCollection;
 
 internal sealed class SchedulerHostEnvironment : IAsyncDisposable
 {
+    public const string RunToken = "test-scheduler-run-token-0123456789abcdef";
+
     private static readonly IReadOnlyDictionary<string, string?> Values =
         new Dictionary<string, string?>(StringComparer.Ordinal)
         {
@@ -177,6 +266,7 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["OTEL_EXPORTER_OTLP_HEADERS"] = "Authorization=test-token",
             ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
             ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-scheduler-test",
+            [EntitySyncSchedulerRunAuthorization.EnvironmentVariable] = RunToken,
             ["NETSUITE_ACCOUNT_ID"] = "test-account",
             ["NETSUITE_CONSUMER_KEY"] = "test-consumer-key",
             ["NETSUITE_CONSUMER_SECRET"] = "test-consumer-secret",

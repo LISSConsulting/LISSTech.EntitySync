@@ -27,8 +27,8 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
 7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for permanent exclusions, scheduler change-state checkpoints, and migration coordination.
-8. Set the HaloPSA and NetSuite variables listed below. They are required by `entitysync-scheduler`; configure any additional vendors the MCP service will use.
-9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; its unauthenticated health and status routes are intentionally Compose-network-only.
+8. Set the HaloPSA and NetSuite variables listed below. They are required by `entitysync-scheduler`; configure any additional vendors the MCP service will use. Set `SCHEDULER_RUN_TOKEN` to a high-entropy secret of 32–256 non-whitespace characters for authenticated manual runs.
+9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; all scheduler routes are intentionally Compose-network-only.
    The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
 10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server. Coolify should also report `entitysync-scheduler` healthy from its internal `/health` probe.
 11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
@@ -53,8 +53,17 @@ The scheduler exposes only these internal routes:
 |---|---|
 | `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
 | `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
+| `POST /run` | Queue one immediate reconciliation using the same fixed workflow; requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
 
-No authentication is installed on these routes because Compose does not publish the scheduler port. Inspect them only from the private Compose network or Coolify's container console.
+`/health` and `/status` are unauthenticated for private-network probes and inspection. `POST /run` validates the bearer token with a constant-time digest comparison. Keep every scheduler route on the private Compose network and invoke it only from another service or the Coolify container console:
+
+```sh
+curl --fail-with-body --request POST \
+  --header "Authorization: Bearer ${SCHEDULER_RUN_TOKEN}" \
+  http://entitysync-scheduler:8080/run
+```
+
+An accepted manual run executes asynchronously, never overlaps another local run, and leaves the existing scheduled deadline unchanged unless it runs through that deadline. Poll `/status` for the result.
 
 ### Vendor Variables
 
