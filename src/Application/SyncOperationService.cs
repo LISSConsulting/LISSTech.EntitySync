@@ -228,7 +228,7 @@ public sealed class SyncOperationService(
                     item.Action, item.RedactedBefore, item.RedactedDesired,
                     item.BeforePayloadSha256, item.DesiredPayloadSha256, null,
                     snapshotsExpireAt, null, EntitySyncItemOutcome.Pending,
-                    null, null, null, null));
+                    null, null, null, null, item.ResolvedTargetParent));
             }
         }
         if (result.Count != plan.ItemCount)

@@ -42,6 +42,16 @@ internal static class PostgresControlPersistence
         JsonSerializer.Deserialize<string[]>(json)
         ?? throw new InvalidOperationException("Stored JSON string list is null.");
 
+    internal static string? SerializeWriteParent(EntityWriteParent? parent) =>
+        parent is null ? null : JsonSerializer.Serialize(parent);
+
+    internal static EntityWriteParent? DeserializeWriteParent(string? json) =>
+        json is null
+            ? null
+            : JsonSerializer.Deserialize<EntityWriteParent>(json)
+                ?? throw new InvalidOperationException(
+                    "Stored resolved target parent is null.");
+
     internal static string SerializeFieldDiffs(IReadOnlyList<EntityFieldChange> diffs)
     {
         using var stream = new MemoryStream();

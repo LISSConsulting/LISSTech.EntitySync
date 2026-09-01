@@ -231,8 +231,10 @@ public sealed class EntitySyncPlanner(
                     || targetType.Equals(
                         "Address", StringComparison.OrdinalIgnoreCase)))
                 await ResolveCreateParentAsync(
-                    item, targetLease.Adapter, cancellationToken)
-                    .ConfigureAwait(false);
+                    item,
+                    targetLease.Adapter,
+                    sourceConnection.ConnectionId,
+                    cancellationToken).ConfigureAwait(false);
             if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
             plan.Items.Add(item);
         }
@@ -305,6 +307,7 @@ public sealed class EntitySyncPlanner(
     private static async Task ResolveCreateParentAsync(
         EntitySyncPlanItem item,
         IEntityAdapter targetAdapter,
+        string sourcePlatformInstanceId,
         CancellationToken cancellationToken)
     {
         if (targetAdapter is not IEntityWriteParentResolver resolver)
@@ -313,8 +316,20 @@ public sealed class EntitySyncPlanner(
                 item, "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
             return;
         }
+        if (string.IsNullOrWhiteSpace(item.Source.ParentEntityType)
+            || string.IsNullOrWhiteSpace(item.Source.ParentId))
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_PARENT_LINK_MISSING");
+            return;
+        }
         var resolution = await resolver.ResolveWriteParentAsync(
-            item.Source, cancellationToken).ConfigureAwait(false);
+            new EntityWriteParentResolutionRequest(
+                item.Source.Vendor,
+                sourcePlatformInstanceId,
+                item.Source.ParentEntityType,
+                item.Source.ParentId),
+            cancellationToken).ConfigureAwait(false);
         if (resolution.Status == EntityWriteParentResolutionStatus.Resolved
             && resolution.Parent is not null)
         {

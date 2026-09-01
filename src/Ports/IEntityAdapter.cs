@@ -197,6 +197,12 @@ public enum EntityWriteParentResolutionStatus
     Stale
 }
 
+public sealed record EntityWriteParentResolutionRequest(
+    string SourceVendor,
+    string SourcePlatformInstanceId,
+    string SourceParentEntityType,
+    string SourceParentEntityId);
+
 public sealed record EntityWriteParentResolution(
     EntityWriteParentResolutionStatus Status,
     EntityWriteParent? Parent,
@@ -205,7 +211,7 @@ public sealed record EntityWriteParentResolution(
 public interface IEntityWriteParentResolver
 {
     Task<EntityWriteParentResolution> ResolveWriteParentAsync(
-        ExternalEntity source,
+        EntityWriteParentResolutionRequest request,
         CancellationToken cancellationToken);
 }
 

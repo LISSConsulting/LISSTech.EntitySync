@@ -284,7 +284,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     {
         var context = await SeedControlContextAsync("manifest");
         var repository = new PostgresDurableSyncPlanRepository(Database);
-        var manifest = Manifest(context, itemCount: 2);
+        var manifest = Manifest(context, itemCount: 2, withResolvedParent: true);
 
         await repository.InsertAsync(context.TenantId, manifest, default);
         await repository.InsertAsync(context.TenantId, manifest, default);
@@ -313,6 +313,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                 .Select(diff => (
                     diff.Field, diff.Before.Json, diff.Desired.Json,
                     diff.BeforeSha256, diff.DesiredSha256, diff.Sensitive)));
+        Assert.Equal(
+            manifest.Items.Select(item => item.ResolvedTargetParent),
+            page.Items.Select(item => item.ResolvedTargetParent));
         Assert.Equal(2, page.TotalItems);
 
         var badContext = await SeedControlContextAsync("rollback");
@@ -1373,7 +1376,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var context = await SeedControlContextAsync("operation-transitions");
         var plans = new PostgresDurableSyncPlanRepository(Database);
         var operations = new PostgresSyncOperationRepository(Database);
-        var manifest = Manifest(context, 1);
+        var manifest = Manifest(context, 1, withResolvedParent: true);
         await plans.InsertAsync(context.TenantId, manifest, default);
         var now = context.Now.AddMinutes(1);
         var queued = EntitySyncOperation.QueueDryRun(
@@ -1385,6 +1388,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             operations.InsertAsync(context.TenantId, preLeased, items, default));
 
         await operations.InsertAsync(context.TenantId, queued, items, default);
+        Assert.Equal(
+            items[0].ResolvedTargetParent,
+            (await operations.GetItemAsync(
+                context.TenantId, queued.OperationId, items[0].ItemId, default))!
+                .ResolvedTargetParent);
         var illegalTerminal = EntitySyncOperation.Rehydrate(
             queued.TenantId, queued.OperationId, queued.PlanId, queued.ApprovalId,
             queued.RouteScope, queued.SourceConnectionId, queued.SourceConnectionGeneration,
@@ -2241,7 +2249,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         ControlContext context,
         int itemCount,
         string reason = "exact-id",
-        Guid? planId = null)
+        Guid? planId = null,
+        bool withResolvedParent = false)
     {
         var manifestPlanId = planId ?? Guid.NewGuid();
         var unsealedPlan = new EntitySyncDurablePlan(
@@ -2255,7 +2264,11 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             new EntitySyncDurablePlanItem(
                 context.TenantId, manifestPlanId, Guid.NewGuid(), index, "NetSuite",
                 context.Source.ConnectionId, "Customer", $"legacy-key-{index}", $"SOURCE-{index}",
-                "HaloPSA", context.Target.ConnectionId, "Client", $"TARGET-{index}", "Update",
+                withResolvedParent && index == 0 ? "OrchestraMSP" : "HaloPSA",
+                context.Target.ConnectionId,
+                withResolvedParent && index == 0 ? "Site" : "Client",
+                $"TARGET-{index}",
+                withResolvedParent && index == 0 ? "Create" : "Update",
                 new EntitySyncMatchEvidence(95, "Exact", [reason]),
                 new EntitySyncJsonValue($"{{\"name\":\"before-{index}\"}}"),
                 new EntitySyncJsonValue($"{{\"name\":\"desired-{index}\"}}"),
@@ -2267,7 +2280,18 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
                     new EntitySyncJsonValue("\"desired\""),
                     new EntitySyncSha256(new string('a', 64)),
                     new EntitySyncSha256(new string('b', 64)),
-                    false)])).ToArray();
+                    false)],
+                withResolvedParent && index == 0
+                    ? new EntityWriteParent(
+                        Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                        null,
+                        "Client",
+                        context.Source.ConnectionId,
+                        "customer-42",
+                        "active",
+                        new string('c', 64),
+                        7)
+                    : null)).ToArray();
         return EntitySyncDurablePlanManifest.Create(unsealedPlan, items);
     }
 
@@ -2457,7 +2481,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             item.BeforePayloadSha256, item.DesiredPayloadSha256,
             new EntitySyncSha256(new string('c', 64)), item.SnapshotsExpireAt,
             "request-complete", EntitySyncItemOutcome.Succeeded, null, null,
-            startedAt, completedAt);
+            startedAt, completedAt, item.ResolvedTargetParent);
 
     private static IReadOnlyList<EntitySyncOperationItem> OperationItems(
         EntitySyncOperation operation, IReadOnlyList<EntitySyncDurablePlanItem> planItems,
@@ -2469,7 +2493,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             item.TargetConnectionId, item.TargetEntityType, item.TargetEntityId,
             item.Action, item.RedactedBefore, item.RedactedDesired,
             item.BeforePayloadSha256, item.DesiredPayloadSha256, null, expiresAt,
-            null, EntitySyncItemOutcome.Pending, null, null, null, null)).ToArray();
+            null, EntitySyncItemOutcome.Pending, null, null, null, null,
+            item.ResolvedTargetParent)).ToArray();
 
     private static IEntitySyncDataProtector CreateProtector(string keyPath, string applicationName)
     {

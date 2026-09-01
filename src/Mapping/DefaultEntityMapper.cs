@@ -20,6 +20,9 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         EntityWriteParent? resolvedParent)
     {
         targetVendor = EntitySyncVendors.Normalize(targetVendor);
+        if (resolvedParent is not null
+            && !EntitySyncVendors.IsOrchestraMSP(targetVendor))
+            throw new UnsupportedEntityWriteParentMappingException();
         var request = new EntityWriteRequest
         {
             Vendor = targetVendor,
@@ -97,6 +100,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
             return;
         if (parent is null)
             return;
+        request.ResolvedParent = parent;
         request.ParentClientId = parent.ClientId.ToString("D");
         request.ParentEntityType = parent.ParentEntityType;
         request.ParentId = parent.ParentEntityType.Equals(

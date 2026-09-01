@@ -150,7 +150,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
                    vendor_request_id, outcome, error_code, error_message, started_at,
                    completed_at, dispatch_started_at, vendor_target_entity_id,
-                   safe_write_code
+                   safe_write_code, resolved_target_parent::text
             FROM entitysync.sync_operation_items
             WHERE tenant_id = @tenant_id AND operation_id = @operation_id
             ORDER BY item_id
@@ -180,7 +180,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
                    vendor_request_id, outcome, error_code, error_message, started_at,
                    completed_at, dispatch_started_at, vendor_target_entity_id,
-                   safe_write_code
+                   safe_write_code, resolved_target_parent::text
             FROM entitysync.sync_operation_items
             WHERE tenant_id = @tenant_id AND operation_id = @operation_id
             ORDER BY item_id
@@ -213,7 +213,7 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                    desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
                    vendor_request_id, outcome, error_code, error_message, started_at,
                    completed_at, dispatch_started_at, vendor_target_entity_id,
-                   safe_write_code
+                   safe_write_code, resolved_target_parent::text
             FROM entitysync.sync_operation_items
             WHERE tenant_id = @tenant_id
               AND operation_id = @operation_id
@@ -834,7 +834,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                       item.error_code, item.error_message, item.started_at,
                       item.completed_at, item.dispatch_started_at,
                       item.vendor_target_entity_id, item.safe_write_code,
-                      item.reconcile_attempt, item.reconcile_lease_expires_at
+                      item.resolved_target_parent::text, item.reconcile_attempt,
+                      item.reconcile_lease_expires_at
             """;
         await using var command = dataSource.CreateCommand(sql);
         AddOperationKey(command, tenantId, operationId);
@@ -847,8 +848,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             return null;
         return new UnknownItemLease(
-            ReadItem(reader), reader.GetInt32(29), leaseOwner,
-            reader.GetFieldValue<DateTimeOffset>(30));
+            ReadItem(reader), reader.GetInt32(30), leaseOwner,
+            reader.GetFieldValue<DateTimeOffset>(31));
     }
 
     public async Task<bool> TryRenewUnknownItemLeaseAsync(
@@ -1635,7 +1636,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 redacted_before, redacted_desired, before_payload_sha256,
                 desired_payload_sha256, after_payload_sha256, snapshots_expires_at,
                 vendor_request_id, outcome, error_code, error_message, started_at,
-                completed_at, dispatch_started_at, vendor_target_entity_id, safe_write_code)
+                completed_at, dispatch_started_at, vendor_target_entity_id,
+                safe_write_code, resolved_target_parent)
             VALUES (
                 @tenant_id, @operation_id, @plan_id, @item_id, @source_vendor,
                 @source_connection_id, @source_entity_type, @source_entity_key, @source_entity_id,
@@ -1643,7 +1645,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
                 @redacted_before, @redacted_desired, @before_payload_sha256,
                 @desired_payload_sha256, @after_payload_sha256, @snapshots_expires_at,
                 @vendor_request_id, @outcome, @error_code, @error_message, @started_at,
-                @completed_at, @dispatch_started_at, @vendor_target_entity_id, @safe_write_code)
+                @completed_at, @dispatch_started_at, @vendor_target_entity_id,
+                @safe_write_code, @resolved_target_parent)
             """;
         foreach (var item in items)
         {
@@ -1806,6 +1809,12 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
         PostgresControlPersistence.Add(command, "redacted_desired", NpgsqlDbType.Jsonb, item.RedactedDesired.Json);
         PostgresControlPersistence.Add(command, "desired_payload_sha256", NpgsqlDbType.Char, item.DesiredPayloadSha256.Value);
         PostgresControlPersistence.Add(command, "snapshots_expires_at", NpgsqlDbType.TimestampTz, item.SnapshotsExpireAt);
+        PostgresControlPersistence.Add(
+            command,
+            "resolved_target_parent",
+            NpgsqlDbType.Jsonb,
+            PostgresControlPersistence.SerializeWriteParent(
+                item.ResolvedTargetParent));
         AddItemMutable(command, item);
     }
 
@@ -1901,7 +1910,9 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             PostgresControlPersistence.NullableString(reader, 22),
             PostgresControlPersistence.NullableString(reader, 23),
             PostgresControlPersistence.NullableTime(reader, 24),
-            PostgresControlPersistence.NullableTime(reader, 25));
+            PostgresControlPersistence.NullableTime(reader, 25),
+            PostgresControlPersistence.DeserializeWriteParent(
+                PostgresControlPersistence.NullableString(reader, 29)));
         return item with
         {
             DispatchStartedAt = PostgresControlPersistence.NullableTime(reader, 26),

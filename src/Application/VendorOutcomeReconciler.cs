@@ -360,7 +360,8 @@ public sealed class VendorOutcomeReconciler(
                 ? "Vendor evidence proved that the requested state was not applied."
                 : null,
             item.StartedAt,
-            completedAt);
+            completedAt,
+            item.ResolvedTargetParent);
         return replacement with
         {
             DispatchStartedAt = item.DispatchStartedAt,

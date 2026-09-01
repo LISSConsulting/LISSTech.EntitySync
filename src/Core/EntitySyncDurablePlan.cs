@@ -70,7 +70,8 @@ public sealed record EntitySyncDurablePlanItem
         EntitySyncJsonValue redactedDesired,
         EntitySyncSha256? beforePayloadSha256,
         EntitySyncSha256 desiredPayloadSha256,
-        IEnumerable<EntityFieldChange> fieldDiffs)
+        IEnumerable<EntityFieldChange> fieldDiffs,
+        EntityWriteParent? resolvedTargetParent = null)
     {
         TenantId = ControlModelGuard.Required(tenantId, nameof(tenantId));
         PlanId = ControlModelGuard.NonEmpty(planId, nameof(planId));
@@ -93,6 +94,7 @@ public sealed record EntitySyncDurablePlanItem
         BeforePayloadSha256 = beforePayloadSha256;
         DesiredPayloadSha256 = desiredPayloadSha256 ?? throw new ArgumentNullException(nameof(desiredPayloadSha256));
         FieldDiffs = ControlModelGuard.ReadOnlyCopy(fieldDiffs, nameof(fieldDiffs));
+        ResolvedTargetParent = resolvedTargetParent;
         if (FieldDiffs.Any(diff => diff is null)) throw new ArgumentException("Field diffs cannot contain null entries.", nameof(fieldDiffs));
         if (FieldDiffs.Select(diff => diff.Field).Distinct(StringComparer.OrdinalIgnoreCase).Count() != FieldDiffs.Count)
             throw new ArgumentException("Field diffs must have unique field names.", nameof(fieldDiffs));
@@ -118,6 +120,7 @@ public sealed record EntitySyncDurablePlanItem
     public EntitySyncSha256? BeforePayloadSha256 { get; }
     public EntitySyncSha256 DesiredPayloadSha256 { get; }
     public IReadOnlyList<EntityFieldChange> FieldDiffs { get; }
+    public EntityWriteParent? ResolvedTargetParent { get; }
 }
 
 public sealed record EntitySyncDurablePlan

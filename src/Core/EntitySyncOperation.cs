@@ -329,14 +329,16 @@ public sealed record EntitySyncOperationItem
         string? errorCode,
         string? errorMessage,
         DateTimeOffset? startedAt,
-        DateTimeOffset? completedAt)
+        DateTimeOffset? completedAt,
+        EntityWriteParent? resolvedTargetParent = null)
         : this(
             tenantId, operationId, planId, itemId, sourceVendor, sourceConnectionId,
             sourceEntityType, sourceEntityKey, sourceEntityId, targetVendor,
             targetConnectionId, targetEntityType, targetEntityId, action,
             redactedBefore, redactedDesired, beforePayloadSha256, desiredPayloadSha256,
             afterPayloadSha256, snapshotsExpireAt, vendorRequestId, outcome,
-            errorCode, errorMessage, startedAt, completedAt, validateCommand: true)
+            errorCode, errorMessage, startedAt, completedAt,
+            resolvedTargetParent, validateCommand: true)
     {
     }
 
@@ -367,6 +369,7 @@ public sealed record EntitySyncOperationItem
         string? errorMessage,
         DateTimeOffset? startedAt,
         DateTimeOffset? completedAt,
+        EntityWriteParent? resolvedTargetParent,
         bool validateCommand)
     {
         TenantId = validateCommand ? ControlModelGuard.Required(tenantId, nameof(tenantId)) : Preserve(tenantId, nameof(tenantId));
@@ -417,6 +420,7 @@ public sealed record EntitySyncOperationItem
         ErrorMessage = validateCommand ? ControlModelGuard.Optional(errorMessage, nameof(errorMessage)) : errorMessage;
         StartedAt = startedAt;
         CompletedAt = completedAt;
+        ResolvedTargetParent = resolvedTargetParent;
         if (validateCommand
             && outcome == EntitySyncItemOutcome.Pending
             && (completedAt is not null || ErrorCode is not null || ErrorMessage is not null))
@@ -457,6 +461,7 @@ public sealed record EntitySyncOperationItem
     public string? ErrorMessage { get; }
     public DateTimeOffset? StartedAt { get; }
     public DateTimeOffset? CompletedAt { get; }
+    public EntityWriteParent? ResolvedTargetParent { get; }
     public DateTimeOffset? DispatchStartedAt { get; init; }
     public string? VendorTargetEntityId { get; init; }
     public string? SafeWriteCode { get; init; }
@@ -487,14 +492,16 @@ public sealed record EntitySyncOperationItem
         string? errorCode,
         string? errorMessage,
         DateTimeOffset? startedAt,
-        DateTimeOffset? completedAt) =>
+        DateTimeOffset? completedAt,
+        EntityWriteParent? resolvedTargetParent = null) =>
         new(
             tenantId, operationId, planId, itemId, sourceVendor, sourceConnectionId,
             sourceEntityType, sourceEntityKey, sourceEntityId, targetVendor,
             targetConnectionId, targetEntityType, targetEntityId, action,
             redactedBefore, redactedDesired, beforePayloadSha256, desiredPayloadSha256,
             afterPayloadSha256, snapshotsExpireAt, vendorRequestId, outcome,
-            errorCode, errorMessage, startedAt, completedAt, validateCommand: false);
+            errorCode, errorMessage, startedAt, completedAt,
+            resolvedTargetParent, validateCommand: false);
 
     private static string Preserve(string value, string parameterName) =>
         value ?? throw new ArgumentNullException(parameterName);

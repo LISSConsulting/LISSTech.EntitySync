@@ -14,6 +14,7 @@ public sealed class EntityWriteRequest
     public string? VendorRequestId { get; set; }
     public string Name { get; set; } = string.Empty;
     public EntityAddress? Address { get; set; }
+    public EntityWriteParent? ResolvedParent { get; set; }
     public Dictionary<string, object?> Fields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string?> CustomFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -21,4 +22,9 @@ public sealed class EntityWriteRequest
 public sealed record EntityWriteParent(
     Guid ClientId,
     Guid? SiteId,
-    string ParentEntityType);
+    string ParentEntityType,
+    string SourcePlatformInstanceId = "",
+    string MatchedLinkExternalId = "",
+    string MatchedLinkStatus = "",
+    string MatchedLinkToken = "",
+    long ObservedOwnerVersion = 0);

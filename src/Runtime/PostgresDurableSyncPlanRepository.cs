@@ -389,6 +389,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                    target_entity_id, action, match_score, match_type, match_reasons::text,
                    field_diffs::text, redacted_before::text, redacted_desired::text,
                    before_payload_sha256, desired_payload_sha256,
+                   resolved_target_parent::text,
                    count(*) OVER ()::integer AS total_items
             FROM entitysync.sync_plan_items
             WHERE tenant_id = @tenant_id AND plan_id = @plan_id
@@ -405,7 +406,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                totalItems = reader.GetInt32(22);
+                totalItems = reader.GetInt32(23);
                 items.Add(ReadPlanItem(reader));
             }
         }
@@ -1197,7 +1198,8 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
                 source_entity_id, target_vendor, target_connection_id,
                 target_entity_type, target_entity_id, action, match_score,
                 match_type, match_reasons, field_diffs, redacted_before,
-                redacted_desired, before_payload_sha256, desired_payload_sha256)
+                redacted_desired, before_payload_sha256, desired_payload_sha256,
+                resolved_target_parent)
             FROM STDIN (FORMAT BINARY)
             """;
         await using var importer = await connection
@@ -1261,6 +1263,15 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             await importer.WriteAsync(
                     item.DesiredPayloadSha256.Value, NpgsqlDbType.Char, cancellationToken)
                 .ConfigureAwait(false);
+            var parentJson = PostgresControlPersistence.SerializeWriteParent(
+                item.ResolvedTargetParent);
+            if (parentJson is null)
+                await importer.WriteNullAsync(cancellationToken)
+                    .ConfigureAwait(false);
+            else
+                await importer.WriteAsync(
+                    parentJson, NpgsqlDbType.Jsonb, cancellationToken)
+                    .ConfigureAwait(false);
         }
         await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -1520,8 +1531,11 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         new EntitySyncMatchEvidence(reader.GetInt32(14), reader.GetString(15),
             PostgresControlPersistence.DeserializeStringList(reader.GetString(16))),
         new EntitySyncJsonValue(reader.GetString(18)), new EntitySyncJsonValue(reader.GetString(19)),
-        PostgresControlPersistence.NullableHash(reader, 20), new EntitySyncSha256(reader.GetString(21)),
-        PostgresControlPersistence.DeserializeFieldDiffs(reader.GetString(17)));
+        PostgresControlPersistence.NullableHash(reader, 20),
+        new EntitySyncSha256(reader.GetString(21)),
+        PostgresControlPersistence.DeserializeFieldDiffs(reader.GetString(17)),
+        PostgresControlPersistence.DeserializeWriteParent(
+            PostgresControlPersistence.NullableString(reader, 22)));
 
 
 }

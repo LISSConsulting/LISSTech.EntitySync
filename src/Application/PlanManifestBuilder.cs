@@ -128,7 +128,8 @@ public sealed class PlanManifestBuilder(IEntityMapper mapper)
             ToJsonValue(redactedDesired),
             plannerItem.Target is null ? null : HashPayload(before),
             HashPayload(desired),
-            changes);
+            changes,
+            plannerItem.ResolvedTargetParent);
     }
 
     private Dictionary<string, JsonElement> BuildDesiredPayload(

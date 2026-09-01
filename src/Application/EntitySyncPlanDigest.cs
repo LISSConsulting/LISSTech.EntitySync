@@ -52,6 +52,19 @@ public static class EntitySyncPlanDigest
             RedactedDesired = item.RedactedDesired.Json,
             BeforePayloadSha256 = item.BeforePayloadSha256?.Value,
             DesiredPayloadSha256 = item.DesiredPayloadSha256.Value,
+            ResolvedTargetParent = item.ResolvedTargetParent is null
+                ? null
+                : new
+                {
+                    item.ResolvedTargetParent.ClientId,
+                    item.ResolvedTargetParent.SiteId,
+                    item.ResolvedTargetParent.ParentEntityType,
+                    item.ResolvedTargetParent.SourcePlatformInstanceId,
+                    item.ResolvedTargetParent.MatchedLinkExternalId,
+                    item.ResolvedTargetParent.MatchedLinkStatus,
+                    item.ResolvedTargetParent.MatchedLinkToken,
+                    item.ResolvedTargetParent.ObservedOwnerVersion
+                },
             FieldChanges = item.FieldDiffs.Select(change => new
             {
                 change.Field,

@@ -140,7 +140,7 @@ public sealed class EntitySyncOperationWorker(
                         "The immutable target entity was unavailable before dispatch.");
             }
             var resolvedParent = await ResolveCreateParentAsync(
-                    item, source, targetLease.Adapter, cancellationToken)
+                    item, targetLease.Adapter, cancellationToken)
                 .ConfigureAwait(false);
             var writeRequest = CreateWriteRequest(
                 item, source, targetBefore, policy, resolvedParent);
@@ -327,6 +327,40 @@ public sealed class EntitySyncOperationWorker(
                     clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
             return await FinalizeAsync(tenantId, running, leaseOwner).ConfigureAwait(false);
         }
+        catch (EntityWriteParentValidationException exception)
+        {
+            var current = await operations.GetItemsAsync(
+                tenantId, running.OperationId, CancellationToken.None)
+                .ConfigureAwait(false);
+            var pending = current.FirstOrDefault(
+                value => value.Outcome == EntitySyncItemOutcome.Pending);
+            if (pending is not null && pending.DispatchStartedAt is null)
+                await FailBeforeDispatchAsync(
+                    tenantId,
+                    running,
+                    pending,
+                    leaseOwner,
+                    exception.SafeCode).ConfigureAwait(false);
+            return await FinalizeAsync(tenantId, running, leaseOwner)
+                .ConfigureAwait(false);
+        }
+        catch (UnsupportedEntityWriteParentMappingException exception)
+        {
+            var current = await operations.GetItemsAsync(
+                tenantId, running.OperationId, CancellationToken.None)
+                .ConfigureAwait(false);
+            var pending = current.FirstOrDefault(
+                value => value.Outcome == EntitySyncItemOutcome.Pending);
+            if (pending is not null && pending.DispatchStartedAt is null)
+                await FailBeforeDispatchAsync(
+                    tenantId,
+                    running,
+                    pending,
+                    leaseOwner,
+                    exception.SafeCode).ConfigureAwait(false);
+            return await FinalizeAsync(tenantId, running, leaseOwner)
+                .ConfigureAwait(false);
+        }
         catch
         {
             var current = await operations.GetItemsAsync(
@@ -455,28 +489,56 @@ public sealed class EntitySyncOperationWorker(
             tenantId, operation.OperationId, operation.Attempt, leaseOwner,
             clock.GetUtcNow(), CancellationToken.None);
 
-    private static async Task<EntityWriteParent?> ResolveCreateParentAsync(
+    internal static async Task<EntityWriteParent?> ResolveCreateParentAsync(
         EntitySyncOperationItem item,
-        ExternalEntity source,
         IEntityAdapter targetAdapter,
         CancellationToken cancellationToken)
     {
         if (!item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
             || !EntitySyncVendors.IsOrchestraMSP(item.TargetVendor)
-            || (!item.TargetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
+            || (!item.TargetEntityType.Equals(
+                    "Site", StringComparison.OrdinalIgnoreCase)
                 && !item.TargetEntityType.Equals(
                     "Address", StringComparison.OrdinalIgnoreCase)))
             return null;
+        var approved = item.ResolvedTargetParent
+            ?? throw new EntityWriteParentValidationException(
+                "ORCHESTRA_PARENT_EVIDENCE_MISSING");
         if (targetAdapter is not IEntityWriteParentResolver resolver)
-            throw new InvalidOperationException(
+            throw new EntityWriteParentValidationException(
                 "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
-        var resolution = await resolver.ResolveWriteParentAsync(
-            source, cancellationToken).ConfigureAwait(false);
-        if (resolution.Status != EntityWriteParentResolutionStatus.Resolved
-            || resolution.Parent is null)
-            throw new InvalidOperationException(resolution.SafeCode);
-        return resolution.Parent;
+        var current = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                item.SourceVendor,
+                item.SourceConnectionId,
+                approved.ParentEntityType,
+                approved.MatchedLinkExternalId),
+            cancellationToken).ConfigureAwait(false);
+        if (current.Status != EntityWriteParentResolutionStatus.Resolved
+            || current.Parent is null)
+            throw new EntityWriteParentValidationException(current.SafeCode);
+        if (!SameParentEvidence(approved, current.Parent))
+            throw new EntityWriteParentValidationException(
+                "ORCHESTRA_PARENT_EVIDENCE_CHANGED");
+        return current.Parent;
     }
+
+    private static bool SameParentEvidence(
+        EntityWriteParent approved,
+        EntityWriteParent current) =>
+        approved.ClientId == current.ClientId
+        && approved.SiteId == current.SiteId
+        && approved.ParentEntityType.Equals(
+            current.ParentEntityType, StringComparison.OrdinalIgnoreCase)
+        && approved.SourcePlatformInstanceId.Equals(
+            current.SourcePlatformInstanceId, StringComparison.Ordinal)
+        && approved.MatchedLinkExternalId.Equals(
+            current.MatchedLinkExternalId, StringComparison.Ordinal)
+        && approved.MatchedLinkStatus.Equals(
+            current.MatchedLinkStatus, StringComparison.OrdinalIgnoreCase)
+        && approved.MatchedLinkToken.Equals(
+            current.MatchedLinkToken, StringComparison.Ordinal)
+        && approved.ObservedOwnerVersion == current.ObservedOwnerVersion;
 
     private EntityWriteRequest CreateWriteRequest(
         EntitySyncOperationItem item,
@@ -538,7 +600,8 @@ public sealed class EntitySyncOperationWorker(
             item.Action, redactedBefore, item.RedactedDesired, beforeHash,
             item.DesiredPayloadSha256, item.AfterPayloadSha256,
             item.SnapshotsExpireAt, vendorRequestId, outcome,
-            null, null, dispatchStartedAt ?? item.StartedAt, completedAt);
+            null, null, dispatchStartedAt ?? item.StartedAt, completedAt,
+            item.ResolvedTargetParent);
         return replacement with
         {
             DispatchStartedAt = dispatchStartedAt,
@@ -565,6 +628,14 @@ public sealed class EntitySyncOperationWorker(
         return entities.SingleOrDefault(
             entity => string.Equals(entity.Id, id, StringComparison.OrdinalIgnoreCase));
     }
+}
+
+internal sealed class EntityWriteParentValidationException(string safeCode)
+    : InvalidOperationException("Approved parent evidence is no longer current.")
+{
+    public string SafeCode { get; } = string.IsNullOrWhiteSpace(safeCode)
+        ? "ORCHESTRA_PARENT_EVIDENCE_CHANGED"
+        : safeCode;
 }
 
 public sealed record EntitySyncOperationWorkerOptions(TimeSpan LeaseDuration)

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
@@ -117,36 +119,33 @@ public sealed class OrchestraEntityAdapter :
     }
 
     public async Task<EntityWriteParentResolution> ResolveWriteParentAsync(
-        ExternalEntity source,
+        EntityWriteParentResolutionRequest request,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        var parentId = source.ParentId?.Trim();
-        var parentType = source.ParentEntityType?.Trim();
-        if (string.IsNullOrWhiteSpace(parentId)
-            || string.IsNullOrWhiteSpace(parentType)
-            || (!source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
-                && !source.EntityType.Equals(
-                    "Address", StringComparison.OrdinalIgnoreCase)))
-            return ParentResolution(
-                EntityWriteParentResolutionStatus.Missing,
-                "ORCHESTRA_PARENT_LINK_MISSING");
-        if (source.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
-            && !parentType.Equals("Client", StringComparison.OrdinalIgnoreCase))
-            return ParentResolution(
-                EntityWriteParentResolutionStatus.Stale,
-                "ORCHESTRA_PARENT_LINK_STALE");
+        ArgumentNullException.ThrowIfNull(request);
+        var sourceVendor = Require(
+            request.SourceVendor, nameof(request.SourceVendor));
+        var platformInstanceId = Require(
+            request.SourcePlatformInstanceId,
+            nameof(request.SourcePlatformInstanceId));
+        var parentId = Require(
+            request.SourceParentEntityId,
+            nameof(request.SourceParentEntityId));
+        var parentType = Require(
+            request.SourceParentEntityType,
+            nameof(request.SourceParentEntityType));
 
         var clients = await client.ListClientsAsync(
             true, cancellationToken).ConfigureAwait(false);
-        var linked = parentType.Equals("Client", StringComparison.OrdinalIgnoreCase)
-            ? ResolveLinkedClients(clients, source.Vendor, parentId)
+        return parentType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            ? ResolveLinkedClients(
+                clients, sourceVendor, platformInstanceId, parentId)
             : parentType.Equals("Site", StringComparison.OrdinalIgnoreCase)
-                ? ResolveLinkedSites(clients, source.Vendor, parentId)
+                ? ResolveLinkedSites(
+                    clients, sourceVendor, platformInstanceId, parentId)
                 : ParentResolution(
                     EntityWriteParentResolutionStatus.Stale,
                     "ORCHESTRA_PARENT_LINK_STALE");
-        return linked;
     }
 
     public async Task<ExternalPlatformLink?> LookupPlatformLinkAsync(string platformInstanceId, string externalId, CancellationToken cancellationToken)
@@ -271,19 +270,30 @@ public sealed class OrchestraEntityAdapter :
     private static EntityWriteParentResolution ResolveLinkedClients(
         IEnumerable<OrchestraClientContract> clients,
         string sourceVendor,
+        string platformInstanceId,
         string parentId)
     {
-        var links = clients
-            .SelectMany(value => value.PlatformLinks.Select(link => (Owner: value, Link: link)))
+        var candidates = clients
+            .SelectMany(value => value.PlatformLinks.Select(
+                link => (Owner: value, Link: link)))
             .Where(value => LinkMatches(
                 value.Link, sourceVendor, parentId, "Client"))
             .ToArray();
+        var links = candidates
+            .Where(value => value.Link.PlatformInstanceId.Equals(
+                platformInstanceId, StringComparison.Ordinal))
+            .ToArray();
         if (links.Length == 0)
             return ParentResolution(
-                EntityWriteParentResolutionStatus.Missing,
-                "ORCHESTRA_PARENT_LINK_MISSING");
+                candidates.Length == 0
+                    ? EntityWriteParentResolutionStatus.Missing
+                    : EntityWriteParentResolutionStatus.Stale,
+                candidates.Length == 0
+                    ? "ORCHESTRA_PARENT_LINK_MISSING"
+                    : "ORCHESTRA_PARENT_LINK_STALE");
         if (links.Any(value =>
-                !value.Link.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
+                !IsUsable(value.Owner)
+                || !IsUsable(value.Link)
                 || value.Link.EntityId != value.Owner.ClientId))
             return ParentResolution(
                 EntityWriteParentResolutionStatus.Stale,
@@ -292,30 +302,50 @@ public sealed class OrchestraEntityAdapter :
             return ParentResolution(
                 EntityWriteParentResolutionStatus.Ambiguous,
                 "ORCHESTRA_PARENT_LINK_AMBIGUOUS");
+        var match = links[0];
         return new EntityWriteParentResolution(
             EntityWriteParentResolutionStatus.Resolved,
-            new EntityWriteParent(links[0].Owner.ClientId, null, "Client"),
+            new EntityWriteParent(
+                match.Owner.ClientId,
+                null,
+                "Client",
+                match.Link.PlatformInstanceId,
+                match.Link.ExternalId,
+                match.Link.Status,
+                LinkToken(match.Link),
+                match.Owner.Version),
             "OK");
     }
 
     private static EntityWriteParentResolution ResolveLinkedSites(
         IEnumerable<OrchestraClientContract> clients,
         string sourceVendor,
+        string platformInstanceId,
         string parentId)
     {
-        var links = clients
+        var candidates = clients
             .SelectMany(clientValue => clientValue.Sites.SelectMany(
                 site => site.PlatformLinks.Select(link =>
                     (Client: clientValue, Site: site, Link: link))))
             .Where(value => LinkMatches(
                 value.Link, sourceVendor, parentId, "Site"))
             .ToArray();
+        var links = candidates
+            .Where(value => value.Link.PlatformInstanceId.Equals(
+                platformInstanceId, StringComparison.Ordinal))
+            .ToArray();
         if (links.Length == 0)
             return ParentResolution(
-                EntityWriteParentResolutionStatus.Missing,
-                "ORCHESTRA_PARENT_LINK_MISSING");
+                candidates.Length == 0
+                    ? EntityWriteParentResolutionStatus.Missing
+                    : EntityWriteParentResolutionStatus.Stale,
+                candidates.Length == 0
+                    ? "ORCHESTRA_PARENT_LINK_MISSING"
+                    : "ORCHESTRA_PARENT_LINK_STALE");
         if (links.Any(value =>
-                !value.Link.Status.Equals("active", StringComparison.OrdinalIgnoreCase)
+                !IsUsable(value.Client)
+                || !IsUsable(value.Site)
+                || !IsUsable(value.Link)
                 || value.Link.EntityId != value.Site.SiteId
                 || value.Site.ClientId != value.Client.ClientId))
             return ParentResolution(
@@ -325,10 +355,18 @@ public sealed class OrchestraEntityAdapter :
             return ParentResolution(
                 EntityWriteParentResolutionStatus.Ambiguous,
                 "ORCHESTRA_PARENT_LINK_AMBIGUOUS");
+        var match = links[0];
         return new EntityWriteParentResolution(
             EntityWriteParentResolutionStatus.Resolved,
             new EntityWriteParent(
-                links[0].Client.ClientId, links[0].Site.SiteId, "Site"),
+                match.Client.ClientId,
+                match.Site.SiteId,
+                "Site",
+                match.Link.PlatformInstanceId,
+                match.Link.ExternalId,
+                match.Link.Status,
+                LinkToken(match.Link),
+                match.Site.Version),
             "OK");
     }
 
@@ -342,6 +380,37 @@ public sealed class OrchestraEntityAdapter :
             StringComparison.OrdinalIgnoreCase)
         && link.ExternalId.Equals(parentId, StringComparison.Ordinal)
         && link.EntityType.Equals(entityType, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUsable(OrchestraClientContract value) =>
+        value.Version > 0
+        && !value.IsDeleted
+        && value.MergedIntoClientId is null
+        && value.LifecycleStatus.Equals(
+            "active", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUsable(OrchestraSiteContract value) =>
+        value.Version > 0
+        && !value.IsDeleted
+        && value.LifecycleStatus.Equals(
+            "active", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUsable(OrchestraPlatformLinkContract value) =>
+        value.Status.Equals("active", StringComparison.OrdinalIgnoreCase);
+
+    private static string LinkToken(OrchestraPlatformLinkContract link)
+    {
+        var canonical = string.Join(
+            '\n',
+            link.PlatformInstanceId,
+            EntitySyncVendors.Normalize(link.Platform),
+            link.ExternalId,
+            link.Status.ToLowerInvariant(),
+            link.EntityType.ToLowerInvariant(),
+            link.EntityId.ToString("D"));
+        return Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
+            .ToLowerInvariant();
+    }
 
     private static EntityWriteParentResolution ParentResolution(
         EntityWriteParentResolutionStatus status,

@@ -504,7 +504,13 @@ public sealed class OrchestraEntityAdapterTests
                 : null
         };
 
-        var resolution = await resolver.ResolveWriteParentAsync(source, default);
+        var resolution = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                source.Vendor,
+                "ncentral-prod",
+                parentType,
+                foreignParentId),
+            default);
         Assert.Equal(EntityWriteParentResolutionStatus.Resolved, resolution.Status);
         Assert.NotNull(resolution.Parent);
         Assert.Empty(source.ExternalIds);
@@ -717,7 +723,7 @@ public sealed class OrchestraEntityAdapterTests
         using var connections = new InMemoryEntityConnectionRepository();
         connections.Register(
             "tenant",
-            "source",
+            "ncentral-prod",
             new StaticEntityAdapter(
             [
                 new ExternalEntity
@@ -743,7 +749,7 @@ public sealed class OrchestraEntityAdapterTests
         {
             TenantId = "tenant",
             SourceVendor = "NCentral",
-            SourceConnectionId = "source",
+            SourceConnectionId = "ncentral-prod",
             SourceEntityType = "Site",
             TargetVendor = EntitySyncVendors.OrchestraMSP,
             TargetConnectionId = "target",
@@ -768,6 +774,138 @@ public sealed class OrchestraEntityAdapterTests
                     "ORCHESTRA_PARENT_LINK_MISSING",
                     StringComparison.Ordinal));
         }
+    }
+
+    [Fact]
+    public async Task Parent_resolution_requires_exact_platform_instance_and_active_owner()
+    {
+        var inactive = ParentLinkDirectoryJson().Replace(
+            "\"lifecycle_status\":\"active\"",
+            "\"lifecycle_status\":\"suspended\"",
+            StringComparison.Ordinal);
+        using var handler = new LoopbackHttpHandler((_, index, _) =>
+            Json(HttpStatusCode.OK, index == 1
+                ? ParentLinkDirectoryJson()
+                : inactive));
+        using var http = new HttpClient(handler);
+        using var adapter = Adapter(http, StaticTokenProvider("token"));
+        var resolver = Assert.IsAssignableFrom<IEntityWriteParentResolver>(adapter);
+        var exact = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                "NCentral", "ncentral-prod", "Client", "customer-42"),
+            default);
+        var wrongInstance = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                "NCentral", "ncentral-other", "Client", "customer-42"),
+            default);
+
+        Assert.Equal(EntityWriteParentResolutionStatus.Resolved, exact.Status);
+        Assert.Equal("ncentral-prod", exact.Parent!.SourcePlatformInstanceId);
+        Assert.Equal(7, exact.Parent.ObservedOwnerVersion);
+        Assert.False(string.IsNullOrWhiteSpace(exact.Parent.MatchedLinkToken));
+        Assert.Equal(EntityWriteParentResolutionStatus.Stale, wrongInstance.Status);
+        Assert.Equal("ORCHESTRA_PARENT_LINK_STALE", wrongInstance.SafeCode);
+    }
+
+    [Fact]
+    public void Changed_only_request_digest_v2_covers_typed_address_and_parent_evidence()
+    {
+        var parent = new EntityWriteParent(
+            ClientId,
+            SiteId,
+            "Site",
+            "ncentral-prod",
+            "site-42",
+            "active",
+            new string('a', 64),
+            9);
+        var request = new EntityWriteRequest
+        {
+            Vendor = EntitySyncVendors.OrchestraMSP,
+            EntityType = "Address",
+            Name = "physical",
+            ParentId = SiteId.ToString("D"),
+            ParentEntityType = "Site",
+            ParentClientId = ClientId.ToString("D"),
+            ResolvedParent = parent,
+            Address = new EntityAddress
+            {
+                AddressType = "physical",
+                Line1 = "1 Main",
+                City = "Austin",
+                PostalCode = "78701"
+            }
+        };
+        var baseline = EntityWriteRequestDigest.Compute(request);
+        request.Address.PostalCode = "78759";
+        var addressChanged = EntityWriteRequestDigest.Compute(request);
+        request.Address.PostalCode = "78701";
+        request.ResolvedParent = parent with { ObservedOwnerVersion = 10 };
+        var parentChanged = EntityWriteRequestDigest.Compute(request);
+
+        Assert.Equal(2, EntityWriteRequestDigest.SchemaVersion);
+        Assert.NotEqual(baseline, addressChanged);
+        Assert.NotEqual(baseline, parentChanged);
+    }
+
+    [Fact]
+    public async Task Worker_live_parent_recheck_holds_drift_with_exact_safe_code_before_dispatch()
+    {
+        var versionChanged = ParentLinkDirectoryJson().Replace(
+            "\"version\":7",
+            "\"version\":8",
+            StringComparison.Ordinal);
+        var inactive = ParentLinkDirectoryJson().Replace(
+            "\"lifecycle_status\":\"active\"",
+            "\"lifecycle_status\":\"suspended\"",
+            StringComparison.Ordinal);
+        using var handler = new LoopbackHttpHandler((_, index, _) =>
+            Json(
+                HttpStatusCode.OK,
+                index switch
+                {
+                    1 => ParentLinkDirectoryJson(),
+                    2 => versionChanged,
+                    _ => inactive
+                }));
+        using var http = new HttpClient(handler);
+        using var adapter = Adapter(http, StaticTokenProvider("token"));
+        var resolver = Assert.IsAssignableFrom<IEntityWriteParentResolver>(adapter);
+        var approval = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                "NCentral", "ncentral-prod", "Client", "customer-42"),
+            default);
+        var approved = Assert.IsType<EntityWriteParent>(approval.Parent);
+        var item = ParentOperationItem(approved);
+
+        var changed = await Assert.ThrowsAsync<EntityWriteParentValidationException>(
+            () => EntitySyncOperationWorker.ResolveCreateParentAsync(
+                item, adapter, default));
+        var stale = await Assert.ThrowsAsync<EntityWriteParentValidationException>(
+            () => EntitySyncOperationWorker.ResolveCreateParentAsync(
+                item, adapter, default));
+
+        Assert.Equal("ORCHESTRA_PARENT_EVIDENCE_CHANGED", changed.SafeCode);
+        Assert.Equal("ORCHESTRA_PARENT_LINK_STALE", stale.SafeCode);
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.All(handler.Requests, request => Assert.Equal(
+            HttpMethod.Get, request.Method));
+    }
+
+    [Fact]
+    public void Legacy_mapper_rejects_non_null_parent_but_keeps_null_compatibility()
+    {
+        IEntityMapper mapper = new LegacyMapper();
+        var source = SiteEntity("NCentral", null);
+        var parent = new EntityWriteParent(ClientId, null, "Client");
+
+        Assert.Throws<UnsupportedEntityWriteParentMappingException>(() =>
+            mapper.MapCreate(
+                source, EntitySyncVendors.OrchestraMSP, "Site",
+                new MatchOptions(), parent));
+        Assert.NotNull(mapper.MapCreate(
+            source, EntitySyncVendors.OrchestraMSP, "Site",
+            new MatchOptions(), null));
     }
 
     [Fact]
@@ -919,6 +1057,37 @@ public sealed class OrchestraEntityAdapterTests
             adapter.UpdateEntityAsync(request, default));
         Assert.Single(handler.Requests);
     }
+
+    private static EntitySyncOperationItem ParentOperationItem(
+        EntityWriteParent parent) =>
+        EntitySyncOperationItem.Rehydrate(
+            "tenant",
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            "NCentral",
+            "ncentral-prod",
+            "Site",
+            "foreign-site",
+            "foreign-site",
+            EntitySyncVendors.OrchestraMSP,
+            "orchestra",
+            "Site",
+            null,
+            "Create",
+            new EntitySyncJsonValue("{}"),
+            new EntitySyncJsonValue("{}"),
+            null,
+            new EntitySyncSha256(new string('a', 64)),
+            null,
+            DateTimeOffset.UtcNow.AddHours(1),
+            null,
+            EntitySyncItemOutcome.Pending,
+            null,
+            null,
+            null,
+            null,
+            parent);
 
     private static HttpResponseMessage AssertSiteCommand(
         RecordedRequest request,
@@ -1135,6 +1304,7 @@ public sealed class OrchestraEntityAdapterTests
             ? $$"""{"items":[{{json.Replace(
                 "\"postal_code\":\"78701\"",
                 "\"postal_code\":null",
+
                 StringComparison.Ordinal)}}],"next_cursor":null}"""
             : $$"""{"items":[{{json.Replace(
                 "\"postal_code\":\"78701\"",
@@ -1223,6 +1393,26 @@ public sealed class OrchestraEntityAdapterTests
         Content = new StringContent(body, Encoding.UTF8, "application/json")
     };
 
+    private sealed class LegacyMapper : IEntityMapper
+    {
+        public EntityWriteRequest MapCreate(
+            ExternalEntity source,
+            string targetVendor,
+            string targetEntityType,
+            MatchOptions options) =>
+            new()
+            {
+                Vendor = targetVendor,
+                EntityType = targetEntityType,
+                Name = source.Name
+            };
+
+        public EntityWriteRequest MapUpdate(
+            ExternalEntity source,
+            ExternalEntity target,
+            MatchOptions options) =>
+            throw new NotSupportedException();
+    }
     private sealed class StaticEntityAdapter(
         IReadOnlyList<ExternalEntity> entities) : IEntityAdapter
     {
