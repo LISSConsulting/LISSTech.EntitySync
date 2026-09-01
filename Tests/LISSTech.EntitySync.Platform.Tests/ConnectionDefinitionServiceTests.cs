@@ -412,6 +412,8 @@ public sealed class ConnectionDefinitionServiceTests
                 Assert.NotNull(http.GetRequiredService<EntitySyncPlanner>());
                 Assert.NotNull(http.GetRequiredService<EntitySyncService>());
                 Assert.NotNull(http.GetRequiredService<EntityExclusionService>());
+                Assert.NotNull(http.GetRequiredService<PlanManifestBuilder>());
+                Assert.NotNull(http.GetRequiredService<DurablePlanService>());
                 Assert.NotNull(scheduler.GetRequiredService<EntitySyncPlanner>());
                 Assert.NotNull(scheduler.GetRequiredService<EntitySyncService>());
                 Assert.NotNull(scheduler.GetRequiredService<EntityExclusionService>());

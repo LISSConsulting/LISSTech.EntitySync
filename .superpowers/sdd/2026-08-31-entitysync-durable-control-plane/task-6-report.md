@@ -66,3 +66,10 @@ Focused verification after these changes: `DurableOperationTests` passed 9/9 aga
 - Added focused coverage for the attributed durable lifecycle, immutable-ID mismatch, skipped-plus-failed classification, and a checkpoint delay that expires the reconciliation lease and proves checkpoint/audit/item rollback.
 
 Focused verification: `DurableOperationTests` passed 11/11 against PostgreSQL; `PlatformTests.McpFocusedPlanUsesBoundedQueryAndExactSourceId` passed 1/1 for the unannotated compatibility helper.
+
+## Fix Round 3
+
+- Registered `PlanManifestBuilder` and `DurablePlanService` as production singletons so MCP-attributed durable plan tools can be activated from the platform service provider.
+- Extended the production host-mode resolution test to resolve the complete durable planning dependency chain.
+
+Focused RED/GREEN verification: the named hosting test first failed because `PlanManifestBuilder` was unregistered, then passed 1/1 after both registrations were added.

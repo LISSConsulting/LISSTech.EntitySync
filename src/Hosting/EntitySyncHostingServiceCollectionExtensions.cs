@@ -73,6 +73,8 @@ public static class EntitySyncHostingServiceCollectionExtensions
 
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<EntitySyncPlanner>();
+        services.AddSingleton<PlanManifestBuilder>();
+        services.AddSingleton<DurablePlanService>();
         services.AddSingleton<EntitySyncService>();
         services.AddSingleton<SyncAuditService>();
         services.AddSingleton<SyncOperationService>();
