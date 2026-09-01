@@ -171,6 +171,76 @@ public sealed class DurablePlanServiceTests
     }
 
     [Fact]
+    public async Task Planning_beyond_the_initial_lease_renews_and_contenders_do_not_replan()
+    {
+        using var fixture = new Fixture(2);
+        var service = fixture.CreateService(new DurablePlanCreationOptions(
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromMilliseconds(40),
+            TimeSpan.FromMilliseconds(10)));
+        fixture.SourceAdapter.BlockNextRead();
+        var firstTask = service.CreatePlanAsync(
+            fixture.Request("renewed-key"), fixture.Reviewer, default);
+        await fixture.SourceAdapter.WaitForReadAsync();
+        fixture.Time.Advance(TimeSpan.FromMilliseconds(150));
+        await Task.Delay(80);
+        fixture.Time.Advance(TimeSpan.FromMilliseconds(150));
+        await Task.Delay(80);
+        var retryTask = service.CreatePlanAsync(
+            fixture.Request("renewed-key"), fixture.Reviewer, default);
+        await Task.Delay(40);
+        Assert.False(retryTask.IsCompleted);
+
+        fixture.SourceAdapter.ReleaseRead();
+        var results = await Task.WhenAll(firstTask, retryTask);
+
+        Assert.Equal(results[0].PlanId, results[1].PlanId);
+        Assert.Equal(1, fixture.SourceAdapter.GetEntitiesCalls);
+        Assert.True(fixture.DurableRepository.RenewalCount >= 2);
+    }
+
+    [Fact]
+    public async Task Lost_renewal_ownership_cancels_planning_and_rejects_stale_persistence()
+    {
+        using var fixture = new Fixture(1);
+        var service = fixture.CreateService(new DurablePlanCreationOptions(
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromMilliseconds(40),
+            TimeSpan.FromMilliseconds(10)));
+        fixture.DurableRepository.LoseOwnershipOnRenewal = true;
+        fixture.SourceAdapter.BlockNextRead();
+
+        var creation = service.CreatePlanAsync(
+            fixture.Request("lost-owner-key"), fixture.Reviewer, default);
+        await fixture.SourceAdapter.WaitForReadAsync();
+
+        await Assert.ThrowsAsync<DurablePlanCreationConflictException>(() => creation);
+        Assert.Null(fixture.DurableRepository.Manifest);
+        Assert.True(fixture.DurableRepository.RenewalCount >= 1);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_releases_the_creation_claim_for_a_retry()
+    {
+        using var fixture = new Fixture(1);
+        fixture.SourceAdapter.BlockNextRead();
+        using var cancelled = new CancellationTokenSource();
+        var creation = fixture.Service.CreatePlanAsync(
+            fixture.Request("cancelled-key"), fixture.Reviewer, cancelled.Token);
+        await fixture.SourceAdapter.WaitForReadAsync();
+
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => creation);
+        Assert.Null(fixture.DurableRepository.Manifest);
+
+        fixture.SourceAdapter.ReleaseRead();
+        var retried = await fixture.Service.CreatePlanAsync(
+            fixture.Request("cancelled-key"), fixture.Reviewer, default);
+        Assert.NotEqual(Guid.Empty, retried.PlanId);
+        Assert.Equal(2, fixture.SourceAdapter.GetEntitiesCalls);
+    }
+
+    [Fact]
     public async Task Changed_exclusion_reclassifies_create_before_persistence()
     {
         using var fixture = new Fixture(1);
@@ -358,10 +428,10 @@ public sealed class DurablePlanServiceTests
                 new EntitySyncActor("creator"));
             Policies = new MemoryPolicyRepository(Policy);
             Exclusions = new RecordingExclusionRepository();
-            DurableRepository = new MemoryDurableRepository();
             Mapper = new TestMapper();
             ManifestBuilder = new PlanManifestBuilder(Mapper);
             Time = new ManualTimeProvider(Instant);
+            DurableRepository = new MemoryDurableRepository(Time);
             Planner = new EntitySyncPlanner(
                 Connections,
                 new InMemoryEntitySyncPlanRepository(),
@@ -369,15 +439,7 @@ public sealed class DurablePlanServiceTests
                 new WeightedEntityMatcher(),
                 Mapper,
                 new InMemoryEntitySyncChangeStateRepository());
-            Service = new DurablePlanService(
-                Planner,
-                ManifestBuilder,
-                Policies,
-                Connections,
-                Connections,
-                Exclusions,
-                DurableRepository,
-                Time);
+            Service = CreateService();
         }
 
         public List<ExternalEntity> Sources { get; }
@@ -405,6 +467,18 @@ public sealed class DurablePlanServiceTests
             SourceCount = sourceCount,
             PlanLifetime = TimeSpan.FromHours(4)
         };
+        public DurablePlanService CreateService(DurablePlanCreationOptions? options = null) =>
+            new(
+                Planner,
+                ManifestBuilder,
+                Policies,
+                Connections,
+                Connections,
+                Exclusions,
+                DurableRepository,
+                Time,
+                options);
+
 
         public async Task<EntitySyncPlan> CreatePlannerSnapshotAsync()
         {
@@ -775,7 +849,8 @@ public sealed class DurablePlanServiceTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class MemoryDurableRepository : IDurableSyncPlanRepository
+    private sealed class MemoryDurableRepository(TimeProvider timeProvider)
+        : IDurableSyncPlanRepository
     {
         private readonly SemaphoreSlim gate = new(1, 1);
         private readonly Dictionary<(string TenantId, Guid PlanId), MemoryCreationClaim>
@@ -789,34 +864,41 @@ public sealed class DurablePlanServiceTests
         public int RangeCount => ranges.Values.Sum(value => value.Count);
         public int ApprovalCount { get; private set; }
         public int AuditCount { get; private set; }
+        public int RenewalCount { get; private set; }
+        public bool LoseOwnershipOnRenewal { get; set; }
 
         public async Task<DurablePlanCreationClaim> TryClaimCreationAsync(
             string tenantId,
             Guid planId,
             EntitySyncSha256 requestSha256,
             Guid proposedOwnerToken,
-            DateTimeOffset now,
-            DateTimeOffset leaseExpiresAt,
+            TimeSpan leaseDuration,
             CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
             try
             {
+                var now = timeProvider.GetUtcNow();
                 var key = (tenantId, planId);
                 if (!creationClaims.TryGetValue(key, out var stored))
                 {
                     stored = new MemoryCreationClaim(
                         requestSha256,
                         proposedOwnerToken,
-                        leaseExpiresAt,
+                        now.Add(leaseDuration),
                         false,
+                        null,
                         null);
                     creationClaims.Add(key, stored);
                     return ToClaim(DurablePlanCreationClaimState.Owner, stored);
                 }
                 if (stored.RequestSha256 != requestSha256)
                     return new DurablePlanCreationClaim(
-                        DurablePlanCreationClaimState.Conflict, null, null, null);
+                        DurablePlanCreationClaimState.Conflict,
+                        null,
+                        null,
+                        null,
+                        null);
                 if (stored.Completed)
                     return ToClaim(DurablePlanCreationClaimState.Completed, stored);
                 if (stored.OwnerToken != proposedOwnerToken && stored.LeaseExpiresAt > now)
@@ -824,7 +906,7 @@ public sealed class DurablePlanServiceTests
                 stored = stored with
                 {
                     OwnerToken = proposedOwnerToken,
-                    LeaseExpiresAt = leaseExpiresAt
+                    LeaseExpiresAt = now.Add(leaseDuration)
                 };
                 creationClaims[key] = stored;
                 return ToClaim(DurablePlanCreationClaimState.Owner, stored);
@@ -835,28 +917,38 @@ public sealed class DurablePlanServiceTests
             }
         }
 
-        public async Task<bool> CompleteCreationAsync(
+        public async Task<bool> RenewCreationAsync(
             string tenantId,
             Guid planId,
             EntitySyncSha256 requestSha256,
             Guid ownerToken,
-            DateTimeOffset completedAt,
+            TimeSpan leaseDuration,
             CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
             try
             {
+                RenewalCount++;
+                var now = timeProvider.GetUtcNow();
                 var key = (tenantId, planId);
                 if (!creationClaims.TryGetValue(key, out var stored)
                     || stored.RequestSha256 != requestSha256
                     || stored.OwnerToken != ownerToken
-                    || stored.Completed)
+                    || stored.Completed
+                    || stored.LeaseExpiresAt <= now)
                     return false;
+                if (LoseOwnershipOnRenewal)
+                {
+                    creationClaims[key] = stored with
+                    {
+                        OwnerToken = Guid.NewGuid(),
+                        LeaseExpiresAt = now.Add(leaseDuration)
+                    };
+                    return false;
+                }
                 creationClaims[key] = stored with
                 {
-                    LeaseExpiresAt = completedAt,
-                    Completed = true,
-                    ResultPlanId = planId
+                    LeaseExpiresAt = now.Add(leaseDuration)
                 };
                 return true;
             }
@@ -871,7 +963,6 @@ public sealed class DurablePlanServiceTests
             Guid planId,
             EntitySyncSha256 requestSha256,
             Guid ownerToken,
-            DateTimeOffset releasedAt,
             CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
@@ -882,7 +973,10 @@ public sealed class DurablePlanServiceTests
                     && stored.RequestSha256 == requestSha256
                     && stored.OwnerToken == ownerToken
                     && !stored.Completed)
-                    creationClaims[key] = stored with { LeaseExpiresAt = releasedAt };
+                    creationClaims[key] = stored with
+                    {
+                        LeaseExpiresAt = timeProvider.GetUtcNow()
+                    };
             }
             finally
             {
@@ -895,22 +989,30 @@ public sealed class DurablePlanServiceTests
             EntitySyncDurablePlanManifest manifest,
             EntitySyncSha256 requestSha256,
             Guid ownerToken,
-            DateTimeOffset insertedAt,
             CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
             try
             {
+                var now = timeProvider.GetUtcNow();
                 var key = (tenantId, manifest.Plan.PlanId);
                 if (!creationClaims.TryGetValue(key, out var stored)
                     || stored.RequestSha256 != requestSha256
                     || stored.OwnerToken != ownerToken
                     || stored.Completed
-                    || stored.LeaseExpiresAt <= insertedAt)
+                    || stored.LeaseExpiresAt <= now
+                    || currentPlan?.PlanId == manifest.Plan.PlanId)
                     throw new InvalidOperationException(
                         "Ownership of the durable creation claim was lost before persistence.");
                 Manifest = manifest;
                 currentPlan = manifest.Plan;
+                creationClaims[key] = stored with
+                {
+                    LeaseExpiresAt = now,
+                    Completed = true,
+                    ResultPlanId = manifest.Plan.PlanId,
+                    ResultPlanDigestSha256 = manifest.Plan.PlanDigestSha256
+                };
             }
             finally
             {
@@ -1144,14 +1246,16 @@ public sealed class DurablePlanServiceTests
                 state,
                 claim.OwnerToken,
                 claim.LeaseExpiresAt,
-                claim.ResultPlanId);
+                claim.ResultPlanId,
+                claim.ResultPlanDigestSha256);
 
         private sealed record MemoryCreationClaim(
             EntitySyncSha256 RequestSha256,
             Guid OwnerToken,
             DateTimeOffset LeaseExpiresAt,
             bool Completed,
-            Guid? ResultPlanId);
+            Guid? ResultPlanId,
+            EntitySyncSha256? ResultPlanDigestSha256);
 
     }
 

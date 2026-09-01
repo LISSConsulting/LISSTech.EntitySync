@@ -12,10 +12,12 @@ public sealed class DurablePlanService(
     IConnectionRuntimeFactory connections,
     IEntityExclusionRepository exclusions,
     IDurableSyncPlanRepository plans,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    DurablePlanCreationOptions? creationOptions = null)
 {
-    private static readonly TimeSpan CreationLeaseDuration = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan CreationPollInterval = TimeSpan.FromMilliseconds(25);
+    private readonly DurablePlanCreationOptions creationOptions =
+        DurablePlanCreationOptions.Validate(
+            creationOptions ?? DurablePlanCreationOptions.Default);
 
     public async Task<DurablePlanResult> CreatePlanAsync(
         CreateDurablePlanRequest request,
@@ -38,44 +40,48 @@ public sealed class DurablePlanService(
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var claimTime = timeProvider.GetUtcNow();
             var claim = await plans.TryClaimCreationAsync(
                 tenantId,
                 planId,
                 requestSha256,
                 ownerToken,
-                claimTime,
-                claimTime.Add(CreationLeaseDuration),
+                creationOptions.LeaseDuration,
                 cancellationToken).ConfigureAwait(false);
             switch (claim.State)
             {
                 case DurablePlanCreationClaimState.Conflict:
                     throw new DurablePlanIdempotencyConflictException(planId);
                 case DurablePlanCreationClaimState.Completed:
-                    if (claim.ResultPlanId != planId)
-                        throw new InvalidOperationException(
-                            "The completed durable creation claim has an invalid result.");
+                    if (claim.ResultPlanId != planId
+                        || claim.ResultPlanDigestSha256 is null)
+                        throw new DurablePlanCreationConflictException(planId);
                     var completed = await plans.GetAsync(
                         tenantId, planId, cancellationToken).ConfigureAwait(false);
-                    if (completed is null)
-                        throw new InvalidOperationException(
-                            "The completed durable creation claim has no committed plan.");
+                    if (completed is null
+                        || completed.PlanDigestSha256 != claim.ResultPlanDigestSha256)
+                        throw new DurablePlanCreationConflictException(planId);
                     return ToResult(completed);
                 case DurablePlanCreationClaimState.Waiting:
                     await Task.Delay(
-                        CreationPollInterval,
+                        creationOptions.PollInterval,
                         timeProvider,
                         cancellationToken).ConfigureAwait(false);
                     continue;
                 case DurablePlanCreationClaimState.Owner:
                     try
                     {
-                        return await CreateOwnedPlanAsync(
-                            request,
-                            actor,
+                        return await RunWithCreationLeaseAsync(
+                            token => CreateOwnedPlanAsync(
+                                request,
+                                actor,
+                                tenantId,
+                                planId,
+                                selection,
+                                requestSha256,
+                                ownerToken,
+                                token),
                             tenantId,
                             planId,
-                            selection,
                             requestSha256,
                             ownerToken,
                             cancellationToken).ConfigureAwait(false);
@@ -89,7 +95,6 @@ public sealed class DurablePlanService(
                                 planId,
                                 requestSha256,
                                 ownerToken,
-                                timeProvider.GetUtcNow(),
                                 CancellationToken.None).ConfigureAwait(false);
                         }
                         catch
@@ -106,6 +111,104 @@ public sealed class DurablePlanService(
         }
     }
 
+    private async Task<DurablePlanResult> RunWithCreationLeaseAsync(
+        Func<CancellationToken, Task<DurablePlanResult>> create,
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        CancellationToken cancellationToken)
+    {
+        using var ownershipCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var createTask = create(ownershipCancellation.Token);
+        var renewalTask = MaintainCreationLeaseAsync(
+            tenantId,
+            planId,
+            requestSha256,
+            ownerToken,
+            ownershipCancellation.Token);
+        var first = await Task.WhenAny(createTask, renewalTask).ConfigureAwait(false);
+        if (first == createTask)
+        {
+            try
+            {
+                return await createTask.ConfigureAwait(false);
+            }
+            finally
+            {
+                ownershipCancellation.Cancel();
+                await IgnoreLeaseCleanupAsync(renewalTask).ConfigureAwait(false);
+            }
+        }
+
+        try
+        {
+            await renewalTask.ConfigureAwait(false);
+            return await createTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ownershipCancellation.Cancel();
+            await IgnoreLeaseCleanupAsync(createTask).ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception exception)
+        {
+            ownershipCancellation.Cancel();
+            await IgnoreLeaseCleanupAsync(createTask).ConfigureAwait(false);
+            throw new DurablePlanCreationConflictException(planId, exception);
+        }
+    }
+
+    private async Task MaintainCreationLeaseAsync(
+        string tenantId,
+        Guid planId,
+        EntitySyncSha256 requestSha256,
+        Guid ownerToken,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            await Task.Delay(
+                creationOptions.RenewalInterval,
+                timeProvider,
+                cancellationToken).ConfigureAwait(false);
+            if (await plans.RenewCreationAsync(
+                    tenantId,
+                    planId,
+                    requestSha256,
+                    ownerToken,
+                    creationOptions.LeaseDuration,
+                    cancellationToken).ConfigureAwait(false))
+                continue;
+
+            var observed = await plans.TryClaimCreationAsync(
+                tenantId,
+                planId,
+                requestSha256,
+                ownerToken,
+                creationOptions.LeaseDuration,
+                cancellationToken).ConfigureAwait(false);
+            if (observed.State == DurablePlanCreationClaimState.Completed)
+                return;
+            if (observed.State != DurablePlanCreationClaimState.Owner)
+                throw new DurablePlanCreationConflictException(planId);
+        }
+    }
+
+    private static async Task IgnoreLeaseCleanupAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Cleanup observes the losing task so stale planner work cannot continue.
+        }
+    }
+
     private async Task<DurablePlanResult> CreateOwnedPlanAsync(
         CreateDurablePlanRequest request,
         EntitySyncActor actor,
@@ -116,18 +219,9 @@ public sealed class DurablePlanService(
         Guid ownerToken,
         CancellationToken cancellationToken)
     {
-        var existing = await plans.GetAsync(tenantId, planId, cancellationToken)
-            .ConfigureAwait(false);
-        if (existing is not null)
-        {
-            await CompleteCreationClaimAsync(
-                tenantId,
-                planId,
-                requestSha256,
-                ownerToken,
-                cancellationToken).ConfigureAwait(false);
-            return ToResult(existing);
-        }
+        if (await plans.GetAsync(tenantId, planId, cancellationToken)
+                .ConfigureAwait(false) is not null)
+            throw new DurablePlanCreationConflictException(planId);
         var policy = await ResolveCurrentPolicyAsync(
             tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
@@ -173,55 +267,22 @@ public sealed class DurablePlanService(
             expiresAt,
             selection,
             activeExcludedSourceIds);
-        try
-        {
-            await plans.InsertClaimedAsync(
-                tenantId,
-                manifest,
-                requestSha256,
-                ownerToken,
-                timeProvider.GetUtcNow(),
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException)
-        {
-            existing = await plans.GetAsync(tenantId, planId, cancellationToken)
-                .ConfigureAwait(false);
-            if (existing is null) throw;
-        }
-        var persisted = existing ?? await plans.GetAsync(
+        await plans.InsertClaimedAsync(
+            tenantId,
+            manifest,
+            requestSha256,
+            ownerToken,
+            cancellationToken).ConfigureAwait(false);
+        var persisted = await plans.GetAsync(
             tenantId, manifest.Plan.PlanId, cancellationToken).ConfigureAwait(false);
         if (persisted is null
             || persisted.PlanDigestSha256 != manifest.Plan.PlanDigestSha256
             || persisted.ItemCount != manifest.Items.Count)
             throw new InvalidOperationException(
                 "The committed durable plan could not be retrieved exactly after insertion.");
-        await CompleteCreationClaimAsync(
-            tenantId,
-            planId,
-            requestSha256,
-            ownerToken,
-            cancellationToken).ConfigureAwait(false);
         return ToResult(persisted);
     }
 
-    private async Task CompleteCreationClaimAsync(
-        string tenantId,
-        Guid planId,
-        EntitySyncSha256 requestSha256,
-        Guid ownerToken,
-        CancellationToken cancellationToken)
-    {
-        if (!await plans.CompleteCreationAsync(
-                tenantId,
-                planId,
-                requestSha256,
-                ownerToken,
-                timeProvider.GetUtcNow(),
-                cancellationToken).ConfigureAwait(false))
-            throw new InvalidOperationException(
-                "Ownership of the durable creation claim was lost before completion.");
-    }
 
     public async Task<DurablePlanInspectionPage> GetPageAsync(
         string tenantId,
@@ -647,6 +708,28 @@ public sealed class DurablePlanService(
     }
 }
 
+public sealed record DurablePlanCreationOptions(
+    TimeSpan LeaseDuration,
+    TimeSpan RenewalInterval,
+    TimeSpan PollInterval)
+{
+    public static DurablePlanCreationOptions Default { get; } =
+        new(TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(1), TimeSpan.FromMilliseconds(25));
+
+    internal static DurablePlanCreationOptions Validate(DurablePlanCreationOptions options)
+    {
+        if (options.LeaseDuration <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), "Lease duration must be positive.");
+        if (options.RenewalInterval <= TimeSpan.Zero
+            || options.RenewalInterval >= options.LeaseDuration)
+            throw new ArgumentOutOfRangeException(
+                nameof(options), "Renewal interval must be positive and shorter than the lease.");
+        if (options.PollInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), "Poll interval must be positive.");
+        return options;
+    }
+}
+
 public sealed class DurablePlanNotFoundException(Guid planId)
     : KeyNotFoundException($"Durable plan '{planId}' was not found.");
 
@@ -668,6 +751,19 @@ public sealed class DurablePlanConnectionChangedException(string connectionId)
 public sealed class DurablePlanIdempotencyConflictException(Guid planId)
     : InvalidOperationException(
         $"Durable plan idempotency identity '{planId}' is already bound to a different request.");
+
+public sealed class DurablePlanCreationConflictException : InvalidOperationException
+{
+    public DurablePlanCreationConflictException(Guid planId)
+        : base($"Durable plan creation '{planId}' lost exact claim ownership.")
+    {
+    }
+
+    public DurablePlanCreationConflictException(Guid planId, Exception innerException)
+        : base($"Durable plan creation '{planId}' lost exact claim ownership.", innerException)
+    {
+    }
+}
 
 public sealed class DurablePlanApprovalConflictException : InvalidOperationException
 {

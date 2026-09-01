@@ -37,7 +37,8 @@ public sealed class ControlPlaneMigrationTests : IAsyncLifetime
                 "006_control_audit_scheduler",
                 "007_connection_generation_ledger",
                 "008_plan_exclusion_serialization",
-                "009_durable_plan_creation_claims"
+                "009_durable_plan_creation_claims",
+                "010_atomic_plan_creation_results"
             ],
             await ListAppliedMigrationsAsync());
         Assert.Equal(1, await CountAsync("entitysync.entity_exclusions"));

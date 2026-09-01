@@ -175,11 +175,43 @@ recovery after abandonment before claim completion.
 
 No formatter, linter, Pester, or project-wide test suite was run.
 
+### Fix Round 4: Database-clock fencing, renewable ownership, and atomic results
+
+Formal review rejected Round 3 because claim decisions accepted caller timestamps, a lease
+could expire during planner/vendor I/O without renewal, and an existing deterministic PlanId
+could be treated as successful recovery without proving that its manifest came from the exact
+request/owner claim. Those were release blockers even though the earlier focused suite was
+green.
+
+Migration 010 adds the exact result digest to completed claims and requires completed claims
+to bind both result PlanId and digest. Previously completed claims are reopened expired because
+the older two-transaction path cannot prove that their manifest was created by the exact claim.
+`InsertClaimedAsync` now locks and validates the live owner/request claim before plan insertion,
+writes the manifest, and transitions the claim to `Completed` with the exact PlanId/digest in
+the same PostgreSQL transaction. A lost response after commit is recoverable without planning;
+an arbitrary directly inserted plan at the same deterministic identity is a conflict.
+
+PostgreSQL uses `clock_timestamp()` while holding the claim row lock for acquire, renew,
+takeover, release, and insert fencing; service-provided timestamps no longer participate in
+ownership decisions. Creation owners run a brief-borrow renewal heartbeat while planner/vendor
+I/O is in progress. Renewal ownership loss cancels and awaits planner work, and caller
+cancellation expires the exact claim so a retry can acquire it. The production-composed test
+uses a two-connection pool, a 150 ms initial lease, a planner read blocked for more than 400 ms,
+eight concurrent retries, and one canceled waiter; it still performs one planner read and
+commits one exact result.
+
+Focused GREEN:
+
+```text
+DurablePlanServiceTests plus six named PostgreSQL claim/composition/migration tests
+Passed: 23, Failed: 0, Skipped: 0, Total: 23, Duration: 1 s
+```
+
 ## Decisions
 
 - `EntitySyncPlanner.CreateSnapshotAsync` is the durable path into the existing matcher and mapper. It consumes caller-owned generation-pinned leases and does not add the transient planner result to the legacy process-local plan repository. Existing `CreateAsync` retains legacy behavior by adding only after the same snapshot path returns.
 - `DurablePlanService.CreatePlanAsync` resolves the current exact enabled policy, resolves and acquires both exact enabled connection generations, invokes the planner once, rechecks active exclusions, seals the complete manifest, commits it, and re-reads the persisted plan before returning.
-- Stable plan IDs derive through `EntitySyncCanonicalDigest` from tenant plus a required caller-supplied non-secret idempotency key. PostgreSQL permanently binds that identity to the canonical normalized request SHA-256 in a durable owner-token/fenced creation claim. Claim acquisition, polling, takeover, release, and completion use only brief connection borrows; no connection is held during planner/vendor I/O or retry delay. A retried compatible request returns the committed plan without a second planner invocation; any changed request body is rejected. An expired owner is reclaimable, and a committed deterministic plan repairs an abandoned incomplete claim without rerunning planning. Item IDs and all content hashes use the shared canonical primitive. Source keys retain the normalized immutable source ID used by durable exclusions.
+- Stable plan IDs derive through `EntitySyncCanonicalDigest` from tenant plus a required caller-supplied non-secret idempotency key. PostgreSQL permanently binds that identity to the canonical normalized request SHA-256 in a durable owner-token/fenced creation claim. Claim acquisition, polling, takeover, release, and renewal use only brief connection borrows; no connection is held during planner/vendor I/O or retry delay. The owner renews while planning and cancels/awaits stale work on ownership loss. Claimed manifest insertion and claim completion bind the exact request, owner, result PlanId, and result digest in one transaction. A retried compatible request returns only that atomically committed result without a second planner invocation; changed request bodies and arbitrary direct plans at the same deterministic identity are rejected. Item IDs and all content hashes use the shared canonical primitive. Source keys retain the normalized immutable source ID used by durable exclusions.
 - Desired payloads contain only policy-allowed fields. Blocked property names are recursively removed from nested objects and arrays before payload/diff hashing. JSON objects are recursively key-sorted and explicit nulls are retained.
 - `EntityFieldChange` stores ordered redacted before/desired JSON, independent SHA-256 values computed from the unredacted canonical values, and sensitivity. Sensitive plaintext is discarded before construction of every durable model. Persisted `field_diffs` retains the migration-005 three-key envelope while storing hash/sensitivity metadata inside the before/desired objects.
 - Existing planner exclusions and exclusions introduced between planning and persistence both materialize as `None`/`PersistentExclusion` with a generic immutable reason. Credential-shaped match reasons are redacted.
@@ -205,6 +237,7 @@ No formatter, linter, Pester, or project-wide test suite was run.
 - `db/migrations/005_control_operations.sql`
 - `db/migrations/008_plan_exclusion_serialization.sql`
 - `db/migrations/009_durable_plan_creation_claims.sql`
+- `db/migrations/010_atomic_plan_creation_results.sql`
 - `Tests/LISSTech.EntitySync.Platform.Tests/ControlPlaneMigrationTests.cs`
 - `Tests/LISSTech.EntitySync.Platform.Tests/DurablePlanServiceTests.cs`
 - `Tests/LISSTech.EntitySync.Platform.Tests/ControlModelTests.cs`

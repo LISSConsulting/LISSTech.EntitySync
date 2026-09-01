@@ -9,31 +9,30 @@ public interface IDurableSyncPlanRepository
         Guid planId,
         EntitySyncSha256 requestSha256,
         Guid proposedOwnerToken,
-        DateTimeOffset now,
-        DateTimeOffset leaseExpiresAt,
+        TimeSpan leaseDuration,
         CancellationToken cancellationToken);
 
-    Task<bool> CompleteCreationAsync(
+    Task<bool> RenewCreationAsync(
         string tenantId,
         Guid planId,
         EntitySyncSha256 requestSha256,
         Guid ownerToken,
-        DateTimeOffset completedAt,
+        TimeSpan leaseDuration,
         CancellationToken cancellationToken);
+
 
     Task ReleaseCreationAsync(
         string tenantId,
         Guid planId,
         EntitySyncSha256 requestSha256,
         Guid ownerToken,
-        DateTimeOffset releasedAt,
         CancellationToken cancellationToken);
+
     Task InsertClaimedAsync(
         string tenantId,
         EntitySyncDurablePlanManifest manifest,
         EntitySyncSha256 requestSha256,
         Guid ownerToken,
-        DateTimeOffset insertedAt,
         CancellationToken cancellationToken);
 
 
@@ -163,4 +162,5 @@ public sealed record DurablePlanCreationClaim(
     DurablePlanCreationClaimState State,
     Guid? OwnerToken,
     DateTimeOffset? LeaseExpiresAt,
-    Guid? ResultPlanId);
+    Guid? ResultPlanId,
+    EntitySyncSha256? ResultPlanDigestSha256);
