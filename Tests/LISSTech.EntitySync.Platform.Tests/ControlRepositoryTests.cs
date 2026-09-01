@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Hosting;
+using LISSTech.EntitySync.Mapping;
+using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 using Microsoft.AspNetCore.DataProtection;
@@ -314,6 +317,74 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         Assert.False(conflict.RequestMatches);
     }
 
+
+    [Fact]
+    public async Task Postgres_composed_creation_completes_and_concurrent_retry_plans_once()
+    {
+        var context = await SeedControlContextAsync("composed-create");
+        var sourceAdapter = new BlockingReadAdapter(
+            "NetSuite",
+            [new ExternalEntity
+            {
+                Vendor = "NetSuite",
+                EntityType = "Customer",
+                Id = "SOURCE-1",
+                Name = "Source"
+            }]);
+        var runtime = new TestRuntimeFactory(
+            context.Source,
+            sourceAdapter,
+            context.Target,
+            new BlockingReadAdapter("HaloPSA", []));
+        var mapper = new DefaultEntityMapper();
+        var exclusions = new PostgresEntityExclusionRepository(Database);
+        var plans = new PostgresDurableSyncPlanRepository(Database);
+        var planner = new EntitySyncPlanner(
+            runtime,
+            new InMemoryEntitySyncPlanRepository(),
+            exclusions,
+            new WeightedEntityMatcher(),
+            mapper,
+            new InMemoryEntitySyncChangeStateRepository());
+        var service = new DurablePlanService(
+            planner,
+            new PlanManifestBuilder(mapper),
+            new PostgresSyncPolicyRepository(Database),
+            new PostgresConnectionDefinitionRepository(Database),
+            runtime,
+            exclusions,
+            plans,
+            TimeProvider.System);
+        var request = new CreateDurablePlanRequest
+        {
+            TenantId = context.TenantId,
+            IdempotencyKey = "composed-key",
+            PolicyId = context.Policy.PolicyId,
+            PolicyVersion = context.Policy.Version,
+            PlanLifetime = TimeSpan.FromHours(1)
+        };
+        sourceAdapter.BlockNextRead();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var first = service.CreatePlanAsync(
+            request, new EntitySyncActor("planner"), timeout.Token);
+        await sourceAdapter.WaitForReadAsync().WaitAsync(timeout.Token);
+        var retry = service.CreatePlanAsync(
+            request, new EntitySyncActor("planner"), timeout.Token);
+        await Task.Delay(50, timeout.Token);
+        sourceAdapter.ReleaseRead();
+
+        var results = await Task.WhenAll(first, retry).WaitAsync(timeout.Token);
+
+        Assert.Equal(results[0].PlanId, results[1].PlanId);
+        Assert.Equal(results[0].Digest, results[1].Digest);
+        Assert.Equal(1, sourceAdapter.GetEntitiesCalls);
+        Assert.Equal(
+            results[0].Digest,
+            (await plans.GetAsync(
+                context.TenantId,
+                results[0].PlanId,
+                timeout.Token))!.PlanDigestSha256.Value);
+    }
     [Fact]
     public async Task Exclusion_change_wins_a_route_race_with_plan_creation_atomically()
     {
@@ -1585,6 +1656,108 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             throw;
         }
     }
+    private sealed class TestRuntimeFactory(
+        EntitySyncConnectionDefinition sourceDefinition,
+        IEntityAdapter sourceAdapter,
+        EntitySyncConnectionDefinition targetDefinition,
+        IEntityAdapter targetAdapter) : IConnectionRuntimeFactory
+    {
+        private readonly IReadOnlyDictionary<string, (EntitySyncConnectionDefinition, IEntityAdapter)>
+            registrations = new Dictionary<string, (EntitySyncConnectionDefinition, IEntityAdapter)>
+            {
+                [sourceDefinition.ConnectionId] = (sourceDefinition, sourceAdapter),
+                [targetDefinition.ConnectionId] = (targetDefinition, targetAdapter)
+            };
+
+        public Task<IConnectionRuntimeLease> AcquireAsync(
+            string tenantId,
+            string connectionId,
+            long expectedGeneration,
+            CancellationToken cancellationToken)
+        {
+            var registration = registrations[connectionId];
+            if (registration.Item1.TenantId != tenantId
+                || registration.Item1.Generation != expectedGeneration)
+                throw new InvalidOperationException("Connection identity mismatch.");
+            return Task.FromResult<IConnectionRuntimeLease>(
+                new TestRuntimeLease(registration.Item1, registration.Item2));
+        }
+
+        public Task<IConnectionRuntimeLease> AcquireCurrentAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+            string tenantId,
+            string vendor,
+            string? connectionId,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed record TestRuntimeLease(
+        EntitySyncConnectionDefinition Definition,
+        IEntityAdapter Adapter) : IConnectionRuntimeLease
+    {
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class BlockingReadAdapter(
+        string vendor,
+        IReadOnlyList<ExternalEntity> entities) : IEntityAdapter
+    {
+        private TaskCompletionSource? readStarted;
+        private TaskCompletionSource? releaseRead;
+
+        public string Vendor { get; } = vendor;
+        public IReadOnlyList<string> LookupTypes => [];
+        public int GetEntitiesCalls { get; private set; }
+
+        public async Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(
+            EntityQuery query,
+            CancellationToken cancellationToken)
+        {
+            GetEntitiesCalls++;
+            readStarted?.TrySetResult();
+            if (releaseRead is not null)
+                await releaseRead.Task.WaitAsync(cancellationToken);
+            return entities;
+        }
+
+        public void BlockNextRead()
+        {
+            readStarted = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            releaseRead = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        public Task WaitForReadAsync() => readStarted?.Task
+            ?? throw new InvalidOperationException("The read was not blocked.");
+
+        public void ReleaseRead()
+        {
+            releaseRead?.TrySetResult();
+            releaseRead = null;
+        }
+
+        public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(
+            string type,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
+        public Task<EntityWriteResult> CreateEntityAsync(
+            EntityWriteRequest request,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<EntityWriteResult> UpdateEntityAsync(
+            EntityWriteRequest request,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+    }
+
 
     private static async Task AssertStillRunningAsync(Task task)
     {

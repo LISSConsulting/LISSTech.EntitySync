@@ -20,13 +20,13 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
         if (planId == Guid.Empty)
             throw new ArgumentException("Plan ID is required.", nameof(planId));
         ArgumentNullException.ThrowIfNull(requestSha256);
-        var identity = $"{tenantId}:{planId:N}";
+        var identity = $"entitysync:durable-plan-creation:v1:{tenantId}:{planId:N}";
         var connection = await dataSource.OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
         try
         {
             await using (var acquire = new NpgsqlCommand(
-                             "SELECT pg_advisory_lock(hashtextextended(@identity, 0))",
+                             "SELECT pg_advisory_lock(hashtextextended(@identity, 1))",
                              connection))
             {
                 PostgresControlPersistence.Add(
@@ -1187,7 +1187,7 @@ public sealed class PostgresDurableSyncPlanRepository(NpgsqlDataSource dataSourc
             try
             {
                 await using var release = new NpgsqlCommand(
-                    "SELECT pg_advisory_unlock(hashtextextended(@identity, 0))",
+                    "SELECT pg_advisory_unlock(hashtextextended(@identity, 1))",
                     current);
                 PostgresControlPersistence.Add(
                     release, "identity", NpgsqlDbType.Text, identity);

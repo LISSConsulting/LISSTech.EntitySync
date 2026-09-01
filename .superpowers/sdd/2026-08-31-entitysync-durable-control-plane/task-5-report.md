@@ -109,6 +109,33 @@ It includes the 14 service tests, Core/Ports contract tests, creation-claim seri
 legacy-key exclusion races in both directions, atomic approval-audit rollback, overlapping
 range union, migration replay, manifest round trip, and the 2,500-item COPY regression.
 
+### Fix Round 2: Creation-lock namespace
+
+The production-composed PostgreSQL regression initially failed after its two-second
+cancellation deadline:
+
+```text
+Postgres_composed_creation_completes_and_concurrent_retry_plans_once
+Failed: TaskCanceledException after 2 s
+```
+
+The session creation lease and the nested direct manifest insert had both derived advisory
+locks from the same `tenant:plan` key with seed 0 on different connections. The outer lease
+therefore waited on itself during `InsertAsync`. Creation leases now use the explicit
+`entitysync:durable-plan-creation:v1` namespace with seed 1, while direct manifest insertion
+retains its independent transaction-scoped seed-0 lock. Lock order remains creation lease,
+then direct plan insertion.
+
+Focused GREEN:
+
+```text
+DurablePlanServiceTests plus Postgres_composed_creation_completes_and_concurrent_retry_plans_once
+Passed: 15, Failed: 0, Skipped: 0, Total: 15, Duration: 1 s
+```
+
+The production-composed test proves the plan commits and is retrievable before its short
+deadline, and that a concurrent identical retry returns the same plan after one planner read.
+
 No formatter, linter, Pester, or project-wide test suite was run.
 
 ## Decisions
