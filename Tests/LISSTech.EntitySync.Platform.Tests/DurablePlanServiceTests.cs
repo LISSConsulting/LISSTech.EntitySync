@@ -597,7 +597,8 @@ public sealed class DurablePlanServiceTests
             Mapper = new TestMapper();
             ManifestBuilder = new PlanManifestBuilder(Mapper);
             Time = new ManualTimeProvider(Instant);
-            DurableRepository = new MemoryDurableRepository(Time);
+            DurableRepository = new MemoryDurableRepository(
+                Time, Policies, Connections);
             Planner = new EntitySyncPlanner(
                 Connections,
                 new TestEntitySyncPlanRepository(),
@@ -1044,7 +1045,10 @@ public sealed class DurablePlanServiceTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
-    private sealed class MemoryDurableRepository(TimeProvider timeProvider)
+    private sealed class MemoryDurableRepository(
+        TimeProvider timeProvider,
+        ISyncPolicyRepository policies,
+        IConnectionDefinitionRepository connections)
         : IDurableSyncPlanRepository
     {
         private readonly SemaphoreSlim gate = new(1, 1);
@@ -1054,7 +1058,8 @@ public sealed class DurablePlanServiceTests
         private readonly Dictionary<Guid, Dictionary<Guid, EntitySyncInspectionRange>> ranges = [];
         private readonly Dictionary<
             (string TenantId, string CallerKey),
-            (EntitySyncSha256 RequestSha256, EntitySyncDurablePlanManifest Manifest)>
+            (EntitySyncSha256 RequestSha256, Guid PlanId,
+                EntitySyncSha256 PlanDigestSha256)>
             importReceipts = [];
         private EntitySyncDurablePlan? currentPlan;
 
@@ -1249,21 +1254,76 @@ public sealed class DurablePlanServiceTests
             {
                 var key = (tenantId, callerKey);
                 if (importReceipts.TryGetValue(key, out var receipt))
-                    return receipt.RequestSha256 == requestSha256
-                        ? new(
-                            DurablePlanImportPersistenceState.Replayed,
-                            receipt.Manifest.Plan)
-                        : new(
+                {
+                    if (receipt.RequestSha256 != requestSha256)
+                        return new(
                             DurablePlanImportPersistenceState.Conflict,
                             null);
-                if (currentPlan?.PlanId == manifest.Plan.PlanId)
-                    return new(DurablePlanImportPersistenceState.Conflict, null);
-                Manifest = manifest;
-                currentPlan = manifest.Plan;
-                importReceipts.Add(key, (requestSha256, manifest));
+                    if (currentPlan is null
+                        || currentPlan.PlanId != receipt.PlanId
+                        || currentPlan.PlanDigestSha256
+                            != receipt.PlanDigestSha256)
+                        throw new InvalidOperationException(
+                            "The durable plan import receipt references a missing or mismatched plan.");
+                    return new(
+                        DurablePlanImportPersistenceState.Replayed,
+                        currentPlan);
+                }
+                var plan = manifest.Plan;
+                if (plan.ExpiresAt <= timeProvider.GetUtcNow())
+                    return new(
+                        DurablePlanImportPersistenceState.Expired,
+                        null);
+                var policy = await policies.GetLatestAsync(
+                    tenantId, plan.PolicyId, cancellationToken);
+                if (policy is null
+                    || !policy.Enabled
+                    || policy.Version != plan.PolicyVersion
+                    || policy.DefinitionSha256
+                        != plan.PolicyDefinitionSha256
+                    || policy.RouteScope != plan.RouteScope
+                    || policy.Definition.SourceConnectionId
+                        != plan.SourceConnectionId
+                    || policy.Definition.TargetConnectionId
+                        != plan.TargetConnectionId)
+                    return new(
+                        DurablePlanImportPersistenceState.PolicyChanged,
+                        null);
+                var source = await connections.GetAsync(
+                    tenantId, plan.SourceConnectionId, cancellationToken);
+                var target = await connections.GetAsync(
+                    tenantId, plan.TargetConnectionId, cancellationToken);
+                if (source is null
+                    || !source.Enabled
+                    || source.Generation
+                        != plan.SourceConnectionGeneration
+                    || target is null
+                    || !target.Enabled
+                    || target.Generation
+                        != plan.TargetConnectionGeneration)
+                    return new(
+                        DurablePlanImportPersistenceState.ConnectionChanged,
+                        null);
+                if (currentPlan?.PlanId == plan.PlanId
+                    && currentPlan.PlanDigestSha256
+                        != plan.PlanDigestSha256)
+                    return new(
+                        DurablePlanImportPersistenceState.Conflict,
+                        null);
+                var inserted = currentPlan?.PlanId != plan.PlanId;
+                if (inserted)
+                {
+                    Manifest = manifest;
+                    currentPlan = plan;
+                }
+                importReceipts.Add(
+                    key,
+                    (requestSha256, plan.PlanId, plan.PlanDigestSha256));
                 return new(
-                    DurablePlanImportPersistenceState.Inserted,
-                    manifest.Plan);
+                    inserted
+                        ? DurablePlanImportPersistenceState.Inserted
+                        : DurablePlanImportPersistenceState.Replayed,
+                    currentPlan);
             }
             finally
             {

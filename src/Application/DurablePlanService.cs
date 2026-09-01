@@ -134,26 +134,6 @@ public sealed class DurablePlanService(
             throw new InvalidOperationException(
                 "Only immutable Draft durable plans can be imported.");
 
-        var policy = await policies.GetLatestAsync(
-                tenantId, plan.PolicyId, cancellationToken).ConfigureAwait(false);
-        if (policy is null
-            || !policy.Enabled
-            || policy.Version != plan.PolicyVersion
-            || policy.DefinitionSha256 != plan.PolicyDefinitionSha256
-            || policy.RouteScope != plan.RouteScope
-            || policy.Definition.SourceConnectionId != plan.SourceConnectionId
-            || policy.Definition.TargetConnectionId != plan.TargetConnectionId)
-            throw new DurablePlanPolicyChangedException(plan.PlanId);
-        await RequireCurrentConnectionAsync(
-            tenantId,
-            plan.SourceConnectionId,
-            plan.SourceConnectionGeneration,
-            cancellationToken).ConfigureAwait(false);
-        await RequireCurrentConnectionAsync(
-            tenantId,
-            plan.TargetConnectionId,
-            plan.TargetConnectionGeneration,
-            cancellationToken).ConfigureAwait(false);
 
         var result = await plans.ImportAsync(
                 tenantId,
