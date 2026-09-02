@@ -30,6 +30,7 @@ public sealed class EntitySyncPlanner(
                 : DefaultEntityType(sourceVendor));
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
+        var authoritativeBillSnapshot = BillComPlanReconciliation.IsAuthoritativeRoute(sourceVendor, sourceType, targetVendor, targetType);
         var authoritativeAgentControllerSnapshot = EntitySyncVendors.IsAgentController(targetVendor);
         if (authoritativeAgentControllerSnapshot
             && (!sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
@@ -44,6 +45,14 @@ public sealed class EntitySyncPlanner(
         {
             throw new ArgumentException("AgentController authoritative planning cannot use sourceSearch, sourceCount, or sourceEntityId because the complete N-central customer-and-site snapshot is required.");
         }
+        if (authoritativeBillSnapshot
+            && (!string.IsNullOrWhiteSpace(request.SourceSearch)
+                || request.SourceCount.HasValue
+                || !string.IsNullOrWhiteSpace(request.SourceEntityId)))
+        {
+            throw new ArgumentException("BILL.com exact-list reconciliation cannot use sourceSearch, sourceCount, or sourceEntityId because the complete HaloPSA client list is required.");
+        }
+
 
 
         var sourceQuery = new EntityQuery
@@ -51,7 +60,9 @@ public sealed class EntitySyncPlanner(
             EntityType = sourceType,
             Search = request.SourceSearch?.Trim(),
             IncludeInactive = request.IncludeInactive,
-            Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
+            Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1,
+            FullObjects = authoritativeBillSnapshot,
+            RequiredCustomFieldName = authoritativeBillSnapshot ? EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName : null
         };
         var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
@@ -138,7 +149,13 @@ public sealed class EntitySyncPlanner(
         }
 
         var externalIdName = request.SourceExternalIdName
-            ?? (siteLinks ? "NCentralSiteId" : customerLinks ? "NCentralCustomerId" : DefaultExternalIdName(sourceVendor));
+            ?? (siteLinks
+                ? "NCentralSiteId"
+                : customerLinks
+                    ? "NCentralCustomerId"
+                    : authoritativeBillSnapshot
+                        ? EntitySyncIntegrationContracts.BillComClientExternalIdName
+                        : DefaultExternalIdName(sourceVendor));
         var options = new MatchOptions
         {
             SourceExternalIdName = externalIdName,
@@ -207,6 +224,7 @@ public sealed class EntitySyncPlanner(
             if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
             plan.Items.Add(item);
         }
+        BillComPlanReconciliation.AddApprovedTargetOperations(plan);
         plans.Add(plan);
         return plan;
     }

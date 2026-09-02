@@ -40,6 +40,7 @@ public sealed class EntitySyncService(
     public string ApprovePlan(string tenantId, string planId, string expectedDigest)
     {
         var plan = plans.Get(tenantId, planId);
+        BillComPlanReconciliation.EnsureReadyToApply(plan);
         var digest = EntitySyncPlanDigest.Compute(plan);
         if (!digest.Equals(expectedDigest, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Plan changed after inspection; inspect it again before approval.");
         if (!plans.TryApprove(tenantId, planId, digest))
@@ -55,6 +56,7 @@ public sealed class EntitySyncService(
         Action<EntitySyncApplyProgress>? reportProgress = null)
     {
         var plan = plans.Get(tenantId, planId);
+        if (apply) BillComPlanReconciliation.EnsureReadyToApply(plan);
         var changeStateRoute = PrepareChangeStateRoute(plan);
         using var sourceLease = connections.Acquire(tenantId, plan.SourceVendor, plan.Execution.SourceConnectionId, plan.Execution.SourceConnectionGeneration);
         using var targetLease = connections.Acquire(tenantId, plan.TargetVendor, plan.Execution.TargetConnectionId, plan.Execution.TargetConnectionGeneration);
@@ -192,7 +194,22 @@ public sealed class EntitySyncService(
                 {
                     EntityWriteRequest request;
                     EntityWriteResult write;
-                    if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
+                    var deleteAction = item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase);
+                    if (deleteAction)
+                    {
+                        if (failed > 0)
+                        {
+                            results.Add(new EntitySyncApplyItemResult(item.Action, item.Target?.Name ?? string.Empty, item.Target?.Name, false, true, item.Target?.Id, "Delete skipped because an earlier exact-list operation failed."));
+                            skipped++;
+                            ReportProgress();
+                            continue;
+                        }
+                        if (item.Target is null) throw new InvalidOperationException("Target is required for delete actions.");
+                        if (target.Adapter is not IEntityDeleteAdapter deleteAdapter) throw new InvalidOperationException($"{plan.TargetVendor} does not support entity deletion.");
+                        request = DeleteRequest(plan, item.Target);
+                        write = await deleteAdapter.DeleteEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                     {
                         request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions);
                         write = await target.Adapter.CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
@@ -208,13 +225,15 @@ public sealed class EntitySyncService(
                         EntityWriteResult? sourceWriteback;
                         try
                         {
-                            sourceWriteback = await WriteSourceIntegrationAsync(
-                                plan,
-                                item,
-                                request,
-                                write,
-                                source.Adapter,
-                                cancellationToken).ConfigureAwait(false);
+                            sourceWriteback = deleteAction
+                                ? null
+                                : await WriteSourceIntegrationAsync(
+                                    plan,
+                                    item,
+                                    request,
+                                    write,
+                                    source.Adapter,
+                                    cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException)
                         {
@@ -247,6 +266,30 @@ public sealed class EntitySyncService(
                             failed++;
                             ReportProgress();
                             continue;
+                        }
+
+                        EntityWriteResult? replacementDelete = null;
+                        if (BillComPlanReconciliation.IsReplacement(plan, item, write))
+                        {
+                            if (target.Adapter is not IEntityDeleteAdapter deleteAdapter)
+                                throw new InvalidOperationException("BILL.com target connection does not support replacement cleanup.");
+                            replacementDelete = await deleteAdapter
+                                .DeleteEntityAsync(DeleteRequest(plan, item.Target!), cancellationToken)
+                                .ConfigureAwait(false);
+                            if (!replacementDelete.Success)
+                            {
+                                results.Add(new EntitySyncApplyItemResult(
+                                    item.Action,
+                                    item.Source.Name,
+                                    item.Target?.Name,
+                                    false,
+                                    false,
+                                    write.Id,
+                                    replacementDelete.Message ?? "BILL.com replacement was created and written back to HaloPSA, but the old value could not be deleted."));
+                                failed++;
+                                ReportProgress();
+                                continue;
+                            }
                         }
 
                         var checkpointSucceeded = true;
@@ -291,7 +334,7 @@ public sealed class EntitySyncService(
                                 true,
                                 false,
                                 write.Id,
-                                sourceWriteback?.Message ?? write.Message ?? "Target write succeeded."));
+                                replacementDelete?.Message ?? sourceWriteback?.Message ?? write.Message ?? "Target write succeeded."));
                             succeeded++;
                         }
                     }
@@ -332,6 +375,14 @@ public sealed class EntitySyncService(
 
         return new EntitySyncApplyResult(plan.Id, apply, failed == 0, succeeded, failed, skipped, results);
     }
+
+    private static EntityWriteRequest DeleteRequest(EntitySyncPlan plan, ExternalEntity target) => new()
+    {
+        Vendor = plan.TargetVendor,
+        EntityType = plan.TargetEntityType,
+        Id = target.Id,
+        Name = target.Name
+    };
     private static async Task<EntityWriteResult?> WriteSourceIntegrationAsync(
         EntitySyncPlan plan,
         EntitySyncPlanItem item,

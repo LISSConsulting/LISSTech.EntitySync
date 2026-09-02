@@ -41,7 +41,11 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         {
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
             Plan.SourceVendor = EntitySyncVendors.Normalize(Plan.SourceVendor);
-            if (Apply) ReviewedPlanPolicy.EnsureApproved(Plan);
+            if (Apply)
+            {
+                ReviewedPlanPolicy.EnsureApproved(Plan);
+                BillComPlanReconciliation.EnsureReadyToApply(Plan);
+            }
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions
@@ -65,6 +69,12 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             }
 
             var effectiveThrottleLimit = EffectiveThrottleLimit(ThrottleLimit);
+            if (effectiveThrottleLimit > 1
+                && BillComPlanReconciliation.IsAuthoritativeRoute(Plan.SourceVendor, Plan.SourceEntityType, Plan.TargetVendor, Plan.TargetEntityType))
+            {
+                WriteWarning("Invoke-EntitySyncPlan is using sequential apply so BILL.com deletions occur only after preceding value creation and HaloPSA writeback succeed.");
+                effectiveThrottleLimit = 1;
+            }
             if (effectiveThrottleLimit > 1 && Plan.Items.Any(item => RequiresHaloNCentralClientLink(item) || RequiresHaloNCentralSiteLink(item)))
             {
                 WriteWarning("Invoke-EntitySyncPlan is using sequential apply because this plan writes HaloPSA/N-central integration links after target writes.");
@@ -86,6 +96,19 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                 if (!Apply)
                 {
                     WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = true, Message = "Planned only; pass -Apply to write." });
+                    continue;
+                }
+                if (item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (item.Target is null) throw new InvalidOperationException("Target is required for delete actions.");
+                    var deleteAdapter = targetAdapter as IEntityDeleteAdapter
+                        ?? throw new InvalidOperationException($"{Plan.TargetVendor} does not support entity deletion.");
+                    if (ShouldProcess(item.Target.Name, $"Irreversibly delete target entity from {Plan.TargetVendor}"))
+                    {
+                        var deleteResult = deleteAdapter.DeleteEntityAsync(DeleteRequest(item.Target), CancellationToken.None).GetAwaiter().GetResult();
+                        WriteResult(deleteResult);
+                        if (!deleteResult.Success) throw new InvalidOperationException(deleteResult.Message ?? $"Failed to delete '{item.Target.Name}'.");
+                    }
                     continue;
                 }
 
@@ -162,6 +185,8 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     }
     private string EffectiveSourceExternalIdName()
     {
+        if (Plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && EntitySyncVendors.IsBillCom(Plan.TargetVendor))
+            return BillComEntityAdapter.ClientExternalIdName;
         if (EntitySyncVendors.IsBillCom(Plan.SourceVendor)) return BillComEntityAdapter.ClientExternalIdName;
         if (EntitySyncVendors.IsSophosCentral(Plan.SourceVendor)) return SophosCentralEntityAdapter.TenantExternalIdName;
         return "NetSuiteInternalId";
@@ -441,11 +466,25 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     private void WriteResultAndIntegrationLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)
     {
         WriteResult(result);
-        if (!result.Success) return;
+        if (!result.Success)
+        {
+            if (BillComPlanReconciliation.IsAuthoritativeRoute(Plan.SourceVendor, Plan.SourceEntityType, Plan.TargetVendor, Plan.TargetEntityType))
+                throw new InvalidOperationException(result.Message ?? $"BILL.com write failed for '{item.Source.Name}'.");
+            return;
+        }
 
         if (RequiresBillComWriteBack(item, result))
         {
-            WriteBillComIdToSource(item, result);
+            var writeback = WriteBillComIdToSource(item, result);
+            if (!writeback.Success) throw new InvalidOperationException(writeback.Message ?? $"BILL.com writeback failed for '{item.Source.Name}'.");
+            if (BillComPlanReconciliation.IsReplacement(Plan, item, result))
+            {
+                var deleteAdapter = targetAdapter as IEntityDeleteAdapter
+                    ?? throw new InvalidOperationException("BILL.com target connection does not support replacement cleanup.");
+                var deleteResult = deleteAdapter.DeleteEntityAsync(DeleteRequest(item.Target!), CancellationToken.None).GetAwaiter().GetResult();
+                WriteResult(deleteResult);
+                if (!deleteResult.Success) throw new InvalidOperationException(deleteResult.Message ?? $"Failed to delete replaced BILL.com value '{item.Target!.Name}'.");
+            }
             return;
         }
 
@@ -496,47 +535,42 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
             && !string.IsNullOrWhiteSpace(item.Source.Id);
     }
 
-    private void WriteBillComIdToSource(EntitySyncPlanItem item, EntityWriteResult result)
+    private EntityWriteResult WriteBillComIdToSource(EntitySyncPlanItem item, EntityWriteResult result)
     {
-        try
+        var haloAdapter = this.haloAdapter
+            ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the Bill.com client ID.");
+        var numericId = BillComEntityAdapter.DecodeBillComValueId(result.Id);
+        var writeBackRequest = new EntityWriteRequest
         {
-            var haloAdapter = this.haloAdapter
-                ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the Bill.com client ID.");
-            var numericId = BillComEntityAdapter.DecodeBillComValueId(result.Id);
-            var writeBackRequest = new EntityWriteRequest
-            {
-                Vendor = "HaloPSA",
-                EntityType = "Client",
-                Id = item.Source.Id,
-                Name = item.Source.Name
-            };
-            writeBackRequest.CustomFields[BillComEntityAdapter.HaloClientCustomFieldName] = numericId;
-            var writeBackResult = haloAdapter.UpdateEntityAsync(writeBackRequest, CancellationToken.None).GetAwaiter().GetResult();
-            WriteResult(new EntityWriteResult
-            {
-                Vendor = "HaloPSA",
-                EntityType = "Client",
-                Id = item.Source.Id,
-                Action = "BillComWriteBack",
-                Success = writeBackResult.Success,
-                Message = writeBackResult.Success
-                    ? $"Recorded Bill.com client ID '{numericId}' on HaloPSA client '{item.Source.Name}' field '{BillComEntityAdapter.HaloClientCustomFieldName}'."
-                    : $"Bill.com value created (ID {numericId}), but HaloPSA write-back failed: {writeBackResult.Message}"
-            });
-        }
-        catch (Exception ex)
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = item.Source.Id,
+            Name = item.Source.Name
+        };
+        writeBackRequest.CustomFields[BillComEntityAdapter.HaloClientCustomFieldName] = numericId;
+        var writeBackResult = haloAdapter.UpdateEntityAsync(writeBackRequest, CancellationToken.None).GetAwaiter().GetResult();
+        var resultToWrite = new EntityWriteResult
         {
-            WriteResult(new EntityWriteResult
-            {
-                Vendor = "HaloPSA",
-                EntityType = "Client",
-                Id = item.Source.Id,
-                Action = "BillComWriteBack",
-                Success = false,
-                Message = $"Bill.com value created, but HaloPSA write-back failed: {ex.Message}"
-            });
-        }
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = item.Source.Id,
+            Action = "BillComWriteBack",
+            Success = writeBackResult.Success,
+            Message = writeBackResult.Success
+                ? $"Recorded Bill.com client ID '{numericId}' on HaloPSA client '{item.Source.Name}' field '{BillComEntityAdapter.HaloClientCustomFieldName}'."
+                : $"Bill.com value created (ID {numericId}), but HaloPSA write-back failed: {writeBackResult.Message}"
+        };
+        WriteResult(resultToWrite);
+        return resultToWrite;
     }
+
+    private EntityWriteRequest DeleteRequest(ExternalEntity target) => new()
+    {
+        Vendor = Plan.TargetVendor,
+        EntityType = Plan.TargetEntityType,
+        Id = target.Id,
+        Name = target.Name
+    };
 
     private void WriteHaloNCentralSiteLink(EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result)
     {

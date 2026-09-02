@@ -5,6 +5,7 @@ namespace LISSTech.EntitySync.Core;
 public static class EntitySyncIntegrationContracts
 {
     public const string BillComHaloClientCustomFieldName = "CFBillSpendClientID";
+    public const string BillComClientExternalIdName = "BillSpendClientId";
 
     public static string DecodeBillComValueId(string? rawId)
     {

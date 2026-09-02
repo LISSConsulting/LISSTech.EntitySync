@@ -869,6 +869,11 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdap
                     entity.ExternalIds["NetSuiteInternalId"] = value;
                 }
 
+                if (name.Equals(EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+                {
+                    entity.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = value;
+                }
+
                 if (name.Equals(options.NetSuiteCustomerNameField, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
                 {
                     entity.CustomFields["NetSuiteCustomerName"] = value;

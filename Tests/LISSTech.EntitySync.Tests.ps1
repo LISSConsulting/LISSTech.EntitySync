@@ -928,6 +928,49 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Prepares Bill.com renames and deletes old values only through the irreversible delete endpoint' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"cf1","name":"Client"}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"100","uuid":"u-100","value":"Old Corp","deleted":false}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"300","uuid":"u-300","value":"New Corp","deleted":false}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(204, 'No Content', '')
+    )
+    $server.Start()
+    $adapter = New-TestBillComAdapter -Options (New-TestBillComOptions -BaseUrl $server.BaseUrl -ApiToken 'bill-token')
+    try {
+      $rename = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $rename.Vendor = 'Bill.com'
+      $rename.EntityType = 'Client'
+      $rename.Id = '100'
+      $rename.Name = 'New Corp'
+
+      $prepared = $adapter.UpdateEntityAsync($rename, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $prepared.Success | Should -BeTrue
+      $prepared.Id | Should -Be '300'
+
+      $server.Wait(3)
+      $server.Requests.Count | Should -Be 3
+      $server.Requests[2] | Should -Match 'POST /cf1/values HTTP/1\.1'
+      $server.Requests[2] | Should -Match '"values":\["New Corp"\]'
+
+      $delete = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $delete.Vendor = 'Bill.com'
+      $delete.EntityType = 'Client'
+      $delete.Id = '100'
+      $delete.Name = 'Old Corp'
+      $deleted = $adapter.DeleteEntityAsync($delete, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $deleted.Success | Should -BeTrue
+      $server.Wait(4)
+      $server.Requests[3] | Should -Match 'DELETE /cf1/values HTTP/1\.1'
+      $server.Requests[3] | Should -Match '"customFieldValueIds":\["100"\]'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
   It 'Tests registered LTAC connections through the adapter for AgentController and LTAC requests (T008 drift regression)' {
     foreach ($vendorName in @('AgentController', 'LTAC')) {
       $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', 'true')

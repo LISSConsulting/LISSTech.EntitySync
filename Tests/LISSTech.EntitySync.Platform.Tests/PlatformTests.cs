@@ -484,6 +484,81 @@ public sealed class PlatformTests
     }
 
     [Fact]
+    public async Task BillComExactListApplyReplacesRenamesAndDeletesTargetOnlyValues()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity { Vendor = "HaloPSA", EntityType = "Client", Id = "halo-1", Name = "New Name" };
+        haloSource.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var linkedTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "100", Name = "Old Name", IsActive = true };
+        linkedTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var obsoleteTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "200", Name = "Obsolete", IsActive = true };
+        obsoleteTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "200";
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [linkedTarget, obsoleteTarget], updateResultId: "300");
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var service = CreateService(connections);
+
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            CreateMissing = true
+        }, CancellationToken.None);
+
+        var update = Assert.Single(plan.Items, item => item.Action == "Update");
+        Assert.Equal("100", update.Target?.Id);
+        Assert.Contains(update.Reasons, reason => reason.Contains("irreversibly delete", StringComparison.OrdinalIgnoreCase));
+        var delete = Assert.Single(plan.Items, item => item.Action == "Delete");
+        Assert.Equal("200", delete.Target?.Id);
+        Assert.Contains(delete.Reasons, reason => reason.Contains("irreversibly deleted", StringComparison.OrdinalIgnoreCase));
+        Assert.True(halo.LastQuery?.FullObjects);
+        Assert.Contains(EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName, halo.LastQuery?.RequiredCustomFieldName);
+
+        InspectAllAndApprove(service, plan);
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("300", halo.LastUpdateRequest?.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName]);
+        Assert.Equal(["100", "200"], bill.DeletedIds);
+    }
+
+    [Fact]
+    public async Task BillComExactListSkipsDeletesWhenHaloWritebackFails()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity { Vendor = "HaloPSA", EntityType = "Client", Id = "halo-1", Name = "New Name" };
+        haloSource.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var linkedTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "100", Name = "Old Name", IsActive = true };
+        linkedTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var obsoleteTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "200", Name = "Obsolete", IsActive = true };
+        obsoleteTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "200";
+        var halo = new FakeAdapter("HaloPSA", [haloSource], updateSucceeds: false);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [linkedTarget, obsoleteTarget], updateResultId: "300");
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Empty(bill.DeletedIds);
+    }
+
+    [Fact]
     public async Task ApplicationAllowsSophosCentralAsPlanTarget()
     {
         using var connections = new InMemoryEntityConnectionRepository();
@@ -1485,13 +1560,16 @@ public sealed class PlatformTests
         string vendor,
         IReadOnlyList<ExternalEntity>? entities = null,
         Func<Task>? beforeCreate = null,
-        bool filterByEntityType = false)
-        : IEntityAdapter, IEntityBatchAdapter, IHaloSourceWritebackAdapter, IDisposable
+        bool filterByEntityType = false,
+        string? updateResultId = null,
+        bool updateSucceeds = true)
+        : IEntityAdapter, IEntityBatchAdapter, IEntityDeleteAdapter, IHaloSourceWritebackAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
         public int CreateCalls { get; private set; }
         public int UpdateCalls { get; private set; }
+        public int DeleteCalls { get; private set; }
         public int NCentralClientLinkCalls { get; private set; }
         public int BatchCalls { get; private set; }
         public bool Disposed { get; private set; }
@@ -1499,6 +1577,7 @@ public sealed class PlatformTests
         public EntityWriteRequest? LastUpdateRequest { get; private set; }
         public List<EntityQuery> Queries { get; } = [];
         public IReadOnlyList<EntityWriteRequest>? LastBatchRequests { get; private set; }
+        public List<string> DeletedIds { get; } = [];
 
         public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
         {
@@ -1531,7 +1610,14 @@ public sealed class PlatformTests
         {
             UpdateCalls++;
             LastUpdateRequest = request;
-            return Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Message = "Updated." });
+            return Task.FromResult(new EntityWriteResult { Success = updateSucceeds, Id = updateResultId ?? request.Id, Message = updateSucceeds ? "Updated." : "Update failed." });
+        }
+
+        public Task<EntityWriteResult> DeleteEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+        {
+            DeleteCalls++;
+            DeletedIds.Add(request.Id ?? string.Empty);
+            return Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Action = "Delete", Message = "Deleted." });
         }
 
         public Task<EntityWriteResult> UpsertNCentralClientLinkAsync(

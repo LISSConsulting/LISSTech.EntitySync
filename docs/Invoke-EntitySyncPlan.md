@@ -11,11 +11,11 @@ schema: 2.0.0
 Applies a reviewed EntitySync plan.
 
 ## DESCRIPTION
-Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
+Applies create, link, update, and delete actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
 
 `-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.
 
-For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. For Bill.com target plans, creates add missing custom-field values; existing values are safe target no-ops, and HaloPSA source plans still write the existing or newly created BILL value ID back to `CFBillSpendClientID`.
+For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. HaloPSA-to-Bill.com plans are exact-list reconciliations. Apply first adds missing or renamed values and writes their BILL IDs to `CFBillSpendClientID`; only after successful writeback does it irreversibly delete the old renamed value. Explicit reviewed `Delete` rows remove active BILL values absent from the complete HaloPSA client list. Any unresolved source row blocks apply, and BILL apply remains sequential so a failed create or writeback prevents subsequent deletions.
 
 For Sophos Central source plans targeting HaloPSA, `Invoke-EntitySyncPlan` writes the source `SophosCentralTenantId` to HaloPSA custom field `CFSophosCentralTenantID` unless `-TargetCustomFieldName` is explicitly supplied. Sophos Central partner connections can also be plan targets for tenant creation and `showAs` updates.
 

@@ -18,6 +18,7 @@ internal static class EntitySyncPlanWorkbook
         "Create",
         "Link",
         "Update",
+        "Delete",
         "No Update",
         "Review"
     };
@@ -266,8 +267,8 @@ internal static class EntitySyncPlanWorkbook
         WriteRow(writer, 2, new object?[] { "Score", "0-100 confidence score for the best candidate. 100 means an explicit external/integration ID link. Scores at or above AutoLinkScore can be planned as Link; scores at or above ReviewScore are review-worthy; lower scores are LowConfidence and are left unselected." });
         WriteRow(writer, 3, new object?[] { "MatchType", "Linked means an external/integration ID matched. HighConfidence means the weighted matcher met AutoLinkScore. NeedsReview means it met ReviewScore but still requires human review. LowConfidence means the best candidate was below ReviewScore. NoMatch means no usable candidate was found." });
         WriteRow(writer, 4, new object?[] { "Reasons", "Human-readable evidence used by the planner, such as external ID match, normalized name similarity, domain match, phone match, postal code match, inactive target penalty, reviewer override, or missing authoritative integration target." });
-        WriteRow(writer, 5, new object?[] { "Decision", "Accept Planned keeps the planned action. Create, Link, and Update explicitly approve that action. No Update skips without treating the row as rejected. Reject skips as rejected. Review leaves the row blocked from apply." });
-        WriteRow(writer, 6, new object?[] { "Target Selection", "Changing the target name in the review sheet is treated as a reviewer override for Link/Update workflows. Ambiguous duplicate target names fail import instead of guessing." });
+        WriteRow(writer, 5, new object?[] { "Decision", "Accept Planned keeps the planned action. Create, Link, Update, and Delete explicitly approve that action. Delete is irreversible. No Update skips without treating the row as rejected. Reject skips as rejected. Review leaves the row blocked from apply." });
+        WriteRow(writer, 6, new object?[] { "Target Selection", "Changing the target name in the review sheet is treated as a reviewer override for Link/Update workflows. Delete targets cannot be changed. Ambiguous duplicate target names fail import instead of guessing." });
         writer.WriteEndElement();
         writer.WriteEndElement();
         writer.WriteEndDocument();
@@ -326,7 +327,7 @@ internal static class EntitySyncPlanWorkbook
             if (hasDecision) ApplyDecision(item, decision.Trim());
             if (targetNameColumn >= 0 && TryGetCell(cells, targetNameColumn, out var selectedTarget) && IsChangedTargetSelection(originalTargetName, selectedTarget))
             {
-                if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)) continue;
+                if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)) continue;
                 ApplyTargetSelection(item, selectedTarget.Trim(), targetsByName, itemNumber, hasDecision);
             }
 
@@ -399,14 +400,17 @@ internal static class EntitySyncPlanWorkbook
 
     private static bool ActionUsesTarget(string action)
     {
-        return action.Equals("Link", StringComparison.OrdinalIgnoreCase) || action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+        return action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Delete", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsExecutable(string action)
     {
         return action.Equals("Create", StringComparison.OrdinalIgnoreCase)
             || action.Equals("Link", StringComparison.OrdinalIgnoreCase)
-            || action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+            || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
+            || action.Equals("Delete", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ItemPayloadDigest(EntitySyncPlan plan, EntitySyncPlanItem item)
@@ -464,7 +468,10 @@ internal static class EntitySyncPlanWorkbook
             return;
         }
 
-        if (decision.Equals("Create", StringComparison.OrdinalIgnoreCase) || decision.Equals("Link", StringComparison.OrdinalIgnoreCase) || decision.Equals("Update", StringComparison.OrdinalIgnoreCase))
+        if (decision.Equals("Create", StringComparison.OrdinalIgnoreCase)
+            || decision.Equals("Link", StringComparison.OrdinalIgnoreCase)
+            || decision.Equals("Update", StringComparison.OrdinalIgnoreCase)
+            || decision.Equals("Delete", StringComparison.OrdinalIgnoreCase))
         {
             item.Action = DecisionOptions.First(x => x.Equals(decision, StringComparison.OrdinalIgnoreCase));
             if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)) item.Target = null;
