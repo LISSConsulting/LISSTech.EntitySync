@@ -258,6 +258,45 @@ public sealed class SophosCentralAdapterTests
     }
 
     [Fact]
+    public void MapperLinksSophosTenantToHaloWithoutOverwritingClientDetails()
+    {
+        var source = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.SophosCentral,
+            EntityType = "Customer",
+            Id = "sophos-source-id",
+            Name = "Sophos Customer Name",
+            Email = "sophos@example.test",
+            Phone = "555-0101",
+            PrimaryAddress = new EntityAddress { Line1 = "Sophos Address" }
+        };
+        source.ExternalIds[EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName] = "sophos-tenant-id";
+        var target = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "42",
+            Name = "Canonical Halo Client Name",
+            PrimarySiteId = "99"
+        };
+        var options = new MatchOptions
+        {
+            SourceExternalIdName = EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName,
+            TargetCustomFieldName = EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName
+        };
+
+        var request = new DefaultEntityMapper().MapUpdate(source, target, options);
+
+        Assert.True(request.CustomFieldOnly);
+        Assert.Equal(target.Name, request.Name);
+        Assert.Null(request.PrimarySiteId);
+        Assert.Empty(request.Fields);
+        var customField = Assert.Single(request.CustomFields);
+        Assert.Equal(EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName, customField.Key);
+        Assert.Equal("sophos-tenant-id", customField.Value);
+    }
+
+    [Fact]
     public async Task AuthenticationErrorsRedactCredentials()
     {
         using var handler = new RecordingHandler((_, _) =>

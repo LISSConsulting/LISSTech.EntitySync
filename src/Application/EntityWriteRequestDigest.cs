@@ -8,7 +8,7 @@ namespace LISSTech.EntitySync.Application;
 
 public static class EntityWriteRequestDigest
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     public static string Compute(EntityWriteRequest request)
     {
@@ -21,6 +21,7 @@ public static class EntityWriteRequestDigest
             ["id"] = request.Id,
             ["primarySiteId"] = request.PrimarySiteId,
             ["name"] = request.Name,
+            ["customFieldOnly"] = request.CustomFieldOnly,
             ["fields"] = Canonicalize(request.Fields),
             ["customFields"] = Canonicalize(request.CustomFields)
         };

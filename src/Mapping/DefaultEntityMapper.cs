@@ -22,6 +22,20 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
     public EntityWriteRequest MapUpdate(ExternalEntity source, ExternalEntity target, MatchOptions options)
     {
         var targetVendor = EntitySyncVendors.Normalize(target.Vendor);
+        if (IsSophosCentralHaloLinkBack(source, target, targetVendor))
+        {
+            var linkRequest = new EntityWriteRequest
+            {
+                Vendor = targetVendor,
+                EntityType = target.EntityType,
+                Id = target.Id,
+                Name = target.Name,
+                CustomFieldOnly = true
+            };
+            AddTargetCustomField(linkRequest, source, targetVendor, options);
+            return linkRequest;
+        }
+
         var request = new EntityWriteRequest { Vendor = targetVendor, EntityType = target.EntityType, Id = target.Id, PrimarySiteId = target.PrimarySiteId, Name = source.Name };
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
@@ -31,6 +45,14 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         AddNCentralLinkMarker(request, source, targetVendor);
         AddLtacCustomerScopeFields(request, source, targetVendor);
         return request;
+    }
+
+    private static bool IsSophosCentralHaloLinkBack(ExternalEntity source, ExternalEntity target, string targetVendor)
+    {
+        return EntitySyncVendors.IsSophosCentral(source.Vendor)
+            && source.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)
+            && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && target.EntityType.Equals("Client", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddLtacCustomerScopeFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)

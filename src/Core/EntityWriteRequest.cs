@@ -7,6 +7,7 @@ public sealed class EntityWriteRequest
     public string? Id { get; set; }
     public string? PrimarySiteId { get; set; }
     public string Name { get; set; } = string.Empty;
+    public bool CustomFieldOnly { get; set; }
     public Dictionary<string, object?> Fields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string?> CustomFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

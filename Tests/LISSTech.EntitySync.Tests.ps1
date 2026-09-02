@@ -1155,6 +1155,48 @@ namespace EntitySyncTests
     }
   }
 
+  It 'Updates only the requested HaloPSA custom field for reverse-link writes' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":42}]')
+    )
+    $server.Start()
+    $options = New-TestHaloOptions -BaseUrl $server.BaseUrl
+    $options.AccountManagerEmail = 'manager@example.test'
+    $haloAdapter = New-TestHaloAdapter -Options $options
+
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.Vendor = 'HaloPSA'
+      $request.EntityType = 'Client'
+      $request.Id = '42'
+      $request.PrimarySiteId = '99'
+      $request.Name = 'Canonical Halo Client Name'
+      $request.CustomFieldOnly = $true
+      $request.Fields['phonenumber'] = '555-0101'
+      $request.CustomFields['CFSophosCentralTenantID'] = 'sophos-tenant-id'
+
+      $result = $haloAdapter.UpdateEntityAsync($request, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $server.Wait(1)
+
+      $result.Success | Should -BeTrue
+      $server.Requests.Count | Should -Be 1
+      $server.Requests[0] | Should -Match '^POST /api/client HTTP/1\.1'
+      $body = $server.Requests[0].Substring($server.Requests[0].IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      $body[0].id | Should -Be '42'
+      $body[0].name | Should -Be 'Canonical Halo Client Name'
+      $body[0].customfields.Count | Should -Be 1
+      $body[0].customfields[0].name | Should -Be 'CFSophosCentralTenantID'
+      $body[0].customfields[0].value | Should -Be 'sophos-tenant-id'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'toplevel_id'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'colour'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'phonenumber'
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
   It 'Reports NCentral connection test results as true after successful authenticate and validate' {
     $secretToken = 'ncentral-connection-ok-usertoken-5e6f7a8b'
     $authBody = '{"tokens":{"access":{"token":"derived-access-token-deadbeef","expirySeconds":3600}}}'

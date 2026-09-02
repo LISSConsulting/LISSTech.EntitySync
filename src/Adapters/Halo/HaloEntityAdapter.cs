@@ -579,6 +579,26 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdap
 
     public async Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
     {
+        if (request.CustomFieldOnly)
+        {
+            if (string.IsNullOrWhiteSpace(request.Id)) throw new InvalidOperationException("HaloPSA custom-field-only updates require a client ID.");
+            if (request.CustomFields.Count == 0) throw new InvalidOperationException("HaloPSA custom-field-only updates require at least one custom field.");
+
+            var customFieldBody = JsonSerializer.Serialize(new[] { ToHaloCustomFieldOnlyPayload(request) });
+            using var customFieldResponse = await PostJsonAsync("api/client", customFieldBody, cancellationToken).ConfigureAwait(false);
+            var customFieldText = await customFieldResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return new EntityWriteResult
+            {
+                Vendor = Vendor,
+                EntityType = request.EntityType,
+                Id = request.Id,
+                Action = "Update",
+                Success = customFieldResponse.IsSuccessStatusCode,
+                Message = customFieldResponse.IsSuccessStatusCode ? null : customFieldText,
+                Raw = customFieldText
+            };
+        }
+
         await AddConfiguredCustomFieldsAsync(request, cancellationToken).ConfigureAwait(false);
         var body = JsonSerializer.Serialize(new[] { await ToHaloClientPayloadAsync(request, true, false, cancellationToken).ConfigureAwait(false) });
         using var response = await PostJsonAsync("api/client", body, cancellationToken).ConfigureAwait(false);
@@ -991,6 +1011,18 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdap
         }
 
         return null;
+    }
+
+    private static Dictionary<string, object?> ToHaloCustomFieldOnlyPayload(EntityWriteRequest request)
+    {
+        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = request.Id,
+            ["name"] = request.Name,
+            ["customfields"] = request.CustomFields
+                .Select(field => new Dictionary<string, object?> { ["name"] = field.Key, ["value"] = field.Value })
+                .ToArray()
+        };
     }
 
     private async Task<Dictionary<string, object?>> ToHaloClientPayloadAsync(EntityWriteRequest request, bool includeId, bool isCreate, CancellationToken cancellationToken)
