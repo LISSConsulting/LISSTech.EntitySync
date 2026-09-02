@@ -274,7 +274,18 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["NETSUITE_TOKEN_SECRET"] = "test-token-secret",
             ["HALO_BASE_URL"] = "https://halo.example.test",
             ["HALO_CLIENT_ID"] = "test-client-id",
-            ["HALO_CLIENT_SECRET"] = "test-client-secret"
+            ["HALO_CLIENT_SECRET"] = "test-client-secret",
+            ["HALO_NCENTRAL_INTEGRATION_ID"] = "7",
+            ["NCENTRAL_BASE_URL"] = "https://ncentral.example.test",
+            ["NCENTRAL_USER_API_TOKEN"] = "test-ncentral-token",
+            ["NCENTRAL_SERVICE_ORG_ID"] = "test-service-org",
+            ["NCENTRAL_SOAP_USERNAME"] = "test-soap-user",
+            ["NCENTRAL_SOAP_PASSWORD"] = "test-soap-password",
+            ["BILLCOM_BASE_URL"] = "https://bill.example.test",
+            ["BILLCOM_API_TOKEN"] = "test-bill-token",
+            ["BILLCOM_CLIENT_FIELD_NAME"] = "Client",
+            ["SOPHOS_CENTRAL_CLIENT_ID"] = "test-sophos-client-id",
+            ["SOPHOS_CENTRAL_CLIENT_SECRET"] = "test-sophos-client-secret"
         };
 
     private readonly Dictionary<string, string?> originalValues;

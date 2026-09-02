@@ -1,4 +1,6 @@
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
+using System.Text;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Hosting;
@@ -16,6 +18,7 @@ public interface IEntitySyncScheduledRun
 public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
 {
     private const int InspectionPageSize = 100;
+    private readonly EntitySyncSchedulerOptions options;
     private readonly IEntitySyncSchedulerRunLock runLock;
     private readonly IServerManagedEntityAdapterFactory adapterFactory;
     private readonly IEntityConnectionRepository connections;
@@ -37,6 +40,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         ILogger<EntitySyncScheduledRun>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        this.options = options;
         this.runLock = runLock ?? throw new ArgumentNullException(nameof(runLock));
         this.adapterFactory = adapterFactory ?? throw new ArgumentNullException(nameof(adapterFactory));
         this.connections = connections ?? throw new ArgumentNullException(nameof(connections));
@@ -52,15 +56,25 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         var startedAt = timeProvider.GetUtcNow();
         string? planId = null;
         var aggregate = PlanAggregate.Empty;
-        ApplyAggregate? progress = null;
+        var progress = ApplyAggregate.Empty;
         var stage = RunStage.AcquireLock;
         status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
 
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var changeStateScope = adapterFactory.GetNetSuiteHaloChangeStateScope();
-            var routeKey = $"{EntitySyncSchedulerOptions.TenantId}|{changeStateScope}";
+            var scopedRoutes = options.Routes
+                .Select(route => new ScopedRoute(
+                    route,
+                    adapterFactory.GetChangeStateScope(
+                        route.SourceVendor,
+                        route.SourceConnectionId,
+                        route.SourceEntityType,
+                        route.TargetVendor,
+                        route.TargetConnectionId,
+                        route.TargetEntityType)))
+                .ToArray();
+            var routeKey = $"{EntitySyncSchedulerOptions.TenantId}|{ChainLockScope(scopedRoutes)}";
             var acquiredLease = await runLock
                 .TryAcquireAsync(routeKey, cancellationToken)
                 .ConfigureAwait(false);
@@ -72,7 +86,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     timeProvider.GetUtcNow(),
                     null,
                     PlanAggregate.Empty,
-                    null,
+                    ApplyAggregate.Empty,
                     null);
                 status.Publish(skipped);
                 return skipped;
@@ -82,81 +96,113 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 cancellationToken,
                 logger);
 
-
             stage = RunStage.VendorConnections;
-            var source = await RegisterFreshAdapterAsync(
-                EntitySyncSchedulerOptions.SourceVendor,
-                EntitySyncSchedulerOptions.SourceConnectionId,
-                cancellationToken).ConfigureAwait(false);
-            var target = await RegisterFreshAdapterAsync(
-                EntitySyncSchedulerOptions.TargetVendor,
-                EntitySyncSchedulerOptions.TargetConnectionId,
-                cancellationToken).ConfigureAwait(false);
-            var sourceProbe = await ProbeConnectionAsync(source.Adapter, cancellationToken).ConfigureAwait(false);
-            var targetProbe = await ProbeConnectionAsync(target.Adapter, cancellationToken).ConfigureAwait(false);
-            var probeException = sourceProbe.Exception ?? targetProbe.Exception;
+            var registrations = new List<EntityConnectionRegistration>();
+            var endpoints = options.Routes
+                .SelectMany(route => new[]
+                {
+                    new ConnectionEndpoint(route.SourceVendor, route.SourceConnectionId),
+                    new ConnectionEndpoint(route.TargetVendor, route.TargetConnectionId)
+                })
+                .DistinctBy(
+                    endpoint => $"{EntitySyncVendors.Normalize(endpoint.Vendor)}|{endpoint.ConnectionId}",
+                    StringComparer.OrdinalIgnoreCase);
+            foreach (var endpoint in endpoints)
+            {
+                registrations.Add(await RegisterFreshAdapterAsync(
+                    endpoint.Vendor,
+                    endpoint.ConnectionId,
+                    cancellationToken).ConfigureAwait(false));
+            }
+
+            var probes = new List<ConnectionProbe>(registrations.Count);
+            foreach (var registration in registrations)
+            {
+                probes.Add(await ProbeConnectionAsync(registration.Adapter, cancellationToken).ConfigureAwait(false));
+            }
+            var probeException = probes.Select(probe => probe.Exception).FirstOrDefault(exception => exception is not null);
             if (probeException is not null)
                 ExceptionDispatchInfo.Capture(probeException).Throw();
-            if (!sourceProbe.Connected || !targetProbe.Connected)
+            if (probes.Any(probe => !probe.Connected))
                 throw new InvalidOperationException("A scheduled vendor connection test failed.");
 
-            stage = RunStage.Planning;
-            var createdPlan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+            foreach (var scopedRoute in scopedRoutes)
             {
-                TenantId = EntitySyncSchedulerOptions.TenantId,
-                SourceVendor = EntitySyncSchedulerOptions.SourceVendor,
-                SourceConnectionId = EntitySyncSchedulerOptions.SourceConnectionId,
-                SourceEntityType = EntitySyncSchedulerOptions.SourceEntityType,
-                TargetVendor = EntitySyncSchedulerOptions.TargetVendor,
-                TargetConnectionId = EntitySyncSchedulerOptions.TargetConnectionId,
-                TargetEntityType = EntitySyncSchedulerOptions.TargetEntityType,
-                IncludeInactive = true,
-                CreateMissing = false,
-                UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
-                ChangeStateScope = changeStateScope
-            }, cancellationToken).ConfigureAwait(false);
-            planId = createdPlan.Id;
-
-            stage = RunStage.PlanValidation;
-            var inspectedDigest = InspectEveryPage(planId);
-            var snapshot = plans.Get(EntitySyncSchedulerOptions.TenantId, planId);
-            ValidateFixedRoute(snapshot, changeStateScope);
-            if (!EntitySyncPlanDigest.Compute(snapshot).Equals(inspectedDigest, StringComparison.Ordinal))
-                throw new InvalidOperationException("The plan changed after inspection.");
-            aggregate = ValidateAndAggregate(snapshot);
-            status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, null, null));
-
-            stage = RunStage.Approval;
-            var approvedDigest = service.ApprovePlan(
-                EntitySyncSchedulerOptions.TenantId,
-                planId,
-                inspectedDigest);
-            if (!approvedDigest.Equals(inspectedDigest, StringComparison.Ordinal))
-                throw new InvalidOperationException("The approved digest did not exactly match the inspected digest.");
-
-            stage = RunStage.Apply;
-            var applyResult = await service.ApplyAsync(
-                EntitySyncSchedulerOptions.TenantId,
-                planId,
-                apply: true,
-                cancellationToken,
-                update =>
+                var route = scopedRoute.Route;
+                stage = RunStage.Planning;
+                var createdPlan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
                 {
-                    progress = new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped);
-                    status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
-                }).ConfigureAwait(false);
+                    TenantId = EntitySyncSchedulerOptions.TenantId,
+                    SourceVendor = route.SourceVendor,
+                    SourceConnectionId = route.SourceConnectionId,
+                    SourceEntityType = route.SourceEntityType,
+                    TargetVendor = route.TargetVendor,
+                    TargetConnectionId = route.TargetConnectionId,
+                    TargetEntityType = route.TargetEntityType,
+                    IncludeInactive = true,
+                    CreateMissing = false,
+                    SourceExternalIdName = route.SourceExternalIdName,
+                    UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+                    ChangeStateScope = scopedRoute.ChangeStateScope
+                }, cancellationToken).ConfigureAwait(false);
+                planId = createdPlan.Id;
+
+                stage = RunStage.PlanValidation;
+                var inspectedDigest = InspectEveryPage(planId);
+                var snapshot = plans.Get(EntitySyncSchedulerOptions.TenantId, planId);
+                ValidateScheduledRoute(snapshot, route, scopedRoute.ChangeStateScope);
+                if (!EntitySyncPlanDigest.Compute(snapshot).Equals(inspectedDigest, StringComparison.Ordinal))
+                    throw new InvalidOperationException("The plan changed after inspection.");
+                aggregate = aggregate.Add(ValidateAndAggregate(snapshot));
+                status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+
+                stage = RunStage.Approval;
+                var approvedDigest = service.ApprovePlan(
+                    EntitySyncSchedulerOptions.TenantId,
+                    planId,
+                    inspectedDigest);
+                if (!approvedDigest.Equals(inspectedDigest, StringComparison.Ordinal))
+                    throw new InvalidOperationException("The approved digest did not exactly match the inspected digest.");
+
+                stage = RunStage.Apply;
+                var completedProgress = progress;
+                var applyResult = await service.ApplyAsync(
+                    EntitySyncSchedulerOptions.TenantId,
+                    planId,
+                    apply: true,
+                    cancellationToken,
+                    update =>
+                    {
+                        progress = completedProgress.Add(new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped));
+                        status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+                    }).ConfigureAwait(false);
+                progress = completedProgress.Add(new ApplyAggregate(
+                    applyResult.Succeeded,
+                    applyResult.Failed,
+                    applyResult.Skipped));
+                if (!applyResult.Success)
+                {
+                    var failedApply = CreateStatus(
+                        "Failed",
+                        startedAt,
+                        timeProvider.GetUtcNow(),
+                        planId,
+                        aggregate,
+                        progress,
+                        "Synchronization apply completed with failures.");
+                    status.Publish(failedApply);
+                    return failedApply;
+                }
+            }
 
             var terminal = CreateStatus(
-                applyResult.Success ? "Applied" : "Failed",
+                "Applied",
                 startedAt,
                 timeProvider.GetUtcNow(),
                 planId,
                 aggregate,
-                new ApplyAggregate(
-                    applyResult.Succeeded,
-                    applyResult.Failed,
-                    applyResult.Skipped),
-                applyResult.Success ? null : "Synchronization apply completed with failures.");
+                progress,
+                null);
             status.Publish(terminal);
             return terminal;
         }
@@ -280,20 +326,23 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         return stableDigest;
     }
 
-    private static void ValidateFixedRoute(EntitySyncPlan plan, string changeStateScope)
+    private static void ValidateScheduledRoute(
+        EntitySyncPlan plan,
+        EntitySyncSchedulerRoute route,
+        string changeStateScope)
     {
         if (!plan.TenantId.Equals(EntitySyncSchedulerOptions.TenantId, StringComparison.Ordinal)
-            || !plan.SourceVendor.Equals(EntitySyncSchedulerOptions.SourceVendor, StringComparison.OrdinalIgnoreCase)
-            || !plan.SourceEntityType.Equals(EntitySyncSchedulerOptions.SourceEntityType, StringComparison.OrdinalIgnoreCase)
-            || !plan.TargetVendor.Equals(EntitySyncSchedulerOptions.TargetVendor, StringComparison.OrdinalIgnoreCase)
-            || !plan.TargetEntityType.Equals(EntitySyncSchedulerOptions.TargetEntityType, StringComparison.OrdinalIgnoreCase)
-            || !plan.Execution.SourceConnectionId.Equals(EntitySyncSchedulerOptions.SourceConnectionId, StringComparison.Ordinal)
-            || !plan.Execution.TargetConnectionId.Equals(EntitySyncSchedulerOptions.TargetConnectionId, StringComparison.Ordinal)
+            || !plan.SourceVendor.Equals(route.SourceVendor, StringComparison.OrdinalIgnoreCase)
+            || !plan.SourceEntityType.Equals(route.SourceEntityType, StringComparison.OrdinalIgnoreCase)
+            || !plan.TargetVendor.Equals(route.TargetVendor, StringComparison.OrdinalIgnoreCase)
+            || !plan.TargetEntityType.Equals(route.TargetEntityType, StringComparison.OrdinalIgnoreCase)
+            || !plan.Execution.SourceConnectionId.Equals(route.SourceConnectionId, StringComparison.Ordinal)
+            || !plan.Execution.TargetConnectionId.Equals(route.TargetConnectionId, StringComparison.Ordinal)
             || plan.Execution.MatchOptions.CreateMissing
             || plan.Execution.UpdatePolicy != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly
             || !string.Equals(plan.Execution.ChangeStateScope, changeStateScope, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("The plan does not match the fixed scheduled route.");
+            throw new InvalidOperationException("The plan does not match its scheduled chain route.");
         }
     }
 
@@ -329,6 +378,16 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
     private static bool IsLowercaseSha256(string? value) =>
         value is { Length: 64 }
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string ChainLockScope(IReadOnlyList<ScopedRoute> routes)
+    {
+        if (routes.Count == 1) return routes[0].ChangeStateScope;
+        var canonical = string.Join(
+            "|",
+            routes.Select(route =>
+                $"{route.Route.SourceVendor}>{route.Route.TargetVendor}:{route.ChangeStateScope}"));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
 
     private static EntitySyncSchedulerStatusSnapshot CreateStatus(
         string state,
@@ -394,11 +453,29 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
     }
 
     private sealed record ConnectionProbe(bool Connected, Exception? Exception);
+    private sealed record ConnectionEndpoint(string Vendor, string ConnectionId);
 
-    private sealed record ApplyAggregate(int Succeeded, int Failed, int Skipped);
+    private sealed record ScopedRoute(EntitySyncSchedulerRoute Route, string ChangeStateScope);
+
+
+    private sealed record ApplyAggregate(int Succeeded, int Failed, int Skipped)
+    {
+        public static ApplyAggregate Empty { get; } = new(0, 0, 0);
+
+        public ApplyAggregate Add(ApplyAggregate other) => new(
+            Succeeded + other.Succeeded,
+            Failed + other.Failed,
+            Skipped + other.Skipped);
+    }
 
     private sealed record PlanAggregate(int Total, int Changed, int Unchanged, int PolicySkipped)
     {
         public static PlanAggregate Empty { get; } = new(0, 0, 0, 0);
+
+        public PlanAggregate Add(PlanAggregate other) => new(
+            Total + other.Total,
+            Changed + other.Changed,
+            Unchanged + other.Unchanged,
+            PolicySkipped + other.PolicySkipped);
     }
 }

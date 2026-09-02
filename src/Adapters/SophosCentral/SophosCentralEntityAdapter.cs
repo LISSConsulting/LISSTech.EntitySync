@@ -8,8 +8,8 @@ namespace LISSTech.EntitySync.Adapters.SophosCentral;
 
 public sealed class SophosCentralEntityAdapter : IEntityAdapter, IDisposable
 {
-    public const string TenantExternalIdName = "SophosCentralTenantId";
-    public const string HaloTenantCustomFieldName = "CFSophosCentralTenantID";
+    public const string TenantExternalIdName = EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName;
+    public const string HaloTenantCustomFieldName = EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName;
     private const int MaximumPagesPerQuery = 1000;
     private const int MaximumPageSize = 100;
 

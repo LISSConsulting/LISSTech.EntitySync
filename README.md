@@ -400,11 +400,11 @@ The intended workflow is **inspect → plan → review → dry run → apply**. 
 
 ---
 
-## 🌐 MCP Server & Changed-Only Scheduler
+## 🌐 MCP Server & Full-Chain Changed-Only Scheduler
 
 `mcp/` is a first-class MCP host for the same adapters, canonical model, matcher, plans, and guarded apply path used by the PowerShell module. Local clients use stdio by default. Container deployments use authenticated Streamable HTTP at `/mcp` and expose `/health` for orchestration.
 
-`scheduler/` is an internal-only sidecar for the fixed NetSuite Customer → HaloPSA Client route. It reconciles immediately at startup and then 12 hours after each completion, includes active and inactive customers, updates already-linked Halo clients only, and never creates targets. PostgreSQL holds successful desired-state hashes and the advisory route lock. The first run establishes the baseline by updating linked clients; later runs skip identical mapped writes. Digest schema changes force reconciliation, but manual Halo drift alone is not detected because the scheduler compares mapped desired state with its last successful checkpoint rather than reading back every Halo field. Failures do not trigger immediate retries and do not make `/health` unhealthy.
+`scheduler/` is an internal-only sidecar for the ordered NetSuite Customer → HaloPSA Client → N-central Customer, BILL.com Client, and Sophos Central Customer chain. It reconciles immediately at startup and then 12 hours after each completion. Every edge includes active and inactive sources but updates persistently linked targets only: it does not create unmatched records, establish fuzzy links, or delete orphan BILL.com values. A linked BILL.com rename still uses BILL.com's required replacement flow—create the renamed value, write its ID back to HaloPSA, then delete the old value. PostgreSQL holds successful desired-state hashes for each edge and one advisory lock for the complete chain. The first run establishes each edge's baseline; later runs skip identical mapped writes. Edges execute in order, and any failed edge stops the remaining downstream work. Failures do not trigger immediate retries or make `/health` unhealthy.
 
 ```powershell
 just mcp-build       # self-contained local MCP binary
@@ -413,7 +413,7 @@ just scheduler-build # self-contained local scheduler binary
 just scheduler-run   # internal HTTP scheduler
 ```
 
-The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure an OAuth authorization server for MCP, set the required shared PostgreSQL/Logfire/NetSuite/Halo variables plus a high-entropy `SCHEDULER_RUN_TOKEN`, and map a domain only to `entitysync-mcp` port `8080`. Do not publish or route `entitysync-scheduler`; its unauthenticated `/health`, bounded aggregate `/status`, and bearer-authenticated `POST /run` endpoints remain private to the Compose network.
+The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure an OAuth authorization server for MCP; set the required shared PostgreSQL, Logfire, NetSuite, HaloPSA, N-central, BILL.com, and Sophos Central variables plus a high-entropy `SCHEDULER_RUN_TOKEN`; and map a domain only to `entitysync-mcp` port `8080`. Do not publish or route `entitysync-scheduler`; its unauthenticated `/health`, bounded aggregate `/status`, and bearer-authenticated `POST /run` endpoints remain private to the Compose network.
 
 See [`mcp/README.md`](mcp/README.md) for the exact Coolify procedure, scheduler status allowlist, security controls, variables, transports, and operational constraints.
 

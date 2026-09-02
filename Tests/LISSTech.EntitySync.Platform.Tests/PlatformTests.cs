@@ -98,9 +98,9 @@ public sealed class PlatformTests
         var factory = new ServerManagedEntityAdapterFactory(
             FactorySettings("test-account", "https://halo.example.test", "net-suite-secret", "halo-secret"));
 
-        factory.ValidateNetSuiteHaloFixedRouteConfiguration();
+        factory.ValidateConfiguration(["NetSuite", "HaloPSA"]);
 
-        Assert.Equal(64, factory.GetNetSuiteHaloChangeStateScope().Length);
+        Assert.Equal(64, NetSuiteHaloScope(factory).Length);
     }
 
     [Theory]
@@ -123,7 +123,7 @@ public sealed class PlatformTests
         var factory = new ServerManagedEntityAdapterFactory(settings);
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+            () => factory.ValidateConfiguration(["NetSuite", "HaloPSA"]));
 
         Assert.Contains(variableName, error.Message, StringComparison.Ordinal);
     }
@@ -137,7 +137,7 @@ public sealed class PlatformTests
             FactorySettings("test-account", haloUrl, "net-suite-secret", "halo-secret"));
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+            () => factory.ValidateConfiguration(["NetSuite", "HaloPSA"]));
 
         Assert.Contains("HTTPS", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -211,19 +211,19 @@ public sealed class PlatformTests
         var uppercaseAccount = new ServerManagedEntityAdapterFactory(
             FactorySettings(" ACCOUNT_SB1 ", "https://halo.example.test", "two", "halo-two"));
 
-        var scope = first.GetNetSuiteHaloChangeStateScope();
+        var scope = NetSuiteHaloScope(first);
 
         Assert.Equal(64, scope.Length);
         Assert.Matches("^[0-9a-f]{64}$", scope);
         Assert.Equal(
-            "648271df174a8ff29e5a10e3afdc35f58691542a83ef8bf20ae06c11f605f368",
+            "b0e71ffa748c0fd1b34c32e9999c664e063869019d1eb3f6c526bd10d3b52f69",
             scope);
-        Assert.Equal(scope, rotated.GetNetSuiteHaloChangeStateScope());
+        Assert.Equal(scope, NetSuiteHaloScope(rotated));
         Assert.Equal(
-            lowercaseAccount.GetNetSuiteHaloChangeStateScope(),
-            uppercaseAccount.GetNetSuiteHaloChangeStateScope());
-        Assert.NotEqual(scope, movedNetSuite.GetNetSuiteHaloChangeStateScope());
-        Assert.NotEqual(scope, movedHalo.GetNetSuiteHaloChangeStateScope());
+            NetSuiteHaloScope(lowercaseAccount),
+            NetSuiteHaloScope(uppercaseAccount));
+        Assert.NotEqual(scope, NetSuiteHaloScope(movedNetSuite));
+        Assert.NotEqual(scope, NetSuiteHaloScope(movedHalo));
         Assert.DoesNotContain("123", scope, StringComparison.Ordinal);
         Assert.DoesNotContain("halo.example.test", scope, StringComparison.Ordinal);
     }
@@ -238,7 +238,7 @@ public sealed class PlatformTests
             FactorySettings("123", haloUrl, "netsuite-secret", "halo-secret"));
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.GetNetSuiteHaloChangeStateScope);
+            () => NetSuiteHaloScope(factory));
 
         Assert.Contains("identity", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("route-secret", error.ToString(), StringComparison.Ordinal);
@@ -1591,11 +1591,17 @@ public sealed class PlatformTests
             return Task.FromResult<IEntityAdapter>(adapter);
         }
 
-        public void ValidateNetSuiteHaloFixedRouteConfiguration()
+        public void ValidateConfiguration(IEnumerable<string> vendors)
         {
         }
 
-        public string GetNetSuiteHaloChangeStateScope() => "unused";
+        public string GetChangeStateScope(
+            string sourceVendor,
+            string sourceConnectionId,
+            string sourceEntityType,
+            string targetVendor,
+            string targetConnectionId,
+            string targetEntityType) => "unused";
     }
 
     private sealed class FakeAdapter(
@@ -1692,10 +1698,19 @@ public sealed class PlatformTests
             return Task.FromResult(new EntityWriteResult { Success = true, Message = "Batch applied." });
         }
 
+
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
 
         public void Dispose() => Disposed = true;
     }
+    private static string NetSuiteHaloScope(IServerManagedEntityAdapterFactory factory) =>
+        factory.GetChangeStateScope(
+            "NetSuite",
+            "netsuite",
+            "Customer",
+            "HaloPSA",
+            "halopsa",
+            "Client");
 
     private static Dictionary<string, string?> FactorySettings(
         string account,
@@ -1711,9 +1726,16 @@ public sealed class PlatformTests
         ["HALO_BASE_URL"] = haloUrl,
         ["HALO_CLIENT_ID"] = "halo-client-id",
         ["HALO_CLIENT_SECRET"] = haloSecret,
+        ["HALO_NCENTRAL_INTEGRATION_ID"] = "7",
         ["NCENTRAL_BASE_URL"] = "https://ncentral.example.test",
         ["NCENTRAL_USER_API_TOKEN"] = "ncentral-token",
         ["NCENTRAL_SERVICE_ORG_ID"] = "service-org",
-        ["BILLCOM_API_TOKEN"] = "bill-token"
+        ["NCENTRAL_SOAP_USERNAME"] = "soap-user",
+        ["NCENTRAL_SOAP_PASSWORD"] = "soap-password",
+        ["BILLCOM_BASE_URL"] = "https://bill.example.test",
+        ["BILLCOM_API_TOKEN"] = "bill-token",
+        ["BILLCOM_CLIENT_FIELD_NAME"] = "Client",
+        ["SOPHOS_CENTRAL_CLIENT_ID"] = "sophos-client-id",
+        ["SOPHOS_CENTRAL_CLIENT_SECRET"] = "sophos-client-secret"
     };
 }

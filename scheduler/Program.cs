@@ -48,9 +48,20 @@ namespace LISSTech.EntitySync.Scheduler
                 services => services.GetRequiredService<EntitySyncSchedulerWorker>());
 
             var app = builder.Build();
-            app.Services
-                .GetRequiredService<IServerManagedEntityAdapterFactory>()
-                .ValidateNetSuiteHaloFixedRouteConfiguration();
+            var schedulerOptions = app.Services.GetRequiredService<EntitySyncSchedulerOptions>();
+            var adapterFactory = app.Services.GetRequiredService<IServerManagedEntityAdapterFactory>();
+            adapterFactory.ValidateConfiguration(
+                schedulerOptions.Routes.SelectMany(route => new[] { route.SourceVendor, route.TargetVendor }));
+            foreach (var route in schedulerOptions.Routes)
+            {
+                _ = adapterFactory.GetChangeStateScope(
+                    route.SourceVendor,
+                    route.SourceConnectionId,
+                    route.SourceEntityType,
+                    route.TargetVendor,
+                    route.TargetConnectionId,
+                    route.TargetEntityType);
+            }
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);

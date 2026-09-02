@@ -32,6 +32,39 @@ public sealed class EntitySyncSchedulerTests
     }
 
     [Fact]
+    public async Task DefaultScheduleRunsNetSuiteThroughHaloToEveryLeafAndThenSkipsIdenticalState()
+    {
+        using var fixture = SchedulerFixture.FullChainLinkedSources(1);
+
+        var first = await fixture.Run.RunAsync(default);
+        var second = await fixture.Run.RunAsync(default);
+
+        Assert.Equal("Applied", first.State);
+        Assert.Equal(4, first.Total);
+        Assert.Equal(4, first.Changed);
+        Assert.Equal(4, first.Succeeded);
+        Assert.Equal(
+            ["HaloPSA", "NCentral", "Bill.com", "HaloPSA", "Sophos Central"],
+            fixture.Factory.UpdatedVendors);
+        Assert.Equal("Applied", second.State);
+        Assert.Equal(4, second.Total);
+        Assert.Equal(4, second.Unchanged);
+        Assert.Equal(4, second.ApplySkipped);
+        Assert.Equal(5, fixture.Factory.UpdateCalls);
+        Assert.Equal(10, fixture.Factory.CreateCalls);
+        Assert.All(fixture.Factory.Adapters, adapter => Assert.Equal(1, adapter.TestCalls));
+        Assert.Contains(
+            fixture.Factory.Queries,
+            call => call.Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+                && call.Query.RequiredCustomFieldName == EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName);
+        Assert.Contains(
+            fixture.Factory.Queries,
+            call => call.Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+                && call.Query.RequiredCustomFieldName == EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName);
+    }
+
+
+    [Fact]
     public async Task OneMappedSourceChangeUpdatesOnlyThatSource()
     {
         using var fixture = SchedulerFixture.LinkedSources(2);
@@ -135,7 +168,7 @@ public sealed class EntitySyncSchedulerTests
             states,
             TimeProvider.System);
         var run = new EntitySyncScheduledRun(
-            new EntitySyncSchedulerOptions(),
+            new EntitySyncSchedulerOptions([EntitySyncSchedulerOptions.NetSuiteToHalo]),
             new FakeRunLock(true),
             factory,
             connections,
@@ -534,11 +567,32 @@ public sealed class EntitySyncSchedulerTests
         private readonly InMemoryEntityConnectionRepository connections = new();
         private bool disposed;
 
-        private SchedulerFixture(int count, bool lockAvailable, bool throwOnLockDispose)
+        private SchedulerFixture(int count, bool lockAvailable, bool throwOnLockDispose, bool fullChain = false)
         {
             Sources = Enumerable.Range(1, count).Select(index => Source(index.ToString(), $"Source {index}")).ToList();
             Targets = Enumerable.Range(1, count).Select(index => LinkedTarget($"target-{index}", index.ToString(), $"Target {index}")).ToList();
-            Factory = new RecordingAdapterFactory(Sources, Targets);
+            IReadOnlyDictionary<string, IReadOnlyList<ExternalEntity>>? entitiesByVendor = null;
+            if (fullChain)
+            {
+                foreach (var (target, index) in Targets.Select((target, index) => (target, index + 1)))
+                {
+                    target.ExternalIds["NCentralCustomerId"] = $"ncentral-{index}";
+                    target.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = $"bill-{index}";
+                    target.ExternalIds[EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName] = $"sophos-{index}";
+                }
+                entitiesByVendor = new Dictionary<string, IReadOnlyList<ExternalEntity>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["NetSuite"] = Sources,
+                    ["HaloPSA"] = Targets,
+                    ["NCentral"] = Enumerable.Range(1, count).Select(index => LeafTarget("NCentral", "Customer", $"ncentral-{index}", "NCentralCustomerId")).ToArray(),
+                    ["Bill.com"] = Enumerable.Range(1, count)
+                        .Select(index => LeafTarget("Bill.com", "Client", $"bill-{index}", EntitySyncIntegrationContracts.BillComClientExternalIdName))
+                        .Append(LeafTarget("Bill.com", "Client", "bill-orphan", EntitySyncIntegrationContracts.BillComClientExternalIdName))
+                        .ToArray(),
+                    ["Sophos Central"] = Enumerable.Range(1, count).Select(index => LeafTarget("Sophos Central", "Customer", $"sophos-{index}", EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName)).ToArray()
+                };
+            }
+            Factory = new RecordingAdapterFactory(Sources, Targets, entitiesByVendor);
             RunLock = new FakeRunLock(lockAvailable, throwOnLockDispose);
             Plans = new RecordingPlanRepository(new InMemoryEntitySyncPlanRepository());
             ChangeStates = new InMemoryEntitySyncChangeStateRepository();
@@ -560,7 +614,9 @@ public sealed class EntitySyncSchedulerTests
             Status = new EntitySyncSchedulerStatus();
             Logger = new RecordingLogger<EntitySyncScheduledRun>();
             Run = new EntitySyncScheduledRun(
-                new EntitySyncSchedulerOptions(),
+                fullChain
+                    ? new EntitySyncSchedulerOptions()
+                    : new EntitySyncSchedulerOptions([EntitySyncSchedulerOptions.NetSuiteToHalo]),
                 RunLock,
                 Factory,
                 connections,
@@ -596,6 +652,9 @@ public sealed class EntitySyncSchedulerTests
             bool throwOnLockDispose = false) =>
             new(count, lockAvailable, throwOnLockDispose);
 
+        public static SchedulerFixture FullChainLinkedSources(int count) =>
+            new(count, lockAvailable: true, throwOnLockDispose: false, fullChain: true);
+
         public void Dispose()
         {
             if (disposed) return;
@@ -621,11 +680,25 @@ public sealed class EntitySyncSchedulerTests
             Name = name,
             CustomFields = { ["CFNetSuiteCustomerID"] = sourceId }
         };
+
+        private static ExternalEntity LeafTarget(
+            string vendor,
+            string entityType,
+            string id,
+            string externalIdName) => new()
+        {
+            Vendor = vendor,
+            EntityType = entityType,
+            Id = id,
+            Name = $"Target {id[(id.LastIndexOf('-') + 1)..]}",
+            ExternalIds = { [externalIdName] = id }
+        };
     }
 
     private sealed class RecordingAdapterFactory(
         IReadOnlyList<ExternalEntity> sources,
-        IReadOnlyList<ExternalEntity> targets) : IServerManagedEntityAdapterFactory
+        IReadOnlyList<ExternalEntity> targets,
+        IReadOnlyDictionary<string, IReadOnlyList<ExternalEntity>>? entitiesByVendor = null) : IServerManagedEntityAdapterFactory
     {
         private int updateCalls;
 
@@ -636,6 +709,8 @@ public sealed class EntitySyncSchedulerTests
         public Exception? CreationException { get; set; }
         public Func<int, CancellationToken, Task<EntityWriteResult>>? UpdateBehavior { get; set; }
         public List<TestAdapter> Adapters { get; } = [];
+        public List<string> UpdatedVendors { get; } = [];
+        public List<(string Vendor, EntityQuery Query)> Queries { get; } = [];
         public List<EntityQuery> SourceQueries { get; } = [];
 
         public Task<IEntityAdapter> CreateAsync(
@@ -647,23 +722,25 @@ public sealed class EntitySyncSchedulerTests
             CreateCalls++;
             if (CreationException is not null) throw CreationException;
             var normalized = EntitySyncVendors.Normalize(vendor);
-            var entities = normalized.Equals("NetSuite", StringComparison.OrdinalIgnoreCase) ? sources : targets;
+            var entities = entitiesByVendor?.GetValueOrDefault(normalized)
+                ?? (normalized.Equals("NetSuite", StringComparison.OrdinalIgnoreCase) ? sources : targets);
             var adapter = new TestAdapter(
                 normalized,
                 entities,
                 query =>
                 {
+                    Queries.Add((normalized, query));
                     if (normalized.Equals("NetSuite", StringComparison.OrdinalIgnoreCase)) SourceQueries.Add(query);
                 },
                 token =>
                 {
                     var call = Interlocked.Increment(ref updateCalls);
+                    UpdatedVendors.Add(normalized);
                     return UpdateBehavior?.Invoke(call, token)
                         ?? Task.FromResult(new EntityWriteResult
                         {
-                            Vendor = "HaloPSA",
-                            EntityType = "Client",
-                            Id = call.ToString(),
+                            Vendor = normalized,
+                            EntityType = normalized.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) ? "Client" : "Customer",
                             Action = "Update",
                             Success = true,
                             Message = "updated"
@@ -679,11 +756,17 @@ public sealed class EntitySyncSchedulerTests
             return Task.FromResult<IEntityAdapter>(adapter);
         }
 
-        public void ValidateNetSuiteHaloFixedRouteConfiguration()
+        public void ValidateConfiguration(IEnumerable<string> vendors)
         {
         }
 
-        public string GetNetSuiteHaloChangeStateScope() => SchedulerFixture.Scope;
+        public string GetChangeStateScope(
+            string sourceVendor,
+            string sourceConnectionId,
+            string sourceEntityType,
+            string targetVendor,
+            string targetConnectionId,
+            string targetEntityType) => SchedulerFixture.Scope;
     }
 
     private sealed class TestAdapter(
@@ -691,7 +774,7 @@ public sealed class EntitySyncSchedulerTests
         IReadOnlyList<ExternalEntity> entities,
         Action<EntityQuery> recordQuery,
         Func<CancellationToken, Task<EntityWriteResult>> update,
-        Func<bool> connectionTest) : IEntityAdapter, IDisposable
+        Func<bool> connectionTest) : IEntityAdapter, IHaloSourceWritebackAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
@@ -718,6 +801,38 @@ public sealed class EntitySyncSchedulerTests
 
         public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken) =>
             update(cancellationToken);
+
+        public Task<EntityWriteResult> UpsertNCentralClientLinkAsync(
+            string haloClientId,
+            string haloClientName,
+            string nCentralCustomerId,
+            string nCentralCustomerName,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new EntityWriteResult
+            {
+                Vendor = "HaloPSA",
+                EntityType = "NCentralIntegrationLink",
+                Id = nCentralCustomerId,
+                Action = "ClientLink",
+                Success = true
+            });
+
+        public Task<EntityWriteResult> UpsertNCentralSiteLinkAsync(
+            string haloSiteId,
+            string haloSiteName,
+            string haloClientName,
+            string nCentralSiteId,
+            string nCentralSiteName,
+            string nCentralCustomerId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new EntityWriteResult
+            {
+                Vendor = "HaloPSA",
+                EntityType = "NCentralIntegrationLink",
+                Id = nCentralSiteId,
+                Action = "SiteLink",
+                Success = true
+            });
 
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
         {

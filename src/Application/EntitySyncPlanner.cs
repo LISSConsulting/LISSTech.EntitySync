@@ -62,7 +62,7 @@ public sealed class EntitySyncPlanner(
             IncludeInactive = request.IncludeInactive,
             Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1,
             FullObjects = authoritativeBillSnapshot,
-            RequiredCustomFieldName = authoritativeBillSnapshot ? EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName : null
+            RequiredCustomFieldName = RequiredSourceCustomFieldName(sourceVendor, targetVendor, authoritativeBillSnapshot)
         };
         var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
@@ -367,16 +367,30 @@ public sealed class EntitySyncPlanner(
     private static string DefaultEntityType(string vendor) => vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(vendor) ? "Client" : "Customer";
     private static string DefaultExternalIdName(string vendor)
     {
-        if (EntitySyncVendors.IsBillCom(vendor)) return "BillSpendClientId";
-        return EntitySyncVendors.IsSophosCentral(vendor) ? "SophosCentralTenantId" : "NetSuiteInternalId";
+        if (EntitySyncVendors.IsBillCom(vendor)) return EntitySyncIntegrationContracts.BillComClientExternalIdName;
+        return EntitySyncVendors.IsSophosCentral(vendor)
+            ? EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName
+            : "NetSuiteInternalId";
+    }
+
+    private static string? RequiredSourceCustomFieldName(
+        string sourceVendor,
+        string targetVendor,
+        bool authoritativeBillSnapshot)
+    {
+        if (authoritativeBillSnapshot) return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+        return sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && EntitySyncVendors.IsSophosCentral(targetVendor)
+                ? EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName
+                : null;
     }
 
     private static string DefaultCustomFieldName(string sourceVendor, string targetVendor)
     {
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
         {
-            if (EntitySyncVendors.IsBillCom(sourceVendor)) return "CFBillSpendClientID";
-            if (EntitySyncVendors.IsSophosCentral(sourceVendor)) return "CFSophosCentralTenantID";
+            if (EntitySyncVendors.IsBillCom(sourceVendor)) return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+            if (EntitySyncVendors.IsSophosCentral(sourceVendor)) return EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName;
         }
 
         return "CFNetSuiteCustomerID";

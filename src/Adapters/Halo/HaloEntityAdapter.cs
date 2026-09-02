@@ -513,7 +513,6 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdap
                 continue;
             }
 
-            if (!fieldName.Equals(options.NetSuiteCustomerNameField, StringComparison.OrdinalIgnoreCase)) continue;
             var fieldId = await ResolveCustomFieldIdAsync(fieldName, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(fieldId)) fieldIds.Add(fieldId);
         }
@@ -872,6 +871,11 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdap
                 if (name.Equals(EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
                 {
                     entity.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = value;
+                }
+
+                if (name.Equals(EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+                {
+                    entity.ExternalIds[EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName] = value;
                 }
 
                 if (name.Equals(options.NetSuiteCustomerNameField, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))

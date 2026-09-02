@@ -14,6 +14,7 @@ public static class BillComPlanReconciliation
     {
         ArgumentNullException.ThrowIfNull(plan);
         if (!IsAuthoritativeRoute(plan.SourceVendor, plan.SourceEntityType, plan.TargetVendor, plan.TargetEntityType)) return;
+        if (plan.Execution.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly) return;
 
         var retainedTargetIds = plan.Items
             .Where(item => item.Target is not null)

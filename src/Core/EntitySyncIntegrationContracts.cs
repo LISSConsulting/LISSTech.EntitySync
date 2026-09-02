@@ -6,6 +6,9 @@ public static class EntitySyncIntegrationContracts
 {
     public const string BillComHaloClientCustomFieldName = "CFBillSpendClientID";
     public const string BillComClientExternalIdName = "BillSpendClientId";
+    public const string SophosCentralHaloTenantCustomFieldName = "CFSophosCentralTenantID";
+    public const string SophosCentralTenantExternalIdName = "SophosCentralTenantId";
+
 
     public static string DecodeBillComValueId(string? rawId)
     {

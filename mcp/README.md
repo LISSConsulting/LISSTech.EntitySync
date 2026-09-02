@@ -27,7 +27,7 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
 7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for permanent exclusions, scheduler change-state checkpoints, and migration coordination.
-8. Set the HaloPSA and NetSuite variables listed below. They are required by `entitysync-scheduler`; configure any additional vendors the MCP service will use. Set `SCHEDULER_RUN_TOKEN` to a high-entropy secret of 32–256 non-whitespace characters for authenticated manual runs.
+8. Set the HaloPSA, NetSuite, N-central, BILL.com, and Sophos Central variables listed below. They are required by `entitysync-scheduler`. Set `SCHEDULER_RUN_TOKEN` to a high-entropy secret of 32–256 non-whitespace characters for authenticated manual runs.
 9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; all scheduler routes are intentionally Compose-network-only.
    The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
 10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server. Coolify should also report `entitysync-scheduler` healthy from its internal `/health` probe.
@@ -35,17 +35,24 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
-### Scheduled NetSuite-to-Halo Reconciliation
+### Scheduled Full-Chain Reconciliation
 
-`entitysync-scheduler` is a fixed, changed-only NetSuite Customer to HaloPSA Client reconciliation sidecar:
+`entitysync-scheduler` runs this fixed, ordered, changed-only chain:
 
-- It runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry; the next attempt waits the normal 12-hour interval.
-- It queries both active and inactive NetSuite customers. It updates only Halo clients already linked by the configured NetSuite customer-ID custom field; `createMissing` is always false, so the sidecar never creates Halo clients.
-- The first successful deployment is an intentional baseline reconciliation: every linked target is updated once, and its desired mapped write is checkpointed. Later runs skip writes whose mapped desired payload is unchanged.
-- PostgreSQL stores the route-scoped target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful target update. A mapper change that changes the desired payload, or a digest schema-version change, forces reconciliation even when an older hash exists.
-- The route scope is derived from the configured NetSuite account and Halo base URL. A PostgreSQL advisory lock keyed with `hashtextextended` over the tenant plus route scope prevents overlapping replicas from applying the same route.
-- Changed-only detection compares the newly mapped desired payload with the successful PostgreSQL checkpoint. It does **not** read back every Halo field, so manual Halo drift is not detected unless NetSuite input or mapping/digest behavior also changes.
-- Every plan is fully paged, digest-checked, approved, and applied by the sidecar. A connection, planning, validation, approval, or apply failure is bounded to the run and recorded without vendor payloads or credentials.
+```text
+NetSuite Customer -> HaloPSA Client -> N-central Customer
+                                    -> BILL.com Client
+                                    -> Sophos Central Customer
+```
+
+- It runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry.
+- Every edge includes active and inactive sources. It updates only persistently linked targets; `createMissing` is always false, so unmatched records and fuzzy matches never write unattended.
+- The edges execute in order. NetSuite-to-HaloPSA completes before HaloPSA is reread for each leaf, and a failed edge stops all later edges in that run.
+- The first successful run is an intentional baseline reconciliation for all four edges. PostgreSQL stores each edge's target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful write. Later runs skip identical mapped writes.
+- Recurring BILL.com planning suppresses orphan target-only deletion. A linked BILL.com rename still follows BILL.com's required replacement flow: create the renamed value, write its ID to HaloPSA, and only then delete the old value.
+- Route scopes derive from non-secret vendor account identities. One PostgreSQL advisory lock covers the complete ordered chain and prevents overlapping replicas.
+- Changed-only detection compares each newly mapped desired payload with its successful PostgreSQL checkpoint. It does **not** detect target-side drift when source data and mapping behavior remain unchanged.
+- Every route plan is fully paged, digest-checked, approved, and applied by the sidecar. A connection, planning, validation, approval, or apply failure is bounded to the run and recorded without vendor payloads or credentials.
 
 The scheduler exposes only these internal routes:
 
@@ -53,7 +60,7 @@ The scheduler exposes only these internal routes:
 |---|---|
 | `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
 | `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
-| `POST /run` | Queue one immediate reconciliation using the same fixed workflow; requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
+| `POST /run` | Queue one immediate full-chain reconciliation; requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
 
 `/health` and `/status` are unauthenticated for private-network probes and inspection. `POST /run` validates the bearer token with a constant-time digest comparison. Keep every scheduler route on the private Compose network and invoke it only from another service or the Coolify container console:
 
@@ -67,16 +74,16 @@ An accepted manual run executes asynchronously, never overlaps another local run
 
 ### Vendor Variables
 
-HaloPSA and NetSuite are mandatory for this Compose stack because the scheduler always uses them. Configure other vendor rows only when the MCP service needs them; `connect_vendor` reads those values when it creates an adapter.
+NetSuite, HaloPSA, N-central, BILL.com, and Sophos Central are mandatory for the scheduled chain. The MCP service uses the same variables when `connect_vendor` creates an adapter.
 
 | Vendor | Required variables |
 |---|---|
-| HaloPSA | `HALO_BASE_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET` |
+| HaloPSA | `HALO_BASE_URL`, `HALO_CLIENT_ID`, `HALO_CLIENT_SECRET`, `HALO_NCENTRAL_INTEGRATION_ID` |
 | NetSuite | `NETSUITE_ACCOUNT_ID`, `NETSUITE_CONSUMER_KEY`, `NETSUITE_CONSUMER_SECRET`, `NETSUITE_TOKEN_ID`, `NETSUITE_TOKEN_SECRET` |
-| N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID` |
+| N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID`, `NCENTRAL_SOAP_USERNAME`, `NCENTRAL_SOAP_PASSWORD` |
 | AgentController | `AGENTCONTROLLER_AUTH_BASE_URL`, `AGENTCONTROLLER_ENTRA_TENANT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_SECRET`, `AGENTCONTROLLER_ENTRA_SCOPE` |
-| Bill.com | `BILLCOM_API_TOKEN` |
-| Sophos Central | `SOPHOS_CENTRAL_CLIENT_ID`, `SOPHOS_CENTRAL_CLIENT_SECRET`; tenant creation also requires source fields or `SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY`/`SOPHOS_CENTRAL_DEFAULT_DATA_REGION` and `SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE` |
+| BILL.com | `BILLCOM_API_TOKEN`; optional `BILLCOM_BASE_URL` and `BILLCOM_CLIENT_FIELD_NAME` override production defaults |
+| Sophos Central | `SOPHOS_CENTRAL_CLIENT_ID`, `SOPHOS_CENTRAL_CLIENT_SECRET`; tenant creation defaults remain optional because the changed-only scheduler does not create unmatched tenants |
 
 The root `.env.example` lists the minimal local Compose variables. `docker-compose.yaml` also passes through optional adapter settings documented in the main README.
 

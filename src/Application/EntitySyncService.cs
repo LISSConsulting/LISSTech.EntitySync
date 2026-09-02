@@ -301,7 +301,7 @@ public sealed class EntitySyncService(
                                     changeStateRoute,
                                     item.Source.Id,
                                     item.Source.Name,
-                                    item.Target!.Id,
+                                    write.Id ?? item.Target!.Id,
                                     item.DesiredStateHashVersion!.Value,
                                     item.DesiredStateHash!,
                                     (timeProvider ?? TimeProvider.System).GetUtcNow()), cancellationToken).ConfigureAwait(false);
