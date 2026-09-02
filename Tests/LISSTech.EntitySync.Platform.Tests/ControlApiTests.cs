@@ -610,6 +610,57 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     }
 
     [Theory]
+    [InlineData(
+        "{\"cron_expression\":\"MALFORMED_BINDER_SECRET\"",
+        "MALFORMED_BINDER_SECRET")]
+    [InlineData(
+        "{\"cron_expression\":{\"WRONG_TYPE_BINDER_SECRET\":true},\"time_zone\":\"UTC\"}",
+        "WRONG_TYPE_BINDER_SECRET")]
+    [InlineData(
+        "{\"cron_expression\":\"0 * * * *\",\"time_zone\":\"UTC\",\"UNKNOWN_BINDER_SECRET\":true}",
+        "UNKNOWN_BINDER_SECRET")]
+    public async Task Production_binding_failures_return_safe_control_problems(
+        string requestBody,
+        string secretMarker)
+    {
+        using var productionFactory = factory.WithWebHostBuilder(
+            builder => builder.UseEnvironment(Environments.Production));
+        using var client = productionFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview", Json(requestBody));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            "application/problem+json",
+            response.Content.Headers.ContentType?.MediaType);
+        using var problem = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+        Assert.Equal(400, problem.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal(
+            "https://entitysync.lisstech.com/problems/invalid_request",
+            problem.RootElement.GetProperty("type").GetString());
+        Assert.Equal(
+            "Invalid request",
+            problem.RootElement.GetProperty("title").GetString());
+        Assert.Equal(
+            "The request is invalid.",
+            problem.RootElement.GetProperty("detail").GetString());
+        Assert.Equal(
+            "INVALID_REQUEST",
+            problem.RootElement.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(
+            problem.RootElement.GetProperty("correlationId").GetString()));
+        var body = problem.RootElement.GetRawText();
+        Assert.DoesNotContain(secretMarker, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("BadHttpRequestException", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("JsonException", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("failed to read parameter", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("could not be converted", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
     [InlineData("CONTROL_API_SECRET_CRON", "UTC")]
     [InlineData("0 * * * *", "CONTROL_API_SECRET_TIME_ZONE")]
     public async Task Schedule_preview_validation_errors_are_safe(

@@ -155,6 +155,8 @@ static async Task RunHttpAsync(string[] args)
         Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler,
         ControlAuthorizationResultHandler>();
     builder.Services.AddProblemDetails();
+    builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(
+        options => options.ThrowOnBadRequest = true);
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(options =>
     {
