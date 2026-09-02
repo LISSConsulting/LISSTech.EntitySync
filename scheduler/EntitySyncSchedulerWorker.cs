@@ -10,6 +10,7 @@ public sealed class EntitySyncSchedulerWorker : BackgroundService
     private readonly IEntitySyncScheduledRun run;
     private readonly EntitySyncSchedulerStatus status;
     private readonly TimeProvider timeProvider;
+    private readonly EntitySyncSchedulerOptions options;
     private readonly ILogger<EntitySyncSchedulerWorker> logger;
     private TaskCompletionSource runRequested = CreateRunSignal();
     private bool runInProgress;
@@ -19,11 +20,13 @@ public sealed class EntitySyncSchedulerWorker : BackgroundService
         IEntitySyncScheduledRun run,
         EntitySyncSchedulerStatus status,
         TimeProvider timeProvider,
+        EntitySyncSchedulerOptions? options = null,
         ILogger<EntitySyncSchedulerWorker>? logger = null)
     {
         this.run = run ?? throw new ArgumentNullException(nameof(run));
         this.status = status ?? throw new ArgumentNullException(nameof(status));
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        this.options = options ?? new EntitySyncSchedulerOptions();
         this.logger = logger ?? NullLogger<EntitySyncSchedulerWorker>.Instance;
     }
 
@@ -47,6 +50,18 @@ public sealed class EntitySyncSchedulerWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!options.AutomaticRunsEnabled)
+        {
+            logger.LogInformation(
+                "Automatic scheduled synchronization is disabled; authenticated manual runs remain available.");
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await WaitAndBeginRequestedRunAsync(stoppingToken).ConfigureAwait(false);
+                await ExecuteRunBoundaryAsync(stoppingToken).ConfigureAwait(false);
+            }
+            return;
+        }
+
         BeginInitialRun();
         await ExecuteRunBoundaryAsync(stoppingToken).ConfigureAwait(false);
 
@@ -64,6 +79,23 @@ public sealed class EntitySyncSchedulerWorker : BackgroundService
             if (scheduled || completedAt >= nextScheduledAt)
                 nextScheduledAt = completedAt + EntitySyncSchedulerOptions.Interval;
             status.SetNextRunAt(nextScheduledAt);
+        }
+    }
+
+    private async Task WaitAndBeginRequestedRunAsync(CancellationToken stoppingToken)
+    {
+        Task requested;
+        lock (runStateLock) requested = runRequested.Task;
+        await requested.WaitAsync(stoppingToken).ConfigureAwait(false);
+
+        lock (runStateLock)
+        {
+            if (!runQueued)
+                throw new InvalidOperationException("The scheduler run signal completed without a queued run.");
+
+            runQueued = false;
+            runRequested = CreateRunSignal();
+            runInProgress = true;
         }
     }
 

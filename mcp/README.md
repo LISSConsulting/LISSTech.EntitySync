@@ -45,7 +45,7 @@ NetSuite Customer -> HaloPSA Client -> N-central Customer
                                     -> Sophos Central Customer
 ```
 
-- It runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry.
+- By default, it runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. Set `SCHEDULER_AUTOMATIC_RUNS_ENABLED=false` to suppress both automatic paths while retaining authenticated `POST /run`; `/status.nextRunAt` remains `null`. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry.
 - Every edge includes active and inactive sources. It updates only persistently linked targets; `createMissing` is always false, so unmatched records and fuzzy matches never write unattended.
 - The edges execute in order. NetSuite-to-HaloPSA completes before HaloPSA is reread for each leaf, and a failed edge stops all later edges in that run.
 - The first successful run is an intentional baseline reconciliation for all four edges. PostgreSQL stores each edge's target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful write. Later runs skip identical mapped writes.

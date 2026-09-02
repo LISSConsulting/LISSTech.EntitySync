@@ -62,7 +62,8 @@ public sealed class EntitySyncSchedulerHostTests
     [InlineData("HALO_CLIENT_SECRET", " ", "HALO_CLIENT_SECRET")]
     [InlineData("HALO_BASE_URL", "not-a-url", "HTTPS")]
     [InlineData("HALO_BASE_URL", "http://halo.example.test", "HTTPS")]
-    public async Task SchedulerHostBuildRejectsInvalidFixedRouteConfiguration(
+    [InlineData(EntitySyncSchedulerOptions.AutomaticRunsEnabledEnvironmentVariable, "disabled", "true or false")]
+    public async Task SchedulerHostBuildRejectsInvalidChainConfiguration(
         string variableName,
         string? value,
         string expectedMessage)
@@ -267,6 +268,7 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf",
             ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-scheduler-test",
             [EntitySyncSchedulerRunAuthorization.EnvironmentVariable] = RunToken,
+            [EntitySyncSchedulerOptions.AutomaticRunsEnabledEnvironmentVariable] = "false",
             ["NETSUITE_ACCOUNT_ID"] = "test-account",
             ["NETSUITE_CONSUMER_KEY"] = "test-consumer-key",
             ["NETSUITE_CONSUMER_SECRET"] = "test-consumer-secret",

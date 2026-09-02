@@ -11,6 +11,7 @@ public sealed class EntitySyncSchedulerOptions
     public const string TargetConnectionId = "halopsa";
     public const string TargetVendor = "HaloPSA";
     public const string TargetEntityType = "Client";
+    public const string AutomaticRunsEnabledEnvironmentVariable = "SCHEDULER_AUTOMATIC_RUNS_ENABLED";
 
     public static EntitySyncSchedulerRoute NetSuiteToHalo { get; } = new(
         SourceConnectionId,
@@ -54,20 +55,36 @@ public sealed class EntitySyncSchedulerOptions
     ];
 
     public EntitySyncSchedulerOptions()
-        : this(FullChainRoutes)
+        : this(FullChainRoutes, AutomaticRunsEnabledFromCurrentEnvironment())
     {
     }
 
-    public EntitySyncSchedulerOptions(IReadOnlyList<EntitySyncSchedulerRoute> routes)
+    public EntitySyncSchedulerOptions(
+        IReadOnlyList<EntitySyncSchedulerRoute> routes,
+        bool automaticRunsEnabled = true)
     {
         ArgumentNullException.ThrowIfNull(routes);
         if (routes.Count == 0) throw new ArgumentException("At least one scheduled synchronization route is required.", nameof(routes));
         Routes = routes.ToArray();
+        AutomaticRunsEnabled = automaticRunsEnabled;
     }
+
+    public bool AutomaticRunsEnabled { get; }
 
     public IReadOnlyList<EntitySyncSchedulerRoute> Routes { get; }
 
     public static TimeSpan Interval { get; } = TimeSpan.FromHours(12);
+
+    private static bool AutomaticRunsEnabledFromCurrentEnvironment()
+    {
+        var configured = Environment.GetEnvironmentVariable(AutomaticRunsEnabledEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(configured))
+            return true;
+        if (bool.TryParse(configured, out var enabled))
+            return enabled;
+        throw new InvalidOperationException(
+            $"{AutomaticRunsEnabledEnvironmentVariable} must be true or false.");
+    }
 }
 
 public sealed record EntitySyncSchedulerRoute(

@@ -452,6 +452,37 @@ public sealed class EntitySyncSchedulerTests
     }
 
     [Fact]
+    public async Task DisabledAutomaticRunsWaitForAuthenticatedManualQueue()
+    {
+        var time = new ManualTimeProvider(
+            new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var status = new EntitySyncSchedulerStatus();
+        var runCompleted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var runCalls = 0;
+        var run = new DelegateScheduledRun(token =>
+        {
+            token.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref runCalls);
+            runCompleted.TrySetResult();
+            return Task.FromResult(status.Snapshot);
+        });
+        var options = new EntitySyncSchedulerOptions(
+            EntitySyncSchedulerOptions.FullChainRoutes,
+            automaticRunsEnabled: false);
+        using var worker = new EntitySyncSchedulerWorker(run, status, time, options);
+
+        await worker.StartAsync(default);
+
+        Assert.Equal(0, runCalls);
+        Assert.Null(status.Snapshot.NextRunAt);
+        Assert.True(worker.TryRequestRun());
+        await runCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, runCalls);
+        await worker.StopAsync(default);
+    }
+
+    [Fact]
     public async Task FailedRunDoesNotExitWorkerOrRetryBeforeNormalInterval()
     {
         var startedAt = new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero);
