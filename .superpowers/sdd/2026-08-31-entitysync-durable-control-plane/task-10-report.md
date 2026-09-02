@@ -272,3 +272,38 @@ OpenAPI coverage is 13 passed, 0 failed (`artifact://3372`). Exact affected
 builds are GREEN: Platform (`artifact://3379`), Hosting (`artifact://3377`), and
 MCP (`artifact://3378`). The HTTP/OpenAPI shape and authenticated OpenAPI digest
 are unchanged.
+
+### Fix Round 2 — strict cursor presence and authenticated page size
+
+Review found two cursor-continuity gaps. First, a present empty, whitespace, or
+tab `cursor` query was treated as if the parameter were absent, silently
+creating a new first-page snapshot. `ListRunsAsync` now distinguishes only
+absent (`null`) from present cursor values, so every present value passes
+through the bounded authenticated codec and blank values fail with the fixed
+safe `INVALID_CURSOR` problem.
+
+Second, the requested page size was not authenticated with the high-water and
+seek position. A cursor-only replay therefore fell back to 25 even when the
+original page used a different size. Version-1 `RunCursorPayload` now requires
+`PageSize` in the range 1..100 for both first-page replay and continuation
+cursors. The endpoint accepts nullable `pageSize`: omission defaults to 25 only
+without a cursor, omission with a cursor uses its authenticated size, and an
+explicit mismatch fails with `INVALID_CURSOR`. Missing and out-of-range
+protected payload sizes also fail closed.
+
+Blank-cursor endpoint RED is 3/3 failures (`artifact://3400`) and GREEN is 3/3
+(`artifact://3402`). Authenticated-size RED shows a size-1 cursor-only replay
+expanding to the old default (`artifact://3422`); focused first/middle replay,
+explicit mismatch, strict payload, tamper, and restart coverage is 10/10 GREEN
+(`artifact://3428`). Combined persisted-timestamp, keyset, cursor, endpoint,
+and OpenAPI coverage is 19 passed, 0 failed (`artifact://3436`). Exact affected
+builds are GREEN: Platform (`artifact://3444`), Hosting (`artifact://3442`), and
+MCP (`artifact://3443`).
+
+`ListControlRuns` and its path/response schemas are unchanged. OpenAPI continues
+to expose optional integer `pageSize`, but no longer advertises an application
+default because omission semantics depend on whether a cursor is present. The
+authenticated OpenAPI export is
+`/tmp/entitysync-control-openapi-run-cursor-pagesize.json`, SHA-256
+`7c351868f84f74de5062d90a3a6c374f580e4dc3ea0013b3baab8061d5a36722`
+(`artifact://3432`).

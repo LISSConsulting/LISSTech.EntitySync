@@ -567,30 +567,34 @@ public static class ControlEndpoints
         ControlRequestContext control,
         ControlCursorProtector cursors,
         string? cursor,
-        int pageSize = 25,
+        int? pageSize = null,
         CancellationToken cancellationToken = default)
     {
-        ValidatePageSize(pageSize);
+        if (pageSize is not null) ValidatePageSize(pageSize.Value);
         if (http.Request.Query.ContainsKey("offset"))
             throw new BadHttpRequestException("Offset pagination is not supported.");
         EntitySyncOperationListCursor? position = null;
-        var hasCursor = !string.IsNullOrWhiteSpace(cursor);
+        var effectivePageSize = pageSize ?? 25;
+        var hasCursor = cursor is not null;
         if (hasCursor)
         {
             var decoded = cursors.UnprotectRun(cursor!, "runs", control.TenantId);
+            if (pageSize is not null && pageSize.Value != decoded.PageSize)
+                throw new InvalidControlCursorException();
+            effectivePageSize = decoded.PageSize;
             position = new EntitySyncOperationListCursor(
                 decoded.HighWater,
                 decoded.LastQueuedAt,
                 decoded.LastOperationId);
         }
         var page = await queries.ListRunsAsync(
-            control.TenantId, position, pageSize + 1, cancellationToken)
+            control.TenantId, position, effectivePageSize + 1, cancellationToken)
             .ConfigureAwait(false);
-        IReadOnlyList<RunResponse> items = page.Items.Count > pageSize
-            ? page.Items.Take(pageSize).ToArray()
+        IReadOnlyList<RunResponse> items = page.Items.Count > effectivePageSize
+            ? page.Items.Take(effectivePageSize).ToArray()
             : page.Items;
         string? next = null;
-        if (page.Items.Count > pageSize)
+        if (page.Items.Count > effectivePageSize)
         {
             var last = items[^1];
             next = cursors.ProtectRun(
@@ -598,11 +602,13 @@ public static class ControlEndpoints
                 control.TenantId,
                 page.HighWater,
                 last.QueuedAt,
-                last.RunId);
+                last.RunId,
+                effectivePageSize);
         }
         var replay = hasCursor
             ? cursor!
-            : cursors.ProtectRunStart("runs", control.TenantId, page.HighWater);
+            : cursors.ProtectRunStart(
+                "runs", control.TenantId, page.HighWater, effectivePageSize);
         return Results.Ok(new RunPageResponse(items, replay, next));
     }
 

@@ -64,17 +64,20 @@ public sealed class ControlCursorProtector
     public string ProtectRunStart(
         string resource,
         string tenantId,
-        DateTimeOffset highWater)
+        DateTimeOffset highWater,
+        int pageSize)
     {
         if (highWater.Offset != TimeSpan.Zero)
             throw new ArgumentException("The run cursor high-water is invalid.");
+        ValidateRunPageSize(pageSize);
         return Protect(new RunCursorPayload(
             Version,
             resource,
             tenantId,
             highWater.ToString("O", CultureInfo.InvariantCulture),
             null,
-            null));
+            null,
+            pageSize));
     }
 
     public string ProtectRun(
@@ -82,26 +85,30 @@ public sealed class ControlCursorProtector
         string tenantId,
         DateTimeOffset highWater,
         DateTimeOffset lastQueuedAt,
-        Guid lastOperationId)
+        Guid lastOperationId,
+        int pageSize)
     {
         if (highWater.Offset != TimeSpan.Zero
             || lastQueuedAt.Offset != TimeSpan.Zero
             || lastQueuedAt > highWater
             || lastOperationId == Guid.Empty)
             throw new ArgumentException("The run cursor position is invalid.");
+        ValidateRunPageSize(pageSize);
         return Protect(new RunCursorPayload(
             Version,
             resource,
             tenantId,
             highWater.ToString("O", CultureInfo.InvariantCulture),
             lastQueuedAt.ToString("O", CultureInfo.InvariantCulture),
-            lastOperationId.ToString("D")));
+            lastOperationId.ToString("D"),
+            pageSize));
     }
 
     public (
         DateTimeOffset HighWater,
         DateTimeOffset? LastQueuedAt,
-        Guid? LastOperationId) UnprotectRun(
+        Guid? LastOperationId,
+        int PageSize) UnprotectRun(
             string cursor,
             string resource,
             string tenantId)
@@ -110,14 +117,16 @@ public sealed class ControlCursorProtector
         if (payload.Version != Version
             || !string.Equals(payload.Resource, resource, StringComparison.Ordinal)
             || !string.Equals(payload.TenantId, tenantId, StringComparison.Ordinal)
-            || (payload.LastQueuedAt is null) != (payload.LastOperationId is null))
+            || (payload.LastQueuedAt is null) != (payload.LastOperationId is null)
+            || payload.PageSize is <= 0 or > 100)
             throw new InvalidControlCursorException();
         var highWater = ParseCanonicalTime(payload.HighWater);
-        if (payload.LastQueuedAt is null) return (highWater, null, null);
+        if (payload.LastQueuedAt is null)
+            return (highWater, null, null, payload.PageSize);
         var lastQueuedAt = ParseCanonicalTime(payload.LastQueuedAt);
         var lastOperationId = ParseCanonicalGuid(payload.LastOperationId);
         if (lastQueuedAt > highWater) throw new InvalidControlCursorException();
-        return (highWater, lastQueuedAt, lastOperationId);
+        return (highWater, lastQueuedAt, lastOperationId, payload.PageSize);
     }
 
     private RunCursorPayload UnprotectRunPayload(string cursor)
@@ -202,6 +211,12 @@ public sealed class ControlCursorProtector
             throw new InvalidControlCursorException();
     }
 
+    private static void ValidateRunPageSize(int pageSize)
+    {
+        if (pageSize is <= 0 or > 100)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+    }
+
     private sealed record CursorPayload(
         int Version,
         string Resource,
@@ -216,5 +231,6 @@ public sealed class ControlCursorProtector
         string TenantId,
         string HighWater,
         string? LastQueuedAt,
-        string? LastOperationId);
+        string? LastOperationId,
+        int PageSize);
 }

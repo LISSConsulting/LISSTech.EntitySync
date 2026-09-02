@@ -328,15 +328,16 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         var lastOperationId =
             Guid.Parse("12345678-1234-1234-1234-123456789abc");
         var cursor = firstCodec.ProtectRun(
-            "runs", "tenant-a", highWater, lastQueuedAt, lastOperationId);
+            "runs", "tenant-a", highWater, lastQueuedAt, lastOperationId, 1);
         Assert.DoesNotContain("tenant-a", cursor, StringComparison.Ordinal);
         Assert.DoesNotContain(lastOperationId.ToString("D"), cursor, StringComparison.Ordinal);
         Assert.Equal(
-            (highWater, lastQueuedAt, lastOperationId),
+            (highWater, lastQueuedAt, lastOperationId, 1),
             restartedCodec.UnprotectRun(cursor, "runs", "tenant-a"));
-        var pageStart = firstCodec.ProtectRunStart("runs", "tenant-a", highWater);
+        var pageStart = firstCodec.ProtectRunStart(
+            "runs", "tenant-a", highWater, 1);
         Assert.Equal(
-            (highWater, (DateTimeOffset?)null, (Guid?)null),
+            (highWater, (DateTimeOffset?)null, (Guid?)null, 1),
             restartedCodec.UnprotectRun(pageStart, "runs", "tenant-a"));
 
         using var client = factory.CreateClient();
@@ -381,6 +382,83 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal("INVALID_CURSOR", await ProblemCode(tampered));
     }
 
+    [Fact]
+    public async Task Run_cursor_authenticates_page_size_for_first_and_middle_replay()
+    {
+        var queries = RunPagingQueryProxy.Create();
+        using var pagingFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IControlApiQueries>();
+                services.AddSingleton(queries);
+            }));
+        using var client = pagingFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+
+        using var first = await client.GetAsync("/api/v1/control/runs?pageSize=1");
+        first.EnsureSuccessStatusCode();
+        var firstBody = await first.Content.ReadAsStringAsync();
+        using var firstJson = JsonDocument.Parse(firstBody);
+        Assert.Single(firstJson.RootElement.GetProperty("items").EnumerateArray());
+        var firstReplay = firstJson.RootElement.GetProperty("replayCursor").GetString();
+        var next = firstJson.RootElement.GetProperty("nextCursor").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(firstReplay));
+        Assert.False(string.IsNullOrWhiteSpace(next));
+
+        using var replayedFirst = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(firstReplay!)}");
+        replayedFirst.EnsureSuccessStatusCode();
+        using var replayedFirstJson = JsonDocument.Parse(
+            await replayedFirst.Content.ReadAsStringAsync());
+        Assert.Equal(
+            firstJson.RootElement.GetProperty("items").GetRawText(),
+            replayedFirstJson.RootElement.GetProperty("items").GetRawText());
+        Assert.Equal(
+            firstReplay,
+            replayedFirstJson.RootElement.GetProperty("replayCursor").GetString());
+        using var firstMismatch = await client.GetAsync(
+            $"/api/v1/control/runs?pageSize=25&cursor={Uri.EscapeDataString(firstReplay!)}");
+        Assert.Equal(HttpStatusCode.BadRequest, firstMismatch.StatusCode);
+        Assert.Equal("INVALID_CURSOR", await ProblemCode(firstMismatch));
+
+        using var middle = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(next!)}");
+        middle.EnsureSuccessStatusCode();
+        var middleBody = await middle.Content.ReadAsStringAsync();
+        using var middleJson = JsonDocument.Parse(middleBody);
+        Assert.Single(middleJson.RootElement.GetProperty("items").EnumerateArray());
+        var middleReplay = middleJson.RootElement.GetProperty("replayCursor").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(middleReplay));
+
+        using var replayedMiddle = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(middleReplay!)}");
+        replayedMiddle.EnsureSuccessStatusCode();
+        using var replayedMiddleJson = JsonDocument.Parse(
+            await replayedMiddle.Content.ReadAsStringAsync());
+        Assert.Equal(
+            middleJson.RootElement.GetProperty("items").GetRawText(),
+            replayedMiddleJson.RootElement.GetProperty("items").GetRawText());
+        Assert.Equal(
+            middleReplay,
+            replayedMiddleJson.RootElement.GetProperty("replayCursor").GetString());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t")]
+    public async Task Run_cursor_rejects_present_blank_values(string cursor)
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Read");
+
+        using var response = await client.GetAsync(
+            $"/api/v1/control/runs?cursor={Uri.EscapeDataString(cursor)}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_CURSOR", await ProblemCode(response));
+    }
+
     [Theory]
     [MemberData(nameof(InvalidRunCursorPayloads))]
     public async Task Run_cursor_rejects_protected_noncanonical_payloads(string payload)
@@ -402,13 +480,19 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     public static TheoryData<string> InvalidRunCursorPayloads => new()
     {
         """
-        {"Version":2,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc"}
+        {"Version":2,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","PageSize":25}
         """,
         """
-        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"not-a-time","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc"}
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"not-a-time","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","PageSize":25}
         """,
         """
-        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","Unexpected":true}
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","PageSize":25,"Unexpected":true}
+        """,
+        """
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc"}
+        """,
+        """
+        {"Version":1,"Resource":"runs","TenantId":"tenant-a","HighWater":"2026-09-01T12:00:00.0000000+00:00","LastQueuedAt":"2026-09-01T11:59:00.0000000+00:00","LastOperationId":"12345678-1234-1234-1234-123456789abc","PageSize":101}
         """
     };
 
@@ -485,6 +569,14 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Contains("cursor", parameterNames);
         Assert.Contains("pageSize", parameterNames);
         Assert.DoesNotContain("offset", parameterNames);
+        var pageSizeParameter = runList.GetProperty("parameters")
+            .EnumerateArray()
+            .Single(value =>
+                value.GetProperty("name").GetString() == "pageSize");
+        Assert.False(pageSizeParameter.TryGetProperty("required", out _));
+        Assert.False(
+            pageSizeParameter.GetProperty("schema")
+                .TryGetProperty("default", out _));
         var runSchema = openApi.RootElement
             .GetProperty("components")
             .GetProperty("schemas")
@@ -725,6 +817,65 @@ public sealed class RecordingIdempotentExecutor : IIdempotentCommandExecutor
             return Task.FromResult(response);
         }
     }
+}
+
+public class RunPagingQueryProxy : DispatchProxy
+{
+    private readonly DateTimeOffset highWater = new(
+        2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+    private readonly IReadOnlyList<RunResponse> runs;
+
+    public RunPagingQueryProxy()
+    {
+        var planId = Guid.Parse("00000000-0000-0000-0000-000000000010");
+        runs =
+        [
+            Run("00000000-0000-0000-0000-000000000001", planId, highWater.AddMinutes(-1)),
+            Run("00000000-0000-0000-0000-000000000002", planId, highWater.AddMinutes(-2)),
+            Run("00000000-0000-0000-0000-000000000003", planId, highWater.AddMinutes(-3))
+        ];
+    }
+
+    public static IControlApiQueries Create() =>
+        DispatchProxy.Create<IControlApiQueries, RunPagingQueryProxy>();
+
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    {
+        if (targetMethod?.Name != nameof(IControlApiQueries.ListRunsAsync))
+            throw new NotSupportedException(targetMethod?.Name);
+        var cursor = (EntitySyncOperationListCursor?)args![1];
+        var maximumRows = (int)args[2]!;
+        var start = cursor?.LastOperationId is { } lastOperationId
+            ? runs.Select((run, index) => (run, index))
+                .Single(value => value.run.RunId == lastOperationId)
+                .index + 1
+            : 0;
+        var result = new RunQueryResult(
+            cursor?.HighWater ?? highWater,
+            runs.Skip(start).Take(maximumRows).ToArray());
+        return Task.FromResult(result);
+    }
+
+    private static RunResponse Run(
+        string runId,
+        Guid planId,
+        DateTimeOffset queuedAt) =>
+        new(
+            Guid.Parse(runId),
+            planId,
+            null,
+            "route-a",
+            "DryRun",
+            "Queued",
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            queuedAt,
+            null,
+            null);
 }
 
 public class EmptyQueryProxy : DispatchProxy
