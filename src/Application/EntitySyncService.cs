@@ -102,6 +102,7 @@ public sealed class EntitySyncService(
             if (!plans.TryTransition(tenantId, planId, EntitySyncPlanStatuses.Approved, EntitySyncPlanStatuses.Applying)) throw new InvalidOperationException("Plan is already being applied or has been consumed.");
         }
 
+        var source = sourceLease.Connection;
         var target = targetLease.Connection;
         var results = new List<EntitySyncApplyItemResult>();
         var completed = false;
@@ -121,6 +122,54 @@ public sealed class EntitySyncService(
         }
         try
         {
+            if (apply && EntitySyncVendors.IsAgentController(plan.TargetVendor))
+            {
+                if (target.Adapter is not IEntityBatchAdapter batchAdapter)
+                    throw new InvalidOperationException("AgentController target connection does not support authoritative batch apply.");
+
+                var batchItems = plan.Items
+                    .Where(item => !item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)
+                        && !item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                var batchRequests = batchItems
+                    .Select(item => item.Target == null
+                        ? mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions)
+                        : mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions))
+                    .ToArray();
+                var batchWrite = batchRequests.Length == 0
+                    ? new EntityWriteResult
+                    {
+                        Vendor = plan.TargetVendor,
+                        EntityType = plan.TargetEntityType,
+                        Action = "None",
+                        Success = true,
+                        Message = "No approved AgentController customer scopes required synchronization."
+                    }
+                    : await batchAdapter.ApplyBatchAsync(batchRequests, cancellationToken).ConfigureAwait(false);
+
+                foreach (var item in plan.Items)
+                {
+                    var skippedItem = item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)
+                        || item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase);
+                    var success = skippedItem || batchWrite.Success;
+                    results.Add(new EntitySyncApplyItemResult(
+                        item.Action,
+                        item.Source.Name,
+                        item.Target?.Name,
+                        success,
+                        skippedItem,
+                        item.Target?.Id,
+                        skippedItem ? "Skipped: requires review or no action." : batchWrite.Message ?? "AgentController batch sync applied."));
+                    if (skippedItem) skipped++;
+                    else if (success) succeeded++;
+                    else failed++;
+                    ReportProgress();
+                }
+
+                completed = true;
+                return new EntitySyncApplyResult(plan.Id, true, failed == 0, succeeded, failed, skipped, results);
+            }
+
             foreach (var item in plan.Items)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -141,20 +190,65 @@ public sealed class EntitySyncService(
 
                 try
                 {
+                    EntityWriteRequest request;
                     EntityWriteResult write;
                     if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                     {
-                        var request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions);
+                        request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions);
                         write = await target.Adapter.CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
                         if (item.Target == null) throw new InvalidOperationException("Target is required for link and update actions.");
-                        var request = mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions);
+                        request = mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions);
                         write = await target.Adapter.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
                     }
                     if (write.Success)
                     {
+                        EntityWriteResult? sourceWriteback;
+                        try
+                        {
+                            sourceWriteback = await WriteSourceIntegrationAsync(
+                                plan,
+                                item,
+                                request,
+                                write,
+                                source.Adapter,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch
+                        {
+                            results.Add(new EntitySyncApplyItemResult(
+                                item.Action,
+                                item.Source.Name,
+                                item.Target?.Name,
+                                false,
+                                false,
+                                write.Id,
+                                "Target write succeeded, but HaloPSA source writeback failed."));
+                            failed++;
+                            ReportProgress();
+                            continue;
+                        }
+                        if (sourceWriteback is { Success: false })
+                        {
+                            results.Add(new EntitySyncApplyItemResult(
+                                item.Action,
+                                item.Source.Name,
+                                item.Target?.Name,
+                                false,
+                                false,
+                                write.Id,
+                                sourceWriteback.Message ?? "Target write succeeded, but HaloPSA source writeback failed."));
+                            failed++;
+                            ReportProgress();
+                            continue;
+                        }
+
                         var checkpointSucceeded = true;
                         if (changeStateRoute is not null)
                         {
@@ -197,7 +291,7 @@ public sealed class EntitySyncService(
                                 true,
                                 false,
                                 write.Id,
-                                write.Message ?? "Target write succeeded."));
+                                sourceWriteback?.Message ?? write.Message ?? "Target write succeeded."));
                             succeeded++;
                         }
                     }
@@ -238,6 +332,106 @@ public sealed class EntitySyncService(
 
         return new EntitySyncApplyResult(plan.Id, apply, failed == 0, succeeded, failed, skipped, results);
     }
+    private static async Task<EntityWriteResult?> WriteSourceIntegrationAsync(
+        EntitySyncPlan plan,
+        EntitySyncPlanItem item,
+        EntityWriteRequest targetRequest,
+        EntityWriteResult targetWrite,
+        IEntityAdapter sourceAdapter,
+        CancellationToken cancellationToken)
+    {
+        if (!plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(item.Source.Id))
+        {
+            return null;
+        }
+
+        var targetId = targetWrite.Id ?? item.Target?.Id;
+        if (EntitySyncVendors.IsBillCom(plan.TargetVendor)
+            && plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(targetId))
+                return SourceWritebackFailure("BILL.com write succeeded, but no custom-field value ID was available for HaloPSA writeback.");
+
+            var numericId = EntitySyncIntegrationContracts.DecodeBillComValueId(targetId);
+            var writebackRequest = new EntityWriteRequest
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = item.Source.Id,
+                Name = item.Source.Name
+            };
+            writebackRequest.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName] = numericId;
+            var writeback = await sourceAdapter.UpdateEntityAsync(writebackRequest, cancellationToken).ConfigureAwait(false);
+            return writeback.Success
+                ? new EntityWriteResult
+                {
+                    Vendor = "HaloPSA",
+                    EntityType = "Client",
+                    Id = item.Source.Id,
+                    Action = "BillComWriteBack",
+                    Success = true,
+                    Message = $"Recorded BILL.com client ID '{numericId}' on HaloPSA client '{item.Source.Name}'."
+                }
+                : SourceWritebackFailure("BILL.com value write succeeded, but HaloPSA client-ID writeback failed.");
+        }
+
+        if (!plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (sourceAdapter is not IHaloSourceWritebackAdapter haloWriteback)
+            return SourceWritebackFailure("N-central write succeeded, but the HaloPSA connection cannot write integration links.");
+        if (string.IsNullOrWhiteSpace(targetId))
+            return SourceWritebackFailure("N-central write succeeded, but no target ID was available for HaloPSA integration-link writeback.");
+
+        if (plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            && plan.TargetEntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase))
+        {
+            var targetName = item.Target?.Name ?? EntitySyncIntegrationContracts.SanitizeNCentralName(targetRequest.Name);
+            var writeback = await haloWriteback.UpsertNCentralClientLinkAsync(
+                item.Source.Id,
+                item.Source.Name,
+                targetId,
+                targetName,
+                cancellationToken).ConfigureAwait(false);
+            return writeback.Success
+                ? writeback
+                : SourceWritebackFailure("N-central customer write succeeded, but HaloPSA client-link writeback failed.");
+        }
+
+        if (plan.SourceEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase)
+            && plan.TargetEntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
+        {
+            var customerId = targetRequest.CustomFields.TryGetValue("NCentralCustomerId", out var linkedCustomerId)
+                ? linkedCustomerId
+                : item.Source.GetExternalId("NCentralCustomerId");
+            if (string.IsNullOrWhiteSpace(customerId))
+                return SourceWritebackFailure("N-central site write succeeded, but no parent customer ID was available for HaloPSA site-link writeback.");
+
+            var targetName = item.Target?.Name ?? EntitySyncIntegrationContracts.SanitizeNCentralName(targetRequest.Name);
+            var haloClientName = item.Source.GetCustomField("HaloPsaClientName") ?? string.Empty;
+            var writeback = await haloWriteback.UpsertNCentralSiteLinkAsync(
+                item.Source.Id,
+                item.Source.Name,
+                haloClientName,
+                targetId,
+                targetName,
+                customerId,
+                cancellationToken).ConfigureAwait(false);
+            return writeback.Success
+                ? writeback
+                : SourceWritebackFailure("N-central site write succeeded, but HaloPSA site-link writeback failed.");
+        }
+
+        return null;
+    }
+
+    private static EntityWriteResult SourceWritebackFailure(string message) => new()
+    {
+        Vendor = "HaloPSA",
+        Success = false,
+        Message = message
+    };
+
     private static EntitySyncChangeStateRoute? PrepareChangeStateRoute(EntitySyncPlan plan)
     {
         if (plan.Execution.UpdatePolicy != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)

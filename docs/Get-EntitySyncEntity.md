@@ -17,6 +17,7 @@ Get-EntitySyncEntity -Vendor HaloPSA [-Type <String>] [-Search <String>] [-Inclu
 Get-EntitySyncEntity -Vendor NetSuite [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 Get-EntitySyncEntity -Vendor NCentral [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 Get-EntitySyncEntity -Vendor Bill.com [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
+Get-EntitySyncEntity -Vendor 'Sophos Central' [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 Get-EntitySyncEntity -Vendor AgentController [-Type <String>] [-Search <String>] [-IncludeInactive] [-Count <Int32>]
 ```
 
@@ -24,6 +25,8 @@ Get-EntitySyncEntity -Vendor AgentController [-Type <String>] [-Search <String>]
 Reads `ExternalEntity` records from the vendor adapter registered by `Connect-EntitySyncVendor`. `-Type` defaults to the connected vendor's supported entity type and completes only to values that vendor supports.
 
 Bill.com supports `-Type Client`, backed by the configured Bill Spend & Expense client custom field.
+
+Sophos Central supports `-Type Customer`, backed by partner or organization tenants. Active tenants are returned by default; `-IncludeInactive` includes suspended and canceled tenants.
 
 `Get-EntitySyncEntity` is fast by default and returns the vendor's list payload. Use `-FullObjects` only when per-client detail or site address enrichment is required for HaloPSA; that mode is intentionally slower and shows standard PowerShell progress.
 
@@ -49,6 +52,13 @@ Get-EntitySyncEntity -Vendor NCentral -Type Site -IncludeInactive
 Lists N-central sites, including inactive ones.
 
 ### Example 3
+```powershell
+Get-EntitySyncEntity -Vendor 'Sophos Central' -Type Customer -Search 'Acme'
+```
+
+Lists active Sophos Central tenants whose name, tenant ID, or contact email contains `Acme`.
+
+### Example 4
 ```powershell
 Get-EntitySyncEntity -Vendor AgentController -Type Customer
 ```

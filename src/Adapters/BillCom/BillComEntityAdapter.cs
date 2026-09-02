@@ -11,7 +11,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
 {
     public const string ClientExternalIdName = "BillSpendClientId";
     public const string ClientUuidExternalIdName = "BillSpendUuid";
-    public const string HaloClientCustomFieldName = "CFBillSpendClientID";
+    public const string HaloClientCustomFieldName = EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
     private const int MaximumPagesPerQuery = 100;
 
     private readonly BillComOptions options;
@@ -211,20 +211,8 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         return entity;
     }
 
-    internal static string DecodeBillComValueId(string? rawId)
-    {
-        if (string.IsNullOrWhiteSpace(rawId)) return string.Empty;
-        try
-        {
-            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(rawId));
-            var colonIndex = decoded.LastIndexOf(':');
-            return colonIndex >= 0 && colonIndex < decoded.Length - 1 ? decoded[(colonIndex + 1)..] : rawId;
-        }
-        catch (FormatException)
-        {
-            return rawId;
-        }
-    }
+    internal static string DecodeBillComValueId(string? rawId) =>
+        EntitySyncIntegrationContracts.DecodeBillComValueId(rawId);
 
     private static ExternalEntity? ReadFirstClient(JsonElement root)
     {

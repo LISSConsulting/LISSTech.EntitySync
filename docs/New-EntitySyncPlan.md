@@ -19,12 +19,14 @@ When HaloPSA is the target, planning reads full client records by default so cus
 
 Bill.com is a first-class vendor. It exposes EntityType `Client` from the Bill Spend & Expense `Client` custom field. When Bill.com is the source and HaloPSA is the target, `-SourceExternalIdName` defaults to `BillSpendClientId` and `-TargetCustomFieldName` defaults to `CFBillSpendClientID` unless explicitly overridden.
 
+Sophos Central exposes partner or organization tenants as EntityType `Customer`. When HaloPSA is the target, `-SourceExternalIdName` defaults to `SophosCentralTenantId` and `-TargetCustomFieldName` defaults to `CFSophosCentralTenantID`. Partner connections can also be targets; organization connections reject writes during apply because Sophos does not expose organization tenant write routes.
+
 Use `-SourceSearch` and optional `-SourceCount` for focused one-off customer plans. They filter the source read before matching, so operators do not have to build a full plan and manually prune unrelated rows.
 
 ## SYNTAX
 
 ```powershell
-New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral|Bill.com> [-TargetVendor] <HaloPSA|NetSuite|NCentral|Bill.com|AgentController> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-SourceSearch <String>] [-SourceCount <Int32>] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
+New-EntitySyncPlan [-SourceVendor] <HaloPSA|NetSuite|NCentral|Bill.com|'Sophos Central'> [-TargetVendor] <HaloPSA|NetSuite|NCentral|Bill.com|'Sophos Central'|AgentController> [-InputObject <ExternalEntity>] [[-SourceEntityType] <String>] [[-TargetEntityType] <String>] [-IncludeInactive] [-CreateMissing] [-FullTargetObjects] [-SourceSearch <String>] [-SourceCount <Int32>] [-AutoLinkScore <Int32>] [-ReviewScore <Int32>] [-SourceExternalIdName <String>] [-TargetCustomFieldName <String>] [-ThrottleLimit <Int32>] [<CommonParameters>]
 ```
 
 ## EXAMPLES
@@ -81,3 +83,12 @@ $plan = New-EntitySyncPlan -SourceVendor Bill.com -SourceEntityType Client -Targ
 ```
 
 Creates a Bill.com client to HaloPSA client plan. The default Bill.com-to-HaloPSA link field is `CFBillSpendClientID`.
+
+### Example 8
+```powershell
+Connect-EntitySyncVendor -Vendor 'Sophos Central'
+Connect-EntitySyncVendor -Vendor HaloPSA
+$plan = New-EntitySyncPlan -SourceVendor 'Sophos Central' -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client
+```
+
+Creates a Sophos Central tenant to HaloPSA client plan. The default Sophos-to-HaloPSA link field is `CFSophosCentralTenantID`.

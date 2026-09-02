@@ -1,6 +1,6 @@
 # LISSTech.EntitySync
 
-**Vendor entity synchronization that refuses to guess silently: connect NetSuite, HaloPSA, N-central, and AgentController, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
+**Vendor entity synchronization that refuses to guess silently: connect NetSuite, HaloPSA, N-central, Bill.com, Sophos Central, and AgentController, build an explainable match plan, review every risky row, then apply only the changes you explicitly approve.**
 
 [![PowerShell 7.4+](https://img.shields.io/badge/PowerShell-7.4+-5391FE?style=for-the-badge&logo=powershell&logoColor=000&labelColor=000)](https://learn.microsoft.com/powershell/)
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-8A2BE2?style=for-the-badge&logo=dotnet&logoColor=fff&labelColor=000)](https://dotnet.microsoft.com/)
@@ -154,7 +154,7 @@ graph LR
 
 | Cmdlet | Role |
 |---|---|
-| `Connect-EntitySyncVendor` | Configure and register a NetSuite, HaloPSA, N-central, or LTAC adapter; vendor-specific parameters appear after `-Vendor`. |
+| `Connect-EntitySyncVendor` | Configure and register a NetSuite, HaloPSA, N-central, Bill.com, Sophos Central, or AgentController adapter; vendor-specific parameters appear after `-Vendor`. |
 | `Get-EntitySyncConnection` | Inspect registered vendor connection objects. |
 | `Test-EntitySyncConnection` | Validate adapter connectivity. |
 | `Get-EntitySyncLookup` | Discover vendor lookup IDs such as HaloPSA top levels and N-central service organizations. |
@@ -316,6 +316,22 @@ NetSuite customer discovery uses standard REST Web Services SuiteQL, not a RESTl
 
 The adapter derives `https://<account>.suitetalk.api.netsuite.com/services/rest/query/v1/suiteql` from that account ID. The NetSuite role used by the token must have REST Web Services access and permissions to query customers with SuiteQL.
 
+### Sophos Central
+
+| Variable | Parameter |
+|---|---|
+| `SOPHOS_CENTRAL_CLIENT_ID` | `-SophosCentralClientId` |
+| `SOPHOS_CENTRAL_CLIENT_SECRET` | `-SophosCentralClientSecret` |
+| `SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY` | `-SophosCentralDefaultDataGeography` |
+| `SOPHOS_CENTRAL_DEFAULT_DATA_REGION` | `-SophosCentralDefaultDataRegion` |
+| `SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE` | `-SophosCentralDefaultBillingType` |
+
+Create API credentials in Sophos Central Partner or Enterprise and connect with `-Vendor 'Sophos Central'` (`Sophos` and `SophosCentral` are accepted aliases). The adapter exchanges the client credentials at `https://id.sophos.com/api/v2/oauth2/token`, resolves the credential identity through `whoami/v1`, and enumerates tenants through the Partner or Organization API.
+
+Sophos tenants are `Customer` entities. `SophosCentralTenantId` is the default external ID, and Sophos-to-HaloPSA plans default to target custom field `CFSophosCentralTenantID`. Active tenants are returned by default; use `-IncludeInactive` to include suspended or canceled tenants.
+
+Partner credentials can also create tenants and update their `showAs` display name. Creation maps the canonical customer contact/address plus optional `SophosDataGeography`, `SophosDataRegion`, `SophosBillingType`, `SophosProducts`, and `SophosAcceptedSampleSubmission` custom fields. Geography/region and billing type may instead come from the connection defaults above. Creation fails before any Sophos write when required contact, address, geography/region, or billing data is missing. Organization credentials remain read-only because Sophos exposes tenant writes only through the Partner API.
+
 ### N-central
 
 | Variable | Parameter |
@@ -434,7 +450,7 @@ just clean        # remove compiled output
 ├── 🌐 mcp/                             # stdio + Streamable HTTP MCP host and Dockerfile
 ├── ⏱️ scheduler/                       # changed-only HTTP scheduler host and Dockerfile
 ├── 🧬 src/
-│   ├── Adapters/                       # HaloPSA + NetSuite + N-central + AgentController vendor IO
+│   ├── Adapters/                       # HaloPSA + NetSuite + N-central + Bill.com + Sophos Central + AgentController vendor IO
 │   ├── Application/                    # planning, inspection, approval, and execution use cases
 │   ├── Artifacts/                      # Excel/JSON plan boundary
 │   ├── Commands/                       # public PowerShell cmdlets
@@ -458,6 +474,6 @@ Shipped adapters:
 - **HaloPSA → N-central**: HaloPSA clients and sites sync into N-central customers and sites, maintaining both sides of the client relationship via `externalId` and `client_links`/`site_links`.
 - **N-central → AgentController**: N-central customers and sites sync into AgentController customer scopes, applied as one authoritative batch per approved plan (see `specs/001-ltac-sync-adapter/`).
 
-NetSuite is a source-only adapter; AgentController is a sync target only. HaloPSA and N-central participate as both source and target.
+NetSuite is source-only; AgentController is an authoritative batch target. HaloPSA, N-central, Bill.com, and Sophos Central participate through both PowerShell and MCP according to each vendor API's write capabilities.
 
 The core is intentionally vendor-neutral. Add the next vendor by implementing the adapter port, mapping into `ExternalEntity`, and leaving matching/planning alone.

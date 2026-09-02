@@ -10,12 +10,12 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Create a tenant-scoped entity synchronization plan. Planning is read-only. Use sourceSearch/sourceCount to bound focused plans and sourceEntityId to assert the exact immutable source ID. Inspect every page and approve its digest before apply. Workflows requiring source integration-link writebacks must use PowerShell.")]
+    [Description("Create a tenant-scoped entity synchronization plan. Planning is read-only. Use sourceSearch/sourceCount to bound focused plans and sourceEntityId to assert the exact immutable source ID. Inspect every page and approve its digest before apply.")]
     public static async Task<string> CreateSyncPlan(
         EntitySyncService service,
         McpRequestContext context,
-        [Description("Source vendor: HaloPSA, NetSuite, NCentral, or Bill.com")] string sourceVendor,
-        [Description("Target vendor: HaloPSA, NetSuite, NCentral, or Bill.com")] string targetVendor,
+        [Description("Source vendor: HaloPSA, NetSuite, NCentral, Bill.com, or Sophos Central")] string sourceVendor,
+        [Description("Target vendor: HaloPSA, NCentral, Bill.com, Sophos Central, or AgentController. NetSuite is read-only.")] string targetVendor,
         [Description("Source connection ID. Required when multiple connections exist for this vendor.")] string? sourceConnectionId = null,
         [Description("Target connection ID. Required when multiple connections exist for this vendor.")] string? targetConnectionId = null,
         [Description("Source entity type. Defaults to the vendor primary type.")] string? sourceEntityType = null,

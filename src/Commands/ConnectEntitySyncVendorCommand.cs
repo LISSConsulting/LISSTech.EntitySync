@@ -9,6 +9,7 @@ using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Runtime;
 
@@ -22,6 +23,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "NetSuite")]
     [Parameter(Mandatory = true, ParameterSetName = "NCentral")]
     [Parameter(Mandatory = true, ParameterSetName = "BillCom")]
+    [Parameter(Mandatory = true, ParameterSetName = "SophosCentral")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerSession")]
@@ -34,6 +36,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
     [Parameter(ParameterSetName = "BillCom")]
+    [Parameter(ParameterSetName = "SophosCentral")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -44,6 +47,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
     [Parameter(ParameterSetName = "BillCom")]
+    [Parameter(ParameterSetName = "SophosCentral")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -54,6 +58,7 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(ParameterSetName = "NetSuite")]
     [Parameter(ParameterSetName = "NCentral")]
     [Parameter(ParameterSetName = "BillCom")]
+    [Parameter(ParameterSetName = "SophosCentral")]
     [Parameter(ParameterSetName = "AgentControllerToken")]
     [Parameter(ParameterSetName = "AgentControllerSecureToken")]
     [Parameter(ParameterSetName = "AgentControllerSession")]
@@ -126,6 +131,14 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             AddDynamicParameter<string>("BillComApiToken");
             AddDynamicParameter<string>("BillComBaseUrl", "https://gateway.prod.bill.com/connect/v3/spend/custom-fields");
             AddDynamicParameter<string>("BillComClientFieldName", "Client");
+        }
+        else if (EntitySyncVendors.IsSophosCentral(Vendor))
+        {
+            AddDynamicParameter<string>("SophosCentralClientId");
+            AddDynamicParameter<string>("SophosCentralClientSecret");
+            AddDynamicParameter<string>("SophosCentralDefaultDataGeography");
+            AddDynamicParameter<string>("SophosCentralDefaultDataRegion");
+            AddDynamicParameter<string>("SophosCentralDefaultBillingType");
         }
         else if (EntitySyncVendors.IsAgentController(Vendor))
         {
@@ -219,6 +232,30 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
                 WriteObject(new EntitySyncConnection { Vendor = billAdapter.Vendor, Adapter = billAdapter });
                 return;
             }
+            if (EntitySyncVendors.IsSophosCentral(Vendor))
+            {
+                var sophosOptions = new SophosCentralOptions
+                {
+                    ClientId = Require(DynamicValue<string?>("SophosCentralClientId", null), "SOPHOS_CENTRAL_CLIENT_ID", "SophosCentralClientId"),
+                    ClientSecret = Require(DynamicValue<string?>("SophosCentralClientSecret", null), "SOPHOS_CENTRAL_CLIENT_SECRET", "SophosCentralClientSecret"),
+                    DefaultDataGeography = DynamicValue<string?>("SophosCentralDefaultDataGeography", Environment.GetEnvironmentVariable("SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY")),
+                    DefaultDataRegion = DynamicValue<string?>("SophosCentralDefaultDataRegion", Environment.GetEnvironmentVariable("SOPHOS_CENTRAL_DEFAULT_DATA_REGION")),
+                    DefaultBillingType = DynamicValue<string?>("SophosCentralDefaultBillingType", Environment.GetEnvironmentVariable("SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE"))
+                };
+                var sophosAdapter = new SophosCentralEntityAdapter(sophosOptions);
+                ConnectionRegistry.Set(sophosAdapter);
+                SaveProfileIfRequested(sophosAdapter.Vendor, new Dictionary<string, string?>
+                {
+                    ["SophosCentralClientId"] = sophosOptions.ClientId,
+                    ["SophosCentralClientSecret"] = sophosOptions.ClientSecret,
+                    ["SophosCentralDefaultDataGeography"] = sophosOptions.DefaultDataGeography,
+                    ["SophosCentralDefaultDataRegion"] = sophosOptions.DefaultDataRegion,
+                    ["SophosCentralDefaultBillingType"] = sophosOptions.DefaultBillingType
+                });
+                WriteObject(new EntitySyncConnection { Vendor = sophosAdapter.Vendor, Adapter = sophosAdapter });
+                return;
+            }
+
 
             if (Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
             {

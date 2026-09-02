@@ -3,6 +3,7 @@ using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Runtime;
@@ -118,8 +119,8 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             .AddParameter("AutoLinkScore", AutoLinkScore)
             .AddParameter("ReviewScore", ReviewScore)
             .AddParameter("ThrottleLimit", ThrottleLimit);
-        if (MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)) || !EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("TargetCustomFieldName", EffectiveTargetCustomFieldName(sourceVendor, targetVendor));
-        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) || EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("SourceExternalIdName", EffectiveSourceExternalIdName(sourceVendor));
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)) || !EntitySyncVendors.IsBillCom(sourceVendor) || EntitySyncVendors.IsSophosCentral(sourceVendor)) ps.AddParameter("TargetCustomFieldName", EffectiveTargetCustomFieldName(sourceVendor, targetVendor));
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) || EntitySyncVendors.IsBillCom(sourceVendor) || EntitySyncVendors.IsSophosCentral(sourceVendor)) ps.AddParameter("SourceExternalIdName", EffectiveSourceExternalIdName(sourceVendor));
         if (IncludeInactive) ps.AddParameter("IncludeInactive");
         if (CreateMissing) ps.AddParameter("CreateMissing");
         if (FullTargetObjects) ps.AddParameter("FullTargetObjects");
@@ -184,6 +185,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
     private string EffectiveSourceExternalIdName(string sourceVendor)
     {
         if (EntitySyncVendors.IsBillCom(sourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        if (EntitySyncVendors.IsSophosCentral(sourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return SophosCentralEntityAdapter.TenantExternalIdName;
         return SourceExternalIdName;
     }
 
@@ -193,6 +195,11 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         {
             return BillComEntityAdapter.HaloClientCustomFieldName;
         }
+        if (EntitySyncVendors.IsSophosCentral(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return SophosCentralEntityAdapter.HaloTenantCustomFieldName;
+        }
+
 
         return TargetCustomFieldName;
     }
@@ -236,6 +243,12 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
     {
         WriteResult(result);
         if (!result.Success) return;
+        if (RequiresBillComWriteBack(plan, item, result))
+        {
+            WriteBillComIdToSource(item, result, haloAdapter);
+            return;
+        }
+
         if (RequiresHaloNCentralSiteLink(plan, item))
         {
             WriteHaloNCentralSiteLink(item, request, result, haloAdapter);
@@ -254,6 +267,33 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         var requiredHaloAdapter = haloAdapter ?? throw new InvalidOperationException("HaloPSA adapter is required to write the N-central integration client link.");
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
         WriteResult(requiredHaloAdapter.UpsertNCentralClientLinkAsync(item.Source.Id, item.Source.Name, targetId, targetName, CancellationToken.None).GetAwaiter().GetResult());
+    }
+
+    private static bool RequiresBillComWriteBack(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteResult result)
+    {
+        return EntitySyncVendors.IsBillCom(plan.TargetVendor)
+            && plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(result.Id ?? item.Target?.Id)
+            && !string.IsNullOrWhiteSpace(item.Source.Id);
+    }
+
+    private void WriteBillComIdToSource(EntitySyncPlanItem item, EntityWriteResult result, HaloEntityAdapter? haloAdapter)
+    {
+        var requiredHaloAdapter = haloAdapter
+            ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the BILL.com client ID.");
+        var valueId = result.Id ?? item.Target?.Id
+            ?? throw new InvalidOperationException("BILL.com value ID is required for HaloPSA writeback.");
+        var numericId = BillComEntityAdapter.DecodeBillComValueId(valueId);
+        var writebackRequest = new EntityWriteRequest
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = item.Source.Id,
+            Name = item.Source.Name
+        };
+        writebackRequest.CustomFields[BillComEntityAdapter.HaloClientCustomFieldName] = numericId;
+        WriteResult(requiredHaloAdapter.UpdateEntityAsync(writebackRequest, CancellationToken.None).GetAwaiter().GetResult());
     }
 
     private static bool RequiresHaloNCentralClientLink(EntitySyncPlan plan, EntitySyncPlanItem item)

@@ -4,6 +4,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Ports;
@@ -39,12 +40,13 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         try
         {
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
+            Plan.SourceVendor = EntitySyncVendors.Normalize(Plan.SourceVendor);
             if (Apply) ReviewedPlanPolicy.EnsureApproved(Plan);
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions
             {
-                SourceExternalIdName = EntitySyncVendors.IsBillCom(Plan.SourceVendor) ? BillComEntityAdapter.ClientExternalIdName : "NetSuiteInternalId",
+                SourceExternalIdName = EffectiveSourceExternalIdName(),
                 TargetCustomFieldName = EffectiveTargetCustomFieldName()
             };
             var isLtacTarget = EntitySyncVendors.IsAgentController(Plan.TargetVendor);
@@ -101,14 +103,6 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
                     continue;
                 }
 
-                if (EntitySyncVendors.IsBillCom(Plan.TargetVendor))
-                {
-                    if (item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase) || item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase))
-                    {
-                        WriteResult(new EntityWriteResult { Vendor = Plan.TargetVendor, EntityType = Plan.TargetEntityType, Id = item.Target?.Id, Action = item.Action, Success = false, Message = "Bill.com custom-field values cannot be updated after creation. The value already exists in Bill.com." });
-                    }
-                    continue;
-                }
 
                 if (item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase) && item.Target != null)
                 {
@@ -158,9 +152,21 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
         {
             return BillComEntityAdapter.HaloClientCustomFieldName;
         }
+        if (EntitySyncVendors.IsSophosCentral(Plan.SourceVendor) && Plan.TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return SophosCentralEntityAdapter.HaloTenantCustomFieldName;
+        }
+
 
         return TargetCustomFieldName;
     }
+    private string EffectiveSourceExternalIdName()
+    {
+        if (EntitySyncVendors.IsBillCom(Plan.SourceVendor)) return BillComEntityAdapter.ClientExternalIdName;
+        if (EntitySyncVendors.IsSophosCentral(Plan.SourceVendor)) return SophosCentralEntityAdapter.TenantExternalIdName;
+        return "NetSuiteInternalId";
+    }
+
 
     private void ApplyLtacBatch(DefaultEntityMapper mapper, MatchOptions options)
     {

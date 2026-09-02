@@ -7,6 +7,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
@@ -47,7 +48,12 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         "BILLCOM_BASE_URL",
         "BILLCOM_API_TOKEN",
         "BILLSPEND_API_TOKEN",
-        "BILLCOM_CLIENT_FIELD_NAME"
+        "BILLCOM_CLIENT_FIELD_NAME",
+        "SOPHOS_CENTRAL_CLIENT_ID",
+        "SOPHOS_CENTRAL_CLIENT_SECRET",
+        "SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY",
+        "SOPHOS_CENTRAL_DEFAULT_DATA_REGION",
+        "SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE"
     ];
 
     private readonly IReadOnlyDictionary<string, string?> environment;
@@ -130,6 +136,18 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                 ClientFieldName = ResolveOptional(profileSettings, "BillComClientFieldName", "BILLCOM_CLIENT_FIELD_NAME") ?? "Client"
             });
         }
+        if (EntitySyncVendors.IsSophosCentral(normalized))
+        {
+            return new SophosCentralEntityAdapter(new SophosCentralOptions
+            {
+                ClientId = Resolve(profileSettings, "SophosCentralClientId", "SOPHOS_CENTRAL_CLIENT_ID"),
+                ClientSecret = Resolve(profileSettings, "SophosCentralClientSecret", "SOPHOS_CENTRAL_CLIENT_SECRET"),
+                DefaultDataGeography = ResolveOptional(profileSettings, "SophosCentralDefaultDataGeography", "SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY"),
+                DefaultDataRegion = ResolveOptional(profileSettings, "SophosCentralDefaultDataRegion", "SOPHOS_CENTRAL_DEFAULT_DATA_REGION"),
+                DefaultBillingType = ResolveOptional(profileSettings, "SophosCentralDefaultBillingType", "SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE")
+            });
+        }
+
 
         throw new InvalidOperationException("Unsupported vendor.");
     }

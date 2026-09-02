@@ -440,21 +440,122 @@ public sealed class PlatformTests
     [Theory]
     [InlineData("NCentral")]
     [InlineData("Bill.com")]
-    public async Task ApplicationPlannerRejectsFlowsThatRequireUnavailableSourceWriteBack(string targetVendor)
+    public async Task ApplicationAppliesHaloSourceRoutesWithRequiredWriteback(string targetVendor)
     {
         using var connections = new InMemoryEntityConnectionRepository();
+        var halo = new FakeAdapter("HaloPSA",
+        [
+            new ExternalEntity
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = "halo-1",
+                Name = "Acme"
+            }
+        ]);
+        var target = new FakeAdapter(targetVendor);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "target", target);
         var service = CreateService(connections);
-
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
         {
             TenantId = "tenant",
             SourceVendor = "HaloPSA",
-            TargetVendor = targetVendor
-        }, CancellationToken.None));
+            SourceConnectionId = "halo",
+            TargetVendor = targetVendor,
+            TargetConnectionId = "target",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
 
-        Assert.Contains("source integration-link writeback", error.Message, StringComparison.OrdinalIgnoreCase);
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, target.CreateCalls);
+        if (targetVendor.Equals("Bill.com", StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.Equal(1, halo.UpdateCalls);
+            Assert.Equal("1", halo.LastUpdateRequest?.CustomFields["CFBillSpendClientID"]);
+        }
+        else
+        {
+            Assert.Equal(1, halo.NCentralClientLinkCalls);
+        }
     }
 
+    [Fact]
+    public async Task ApplicationAllowsSophosCentralAsPlanTarget()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var target = new FakeAdapter(EntitySyncVendors.SophosCentral);
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "sophos", target);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NetSuite",
+            SourceConnectionId = "netsuite",
+            TargetVendor = EntitySyncVendors.SophosCentral,
+            TargetConnectionId = "sophos",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, target.CreateCalls);
+    }
+
+    [Fact]
+    public async Task ApplicationUsesAuthoritativeBatchAdapterForAgentController()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var customer = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Customer",
+            Id = "ncentral-1",
+            Name = "Acme"
+        };
+        customer.ExternalIds["NCentralCustomerId"] = customer.Id;
+        var site = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Site",
+            Id = "ncentral-site-1",
+            Name = "Acme HQ"
+        };
+        site.ExternalIds["NCentralSiteId"] = site.Id;
+        site.ExternalIds["NCentralCustomerId"] = customer.Id;
+        var target = new FakeAdapter(EntitySyncVendors.AgentController);
+        var sourceAdapter = new FakeAdapter("NCentral", [customer, site], filterByEntityType: true);
+        connections.Register("tenant", "ncentral", sourceAdapter);
+        connections.Register("tenant", "agent-controller", target);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NCentral",
+            SourceConnectionId = "ncentral",
+            TargetVendor = EntitySyncVendors.AgentController,
+            TargetConnectionId = "agent-controller",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.Equal("CustomerScope", plan.SourceEntityType);
+        Assert.True(result.Success);
+        Assert.Equal(1, target.BatchCalls);
+        Assert.Equal(0, target.CreateCalls);
+        Assert.Equal(2, target.LastBatchRequests!.Count);
+        Assert.Contains(target.LastBatchRequests, request => Equals(request.Fields["ncentral_customer_id"], "ncentral-1"));
+        Assert.Contains(target.LastBatchRequests, request => Equals(request.Fields["ncentral_customer_id"], "ncentral-site-1"));
+        Assert.Equal(new[] { "Customer", "Site" }, sourceAdapter.Queries.Select(query => query.EntityType));
+    }
     [Fact]
     public async Task ApprovalRequiresInspectionOfEveryPlanItem()
     {
@@ -1380,19 +1481,38 @@ public sealed class PlatformTests
         public string GetNetSuiteHaloChangeStateScope() => "unused";
     }
 
-    private sealed class FakeAdapter(string vendor, IReadOnlyList<ExternalEntity>? entities = null, Func<Task>? beforeCreate = null) : IEntityAdapter, IDisposable
+    private sealed class FakeAdapter(
+        string vendor,
+        IReadOnlyList<ExternalEntity>? entities = null,
+        Func<Task>? beforeCreate = null,
+        bool filterByEntityType = false)
+        : IEntityAdapter, IEntityBatchAdapter, IHaloSourceWritebackAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
         public int CreateCalls { get; private set; }
+        public int UpdateCalls { get; private set; }
+        public int NCentralClientLinkCalls { get; private set; }
+        public int BatchCalls { get; private set; }
         public bool Disposed { get; private set; }
         public EntityQuery? LastQuery { get; private set; }
+        public EntityWriteRequest? LastUpdateRequest { get; private set; }
+        public List<EntityQuery> Queries { get; } = [];
+        public IReadOnlyList<EntityWriteRequest>? LastBatchRequests { get; private set; }
 
         public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             LastQuery = query;
-            return Task.FromResult(entities ?? (IReadOnlyList<ExternalEntity>)Array.Empty<ExternalEntity>());
+            Queries.Add(query);
+            var result = entities ?? (IReadOnlyList<ExternalEntity>)Array.Empty<ExternalEntity>();
+            if (filterByEntityType)
+            {
+                result = result
+                    .Where(entity => entity.EntityType.Equals(query.EntityType, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
+            return Task.FromResult(result);
         }
 
         public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(string type, CancellationToken cancellationToken) =>
@@ -1407,8 +1527,42 @@ public sealed class PlatformTests
             return new EntityWriteResult { Success = true, Id = CreateCalls.ToString(), Message = "Created." };
         }
 
-        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Message = "Updated." });
+        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+        {
+            UpdateCalls++;
+            LastUpdateRequest = request;
+            return Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Message = "Updated." });
+        }
+
+        public Task<EntityWriteResult> UpsertNCentralClientLinkAsync(
+            string haloClientId,
+            string haloClientName,
+            string nCentralCustomerId,
+            string nCentralCustomerName,
+            CancellationToken cancellationToken)
+        {
+            NCentralClientLinkCalls++;
+            return Task.FromResult(new EntityWriteResult { Success = true, Id = nCentralCustomerId, Message = "Linked." });
+        }
+
+        public Task<EntityWriteResult> UpsertNCentralSiteLinkAsync(
+            string haloSiteId,
+            string haloSiteName,
+            string haloClientName,
+            string nCentralSiteId,
+            string nCentralSiteName,
+            string nCentralCustomerId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new EntityWriteResult { Success = true, Id = nCentralSiteId, Message = "Linked." });
+
+        public Task<EntityWriteResult> ApplyBatchAsync(
+            IReadOnlyList<EntityWriteRequest> requests,
+            CancellationToken cancellationToken)
+        {
+            BatchCalls++;
+            LastBatchRequests = requests;
+            return Task.FromResult(new EntityWriteResult { Success = true, Message = "Batch applied." });
+        }
 
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
 

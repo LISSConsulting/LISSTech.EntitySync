@@ -784,11 +784,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, IDisposable
         return !string.IsNullOrWhiteSpace(customerName) && customer.Name.Equals(customerName, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static string SanitizeNCentralName(string value)
-    {
-        var sanitized = value.Replace("&", " and ", StringComparison.Ordinal);
-        return string.Join(" ", sanitized.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
-    }
+    public static string SanitizeNCentralName(string value) =>
+        EntitySyncIntegrationContracts.SanitizeNCentralName(value);
 
     public static string? NormalizeNCentralCountryCode(string? value)
     {

@@ -17,7 +17,7 @@ public static class ConnectionTools
         IEntityConnectionRepository connections,
         IServerManagedEntityAdapterFactory adapterFactory,
         McpRequestContext context,
-        [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, or Bill.com")] string vendor,
+        [Description("Vendor name: HaloPSA, NetSuite, NCentral, AgentController, Bill.com, or Sophos Central")] string vendor,
         [Description("Stable connection ID. Use distinct IDs for multiple accounts of the same vendor.")] string? connectionId = null,
         [Description("Local stdio only: named DPAPI profile. HTTP deployments use server environment configuration.")] string? profileName = null,
         CancellationToken cancellationToken = default)
@@ -32,7 +32,9 @@ public static class ConnectionTools
             connectionId = admission.ConnectionId;
             if (!context.AllowProfiles && !string.IsNullOrWhiteSpace(profileName))
                 throw new InvalidOperationException("Profiles are disabled for remote MCP transport.");
-            var profile = context.AllowProfiles ? FindProfile(normalized, profileName) : null;
+            var profile = context.AllowProfiles && !string.IsNullOrWhiteSpace(profileName)
+                ? FindProfile(normalized, profileName)
+                : null;
             adapter = await adapterFactory
                 .CreateAsync(normalized, profile?.Settings, cancellationToken)
                 .ConfigureAwait(false);

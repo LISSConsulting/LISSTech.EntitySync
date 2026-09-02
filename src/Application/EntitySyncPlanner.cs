@@ -24,9 +24,27 @@ public sealed class EntitySyncPlanner(
         using var targetLease = connections.Acquire(request.TenantId, targetVendor, request.TargetConnectionId);
         var sourceConnection = sourceLease.Connection;
         var targetConnection = targetLease.Connection;
-        var sourceType = request.SourceEntityType ?? DefaultEntityType(sourceVendor);
+        var sourceType = request.SourceEntityType
+            ?? (sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) && EntitySyncVendors.IsAgentController(targetVendor)
+                ? "CustomerScope"
+                : DefaultEntityType(sourceVendor));
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
+        var authoritativeAgentControllerSnapshot = EntitySyncVendors.IsAgentController(targetVendor);
+        if (authoritativeAgentControllerSnapshot
+            && (!sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+                || !sourceType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException("AgentController apply requires a complete N-central CustomerScope source snapshot.");
+        }
+        if (authoritativeAgentControllerSnapshot
+            && (!string.IsNullOrWhiteSpace(request.SourceSearch)
+                || request.SourceCount.HasValue
+                || !string.IsNullOrWhiteSpace(request.SourceEntityId)))
+        {
+            throw new ArgumentException("AgentController authoritative planning cannot use sourceSearch, sourceCount, or sourceEntityId because the complete N-central customer-and-site snapshot is required.");
+        }
+
 
         var sourceQuery = new EntityQuery
         {
@@ -38,7 +56,31 @@ public sealed class EntitySyncPlanner(
         var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
 
-        var sources = await sourceConnection.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<ExternalEntity> sources;
+        if (authoritativeAgentControllerSnapshot)
+        {
+            var customers = await sourceConnection.Adapter.GetEntitiesAsync(
+                new EntityQuery
+                {
+                    EntityType = "Customer",
+                    IncludeInactive = request.IncludeInactive,
+                    Count = MaxEntitiesPerPlanSide + 1
+                },
+                cancellationToken).ConfigureAwait(false);
+            var sites = await sourceConnection.Adapter.GetEntitiesAsync(
+                new EntityQuery
+                {
+                    EntityType = "Site",
+                    IncludeInactive = request.IncludeInactive,
+                    Count = MaxEntitiesPerPlanSide + 1
+                },
+                cancellationToken).ConfigureAwait(false);
+            sources = customers.Concat(sites).ToArray();
+        }
+        else
+        {
+            sources = await sourceConnection.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
+        }
         if (request.SourceEntityId is not null)
         {
             var expectedSourceId = request.SourceEntityId.Trim();
@@ -296,14 +338,29 @@ public sealed class EntitySyncPlanner(
         if (sourceVendor.Equals(targetVendor, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Source and target vendors must be different.");
         if (targetVendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("NetSuite is read-only in the application executor and cannot be used as a plan target.");
-        var requiresHaloWriteBack = sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
-            && (targetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(targetVendor));
-        if (requiresHaloWriteBack)
-            throw new ArgumentException($"{sourceVendor} to {targetVendor} requires a source integration-link writeback that is not available through the application executor. Use the reviewed PowerShell execution workflow.");
+            throw new ArgumentException($"{targetVendor} is read-only and cannot be used as a plan target.");
+        if (EntitySyncVendors.IsAgentController(targetVendor)
+            && !sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("AgentController authoritative synchronization requires NCentral as the source vendor.");
+        }
     }
 
     private static string DefaultEntityType(string vendor) => vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(vendor) ? "Client" : "Customer";
-    private static string DefaultExternalIdName(string vendor) => EntitySyncVendors.IsBillCom(vendor) ? "BillSpendClientId" : "NetSuiteInternalId";
-    private static string DefaultCustomFieldName(string sourceVendor, string targetVendor) => EntitySyncVendors.IsBillCom(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) ? "CFBillSpendClientID" : "CFNetSuiteCustomerID";
+    private static string DefaultExternalIdName(string vendor)
+    {
+        if (EntitySyncVendors.IsBillCom(vendor)) return "BillSpendClientId";
+        return EntitySyncVendors.IsSophosCentral(vendor) ? "SophosCentralTenantId" : "NetSuiteInternalId";
+    }
+
+    private static string DefaultCustomFieldName(string sourceVendor, string targetVendor)
+    {
+        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+        {
+            if (EntitySyncVendors.IsBillCom(sourceVendor)) return "CFBillSpendClientID";
+            if (EntitySyncVendors.IsSophosCentral(sourceVendor)) return "CFSophosCentralTenantID";
+        }
+
+        return "CFNetSuiteCustomerID";
+    }
 }

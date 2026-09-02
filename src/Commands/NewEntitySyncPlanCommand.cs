@@ -5,6 +5,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
@@ -25,7 +26,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public ExternalEntity? InputObject { get; set; }
 
     [Parameter(Mandatory = true)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "Bill.com", "BillCom", "BILL", "BillSpend")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "Bill.com", "BillCom", "BILL", "BillSpend", "Sophos Central", "SophosCentral", "Sophos")]
     public string SourceVendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true)]
@@ -384,6 +385,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = traces.Enqueue;
 
         try
         {
@@ -421,6 +423,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
             if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
             if (adapter is BillComEntityAdapter completedBillComAdapter) completedBillComAdapter.Trace = null;
+            if (adapter is SophosCentralEntityAdapter completedSophosCentralAdapter) completedSophosCentralAdapter.Trace = null;
         }
     }
 
@@ -523,6 +526,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     {
         if ((usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return defaultLinkedIdName;
         if (EntitySyncVendors.IsBillCom(SourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        if (EntitySyncVendors.IsSophosCentral(SourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return SophosCentralEntityAdapter.TenantExternalIdName;
         return SourceExternalIdName;
     }
 
@@ -532,6 +536,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         {
             return BillComEntityAdapter.HaloClientCustomFieldName;
         }
+        if (EntitySyncVendors.IsSophosCentral(SourceVendor) && TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return SophosCentralEntityAdapter.HaloTenantCustomFieldName;
+        }
+
 
         return TargetCustomFieldName;
     }
@@ -636,6 +645,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = traces.Enqueue;
     }
 
     private static void ClearAdapterEvents(IEntityAdapter adapter)
@@ -649,5 +659,6 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = null;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = null;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = null;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = null;
     }
 }

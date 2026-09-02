@@ -12,6 +12,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         AddCommonHaloFields(request, source);
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);
+        AddSophosSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
         AddLtacCustomerScopeFields(request, source, targetVendor);
@@ -26,6 +27,7 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         AddTargetCustomField(request, source, targetVendor, options);
         AddNCentralSourceFields(request, source, targetVendor);
         AddHaloNetSuiteMetadata(request, source, targetVendor);
+        AddSophosSourceFields(request, source, targetVendor);
         AddNCentralLinkMarker(request, source, targetVendor);
         AddLtacCustomerScopeFields(request, source, targetVendor);
         return request;
@@ -131,6 +133,54 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
         if (!IsAddressEmpty(address)) request.Fields["address"] = ToNCentralAddress(address!);
     }
 
+    private static void AddSophosSourceFields(EntityWriteRequest request, ExternalEntity source, string targetVendor)
+    {
+        if (!EntitySyncVendors.IsSophosCentral(targetVendor)) return;
+
+        CopyCustomField(request, source, "SophosDataGeography", "dataGeography");
+        CopyCustomField(request, source, "SophosDataRegion", "dataRegion");
+        CopyCustomField(request, source, "SophosBillingType", "billingType");
+        CopyCustomField(request, source, "SophosProducts", "products");
+        CopyCustomField(request, source, "SophosAcceptedSampleSubmission", "acceptedSampleSubmission");
+
+        if (!string.IsNullOrWhiteSpace(source.Email)) request.Fields["contactEmail"] = source.Email;
+        if (!string.IsNullOrWhiteSpace(source.Phone)) request.Fields["contactPhone"] = source.Phone;
+
+        var firstName = FirstNonEmpty(
+            source.GetCustomField("PrimaryContactFirstName"),
+            source.GetCustomField("ContactFirstName"),
+            source.GetCustomField("contactFirstName"),
+            source.GetCustomField("firstname"));
+        var lastName = FirstNonEmpty(
+            source.GetCustomField("PrimaryContactLastName"),
+            source.GetCustomField("ContactLastName"),
+            source.GetCustomField("contactLastName"),
+            source.GetCustomField("lastname"));
+        if (string.IsNullOrWhiteSpace(firstName) || string.IsNullOrWhiteSpace(lastName))
+        {
+            var contactName = FirstNonEmpty(source.GetCustomField("PrimaryContactName"), source.GetCustomField("ContactName"), source.PrimaryAddress?.Attention);
+            var split = SplitContactName(contactName);
+            firstName ??= split.FirstName;
+            lastName ??= split.LastName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(firstName)) request.Fields["contactFirstName"] = firstName;
+        if (!string.IsNullOrWhiteSpace(lastName)) request.Fields["contactLastName"] = lastName;
+
+        var address = !IsAddressEmpty(source.PrimaryAddress) ? source.PrimaryAddress : !IsAddressEmpty(source.ShippingAddress) ? source.ShippingAddress : source.BillingAddress;
+        if (!IsAddressEmpty(address)) request.Fields["address"] = ToSophosAddress(address!);
+    }
+
+    private static void CopyCustomField(
+        EntityWriteRequest request,
+        ExternalEntity source,
+        string sourceName,
+        string targetName)
+    {
+        var value = source.GetCustomField(sourceName);
+        if (!string.IsNullOrWhiteSpace(value)) request.Fields[targetName] = value;
+    }
+
     private static void AddCommonHaloFields(EntityWriteRequest request, ExternalEntity source)
     {
         request.Fields["clientsite_name"] = "Primary Address";
@@ -172,6 +222,20 @@ public sealed partial class DefaultEntityMapper : IEntityMapper
             ["stateProv"] = address.State,
             ["postalCode"] = address.PostalCode,
             ["country"] = address.Country
+        };
+    }
+
+    private static Dictionary<string, object?> ToSophosAddress(EntityAddress address)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["address1"] = address.Line1,
+            ["address2"] = address.Line2,
+            ["address3"] = address.Line3,
+            ["city"] = address.City,
+            ["state"] = address.State,
+            ["postalCode"] = address.PostalCode,
+            ["countryCode"] = address.Country
         };
     }
 

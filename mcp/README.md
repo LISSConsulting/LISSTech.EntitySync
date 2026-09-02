@@ -76,6 +76,7 @@ HaloPSA and NetSuite are mandatory for this Compose stack because the scheduler 
 | N-central | `NCENTRAL_BASE_URL`, `NCENTRAL_USER_API_TOKEN`, `NCENTRAL_SERVICE_ORG_ID` |
 | AgentController | `AGENTCONTROLLER_AUTH_BASE_URL`, `AGENTCONTROLLER_ENTRA_TENANT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_SECRET`, `AGENTCONTROLLER_ENTRA_SCOPE` |
 | Bill.com | `BILLCOM_API_TOKEN` |
+| Sophos Central | `SOPHOS_CENTRAL_CLIENT_ID`, `SOPHOS_CENTRAL_CLIENT_SECRET`; tenant creation also requires source fields or `SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY`/`SOPHOS_CENTRAL_DEFAULT_DATA_REGION` and `SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE` |
 
 The root `.env.example` lists the minimal local Compose variables. `docker-compose.yaml` also passes through optional adapter settings documented in the main README.
 
@@ -118,7 +119,9 @@ Focused one-customer example:
 
 Plan pages expose `sourceId` and `targetId` alongside display names so approval can be based on immutable identities. `sourceEntityId` is an assertion over the bounded vendor query, not a name match; combine it with a selective `sourceSearch` when the vendor account is large.
 
-HaloPSA-to-NCentral and HaloPSA-to-Bill.com apply workflows require source integration-link writebacks that currently exist only in the reviewed PowerShell executor. The MCP application executor rejects those workflows instead of performing incomplete target-only writes.
+The MCP application executor performs the same target and source-writeback workload as the reviewed PowerShell executor. HaloPSA-to-N-central writes update HaloPSA integration links; HaloPSA-to-Bill.com writes record the BILL custom-field value ID on the HaloPSA client; AgentController plans use one authoritative batch.
+
+Sophos Central partner and organization tenants are readable `Customer` entities. Partner credentials can create tenants and patch `showAs`; organization credentials remain read-only because the Organization API has no tenant write route.
 
 ## Operational Model
 

@@ -515,6 +515,7 @@ namespace EntitySyncTests
     $releaseNotes | Should -Match 'N-central' -Because 'N-central adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Bill\.com' -Because 'Bill.com adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'AgentController' -Because 'AgentController adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'Sophos Central' -Because 'Sophos Central adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Retry-After' -Because 'rate-limit/backoff is a load-bearing reliability feature and must be advertised'
     $releaseNotes | Should -Match 'redacted' -Because 'credential redaction across plan artifacts and error paths is a load-bearing safety guarantee'
     $releaseNotes | Should -Match 'SecureString' -Because '-SecureToken is the operator-session JWT entry point and must be advertised'
@@ -529,6 +530,7 @@ namespace EntitySyncTests
     $tags | Should -Contain 'ncentral' -Because 'N-central adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'billcom' -Because 'Bill.com adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'agentcontroller' -Because 'AgentController adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'sophoscentral' -Because 'Sophos Central adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'ltac' -Because 'LTAC should be discoverable as the corrected LISSTech Agent Controller abbreviation'
   }
 
@@ -666,6 +668,10 @@ namespace EntitySyncTests
     $billComInput = 'Get-EntitySyncEntity -Vendor Bill.com -Type '
     $billComTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComInput, $billComInput.Length, $null).CompletionMatches.CompletionText
     $billComTypes | Should -Be @('Client')
+
+    $sophosInput = "Get-EntitySyncEntity -Vendor 'Sophos Central' -Type "
+    $sophosTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosInput, $sophosInput.Length, $null).CompletionMatches.CompletionText
+    $sophosTypes | Should -Be @('Customer')
   }
 
   It 'Completes vendors for New-EntitySyncPlan' {
@@ -675,6 +681,7 @@ namespace EntitySyncTests
     $sourceVendors | Should -Contain 'NetSuite'
     $sourceVendors | Should -Contain 'NCentral'
     $sourceVendors | Should -Contain 'Bill.com'
+    $sourceVendors | Should -Contain "'Sophos Central'"
 
     $targetInput = 'New-EntitySyncPlan -TargetVendor '
     $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
@@ -682,6 +689,7 @@ namespace EntitySyncTests
     $targetVendors | Should -Contain 'NetSuite'
     $targetVendors | Should -Contain 'NCentral'
     $targetVendors | Should -Contain 'Bill.com'
+    $targetVendors | Should -Contain "'Sophos Central'"
   }
 
   It 'Completes vendor-specific entity types for New-EntitySyncPlan' {
@@ -706,7 +714,15 @@ namespace EntitySyncTests
     $billComTargetInput = 'New-EntitySyncPlan -TargetVendor Bill.com -TargetEntityType '
     $billComTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComTargetInput, $billComTargetInput.Length, $null).CompletionMatches.CompletionText
     $billComTargetTypes | Should -Be @('Client')
+
+    $sophosSourceInput = "New-EntitySyncPlan -SourceVendor 'Sophos Central' -SourceEntityType "
+    $sophosSourceTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosSourceInput, $sophosSourceInput.Length, $null).CompletionMatches.CompletionText
+    $sophosSourceTypes | Should -Be @('Customer')
+    $sophosTargetInput = "New-EntitySyncPlan -TargetVendor 'Sophos Central' -TargetEntityType "
+    $sophosTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosTargetInput, $sophosTargetInput.Length, $null).CompletionMatches.CompletionText
+    $sophosTargetTypes | Should -Be @('Customer')
   }
+
 
   It 'Completes vendor-specific lookup types for Get-EntitySyncLookup' {
     $haloInput = 'Get-EntitySyncLookup -Vendor HaloPSA -Type '
@@ -784,6 +800,12 @@ namespace EntitySyncTests
     $billCom | Should -Contain '-BillComClientFieldName'
     $billCom | Should -Not -Contain '-HaloBaseUrl'
     $billCom | Should -Not -Contain '-NetSuiteAccountId'
+
+    $sophosInput = "Connect-EntitySyncVendor -Vendor 'Sophos Central' -"
+    $sophos = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosInput, $sophosInput.Length, $null).CompletionMatches.CompletionText
+    $sophos | Should -Contain '-SophosCentralClientId'
+    $sophos | Should -Contain '-SophosCentralClientSecret'
+    $sophos | Should -Not -Contain '-HaloBaseUrl'
   }
 
   It 'Completes AgentController as the visible vendor on command surfaces that support AgentController (T013, US1)' {

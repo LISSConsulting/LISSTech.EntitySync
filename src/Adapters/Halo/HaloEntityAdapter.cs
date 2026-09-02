@@ -8,7 +8,7 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.Halo;
 
-public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
+public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private const int DefaultEnrichmentConcurrency = 2;

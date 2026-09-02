@@ -17,6 +17,7 @@ Connect-EntitySyncVendor -Vendor HaloPSA [-HaloBaseUrl <String>] [-HaloClientId 
 Connect-EntitySyncVendor -Vendor NetSuite [-NetSuiteAccountId <String>] [-NetSuiteConsumerKey <String>] [-NetSuiteConsumerSecret <String>] [-NetSuiteTokenId <String>] [-NetSuiteTokenSecret <String>]
 Connect-EntitySyncVendor -Vendor NCentral [-NCentralBaseUrl <String>] [-NCentralUserApiToken <String>] [-NCentralServiceOrgId <String>] [-NCentralSoapUsername <String>] [-NCentralSoapPassword <String>] [-NCentralSoapEndpointPath <String>] [-NCentralSoapNamespace <String>] [-NCentralHaloPsaIdPropertyLabel <String>] [-NCentralNetSuiteIdPropertyLabel <String>] [-NCentralNetSuiteNamePropertyLabel <String>]
 Connect-EntitySyncVendor -Vendor Bill.com [-BillComApiToken <String>] [-BillComBaseUrl <String>] [-BillComClientFieldName <String>]
+Connect-EntitySyncVendor -Vendor 'Sophos Central' [-SophosCentralClientId <String>] [-SophosCentralClientSecret <String>] [-SophosCentralDefaultDataGeography <String>] [-SophosCentralDefaultDataRegion <String>] [-SophosCentralDefaultBillingType <String>]
 Connect-EntitySyncVendor -Vendor AgentController [-Url <String>] [-Token <String>]
 Connect-EntitySyncVendor -Vendor AgentController [-Url <String>] [-SecureToken <SecureString>]
 Connect-EntitySyncVendor -Vendor AgentController -Session <Object>
@@ -41,6 +42,8 @@ N-central customer updates and organization custom-property writes use EI2 SOAP.
 
 Bill.com connections use the Bill Spend & Expense custom fields API. Set `BILLCOM_API_TOKEN` or `BILLSPEND_API_TOKEN`, or pass `-BillComApiToken`. `-BillComBaseUrl` defaults to `https://gateway.prod.bill.com/connect/v3/spend/custom-fields`, and `-BillComClientFieldName` defaults to `Client`. The adapter exposes that custom field's values as EntitySync `Client` records and can create missing values during apply.
 
+Sophos Central connections use OAuth client credentials from Sophos Central Partner or Enterprise. Set `SOPHOS_CENTRAL_CLIENT_ID` and `SOPHOS_CENTRAL_CLIENT_SECRET`, or pass `-SophosCentralClientId` and `-SophosCentralClientSecret`. The adapter accepts partner or organization identities and exposes their tenants as EntitySync `Customer` records. Partner identities can create tenants and patch their `showAs` display names; organization identities are read-only. Tenant creation requires canonical contact/address data and geography/region plus billing type. Supply the latter values through source custom fields or `-SophosCentralDefaultDataGeography`/`-SophosCentralDefaultDataRegion` and `-SophosCentralDefaultBillingType`.
+
 `Connect-EntitySyncVendor -Vendor AgentController -Session <Object>` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). The generated client uses `POST /rpc/has_scope` for non-mutating connection validation and `POST /rpc/sync_ncentral_customers` for apply, both relative to that ops base URL. It does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.
 
 Manual break-glass mode remains available with `-Url <String> -Token <String>` or `-Url <String> -SecureToken <SecureString>`. In those parameter sets, `-Url` means the AgentController ops/PostgREST OpenAPI base URL, for example `https://ops-agent-controller.clfy-b.lissonline.com`, not the API/auth base URL `https://api-agent-controller.clfy-b.lissonline.com`. `-Vendor LTAC` is accepted and normalizes to `AgentController` in the returned connection. Tokens never appear in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; Agent Controller HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.
@@ -53,6 +56,7 @@ Connect-EntitySyncVendor -Vendor HaloPSA
 Connect-EntitySyncVendor -Vendor NetSuite
 Connect-EntitySyncVendor -Vendor NCentral
 Connect-EntitySyncVendor -Vendor Bill.com
+Connect-EntitySyncVendor -Vendor 'Sophos Central'
 ```
 
 Connects adapters using environment variables.
@@ -80,6 +84,7 @@ Connect-EntitySyncVendor -Vendor NetSuite -Profile prod -SaveProfile -DefaultPro
 Connect-EntitySyncVendor -Vendor HaloPSA -Profile prod -SaveProfile
 Connect-EntitySyncVendor -Vendor NCentral -Profile prod -SaveProfile
 Connect-EntitySyncVendor -Vendor AgentController -DeviceAssetOpsProfile prod -Profile prod -SaveProfile
+Connect-EntitySyncVendor -Vendor 'Sophos Central' -Profile prod -SaveProfile
 
 Connect-EntitySyncProfile prod
 ```
