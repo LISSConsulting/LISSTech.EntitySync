@@ -56,4 +56,4 @@ used.
 
 ## NOTES
 
-HaloPSA -> NCentral apply maintains both sides of the client relationship by setting N-central customer `externalId` to the HaloPSA client ID, updating configured N-central organization custom properties, and upserting HaloPSA `client_links` with `POST /api/ncentraldetails`. First-class HaloPSA Site -> NCentral Site plans can also create N-central sites and upsert HaloPSA `site_links`; N-central site field updates are no-op until a confirmed N-central site update endpoint is available.
+HaloPSA -> NCentral apply maintains both sides of the client relationship by setting N-central customer `externalId` to the HaloPSA client ID, updating configured N-central organization custom properties, and upserting HaloPSA `client_links` with `POST /api/ncentraldetails`. First-class HaloPSA Site -> NCentral Site plans create N-central sites through REST, update existing site fields through EI2 SOAP `customerModify`, and upsert HaloPSA `site_links`.

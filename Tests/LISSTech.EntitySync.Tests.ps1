@@ -4470,11 +4470,13 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NCentralSiteId'
     $options.TargetExternalIdName = 'NCentralSiteId'
     $match = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new().FindMatches($source, $targets, $options)
+    $request = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new().MapUpdate($source, $target, $options)
 
     $resolved.SiteLinks | Should -Be 1
     $resolved.ParentLinks | Should -Be 1
     $source.ExternalIds['NCentralSiteId'] | Should -Be '353'
     $source.ExternalIds['NCentralCustomerId'] | Should -Be '390'
+    $request.CustomFields['NCentralCustomerId'] | Should -Be '390'
     $match[0].MatchType | Should -Be 'Linked'
     $match[0].Score | Should -Be 100
   }
@@ -4561,6 +4563,56 @@ namespace EntitySyncTests
     }
     finally {
       $adapter.Dispose()
+    }
+  }
+
+  It 'Updates N-central sites through SOAP customerModify under their parent customer' {
+    $soapResponse = @'
+<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://www.w3.org/2003/05/soap-envelope">
+  <soapenv:Body>
+    <customerModifyResponse>
+      <customerModifyReturn>402</customerModifyReturn>
+    </customerModifyResponse>
+  </soapenv:Body>
+</soapenv:Envelope>
+'@
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $soapResponse)
+    $server.Start()
+    $options = New-TestNCentralOptions -BaseUrl $server.BaseUrl
+    $options.SoapUsername = 'soap-user'
+    $options.SoapPassword = 'soap-password'
+    $adapter = New-TestNCentralAdapter -Options $options
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.EntityType = 'Site'
+      $request.Id = '402'
+      $request.Name = 'Main & Office'
+      $request.CustomFields['externalId'] = '810'
+      $request.CustomFields['NCentralCustomerId'] = '390'
+      $address = [System.Collections.Generic.Dictionary[string,object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      $address['street1'] = '123 Main St'
+      $address['city'] = 'New York'
+      $address['stateProv'] = 'NY'
+      $address['postalCode'] = '10001'
+      $address['country'] = 'US'
+      $request.Fields['address'] = $address
+
+      $result = $adapter.UpdateEntityAsync($request, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $server.Wait()
+
+      $result.Success | Should -BeTrue
+      $result.Id | Should -Be '402'
+      $server.RequestText | Should -Match 'POST /dms2/services2/ServerEI2'
+      $server.RequestText | Should -Match '<ei2:customerModify>'
+      $server.RequestText | Should -Match '<ei2:key>customerid</ei2:key><ei2:value>402</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>parentid</ei2:key><ei2:value>390</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>customername</ei2:key><ei2:value>Main and Office</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>street1</ei2:key><ei2:value>123 Main St</ei2:value>'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
     }
   }
 

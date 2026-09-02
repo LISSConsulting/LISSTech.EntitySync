@@ -64,20 +64,18 @@ HaloPSA to NCentral:
 
 Apply maintains both sides of the HaloPSA client to N-central customer relationship. Creates use REST, updates use EI2 SOAP `customerModify`, and both write `externalId = <HaloPSA client ID>` plus configured organization custom properties for `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name`. After a successful N-central write, HaloPSA `client_links` are upserted with `POST /api/ncentraldetails`.
 
-For HaloPSA Site -> NCentral Site plans, creates use `POST /api/customers/{customerId}/sites`, existing site links update HaloPSA `site_links`, and N-central site field updates are no-op because the confirmed OpenAPI exposes site read/create but no site update endpoint.
+For HaloPSA Site -> NCentral Site plans, creates use `POST /api/customers/{customerId}/sites`, updates use EI2 SOAP `customerModify` with the linked N-central parent customer ID, and successful writes update HaloPSA `site_links`.
 
 Confirmed N-central behavior:
 
 - Customer discovery uses `GET /api/service-orgs/{soId}/customers` when `-NCentralServiceOrgId` is configured, otherwise `GET /api/customers`.
 - Customer creation uses `POST /api/service-orgs/{soId}/customers`.
 - N-central customer names are sanitized before create by replacing `&` with `and`.
-- The OpenAPI spec does not expose a customer update endpoint, so customer updates use EI2 SOAP `customerModify`.
+- The OpenAPI spec does not expose customer or site update endpoints, so both use EI2 SOAP `customerModify`.
 - N-central organization custom properties are updated with EI2 SOAP `organizationPropertyList` and `organizationPropertyModify`.
 - HaloPSA N-central client links are written with `POST /api/ncentraldetails` by sending the integration account `id` and updated `client_links` collection.
-- N-central site discovery uses `GET /api/sites`; site creation uses `POST /api/customers/{customerId}/sites`.
+- N-central site discovery uses `GET /api/sites`; site creation uses `POST /api/customers/{customerId}/sites`; site updates use EI2 SOAP `customerModify`.
 - HaloPSA N-central site links are written with `POST /api/ncentraldetails` by sending the integration account `id`, preserved `client_links`, and updated `site_links` collection.
-
-Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.
 
 NCentral to LTAC:
 
