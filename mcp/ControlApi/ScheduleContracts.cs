@@ -1,6 +1,17 @@
+using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using LISSTech.EntitySync.Core;
 
 namespace LISSTech.EntitySync.Mcp.ControlApi;
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record PreviewScheduleRequest(
+    [property: Required, JsonPropertyName("cron_expression")] string CronExpression,
+    [property: Required, JsonPropertyName("time_zone")] string TimeZone);
+
+public sealed record PreviewScheduleResponse(
+    [property: Required, JsonPropertyName("occurrences")]
+    IReadOnlyList<DateTimeOffset> Occurrences);
 
 public sealed record CreateScheduleRequest(
     Guid? ScheduleId,

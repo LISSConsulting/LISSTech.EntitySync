@@ -58,7 +58,7 @@ public sealed class ControlSchedulerTests
             "tenant", Guid.NewGuid(),
             new SyncScheduleRequest("bad-zone", safePolicies.Policy.PolicyId, 1, "0 * * * *", "Mars/Olympus", true),
             actor, default));
-        await Assert.ThrowsAnyAsync<Exception>(() => safeService.CreateAsync(
+        await Assert.ThrowsAsync<Cronos.CronFormatException>(() => safeService.CreateAsync(
             "tenant", Guid.NewGuid(),
             new SyncScheduleRequest("six-fields", safePolicies.Policy.PolicyId, 1, "0 0 * * * *", "UTC", true),
             actor, default));
@@ -81,6 +81,76 @@ public sealed class ControlSchedulerTests
         Assert.Equal(new DateTimeOffset(2026, 3, 8, 7, 0, 0, TimeSpan.Zero), spring);
         Assert.Equal(new DateTimeOffset(2026, 11, 1, 5, 30, 0, TimeSpan.Zero), fallFirst);
         Assert.Equal(new DateTimeOffset(2026, 11, 2, 6, 30, 0, TimeSpan.Zero), fallNext);
+    }
+
+    [Fact]
+    public void Schedule_preview_returns_exactly_three_DST_safe_spring_occurrences()
+    {
+        var service = ScheduleService();
+        var baseline = new DateTimeOffset(2026, 3, 7, 7, 30, 0, TimeSpan.Zero);
+
+        var occurrences = service.PreviewOccurrences(
+            "30 2 * * *", "America/New_York", baseline);
+
+        Assert.Equal(
+            [
+                new DateTimeOffset(2026, 3, 8, 7, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 3, 9, 6, 30, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 3, 10, 6, 30, 0, TimeSpan.Zero)
+            ],
+            occurrences);
+        Assert.All(occurrences, occurrence => Assert.Equal(TimeSpan.Zero, occurrence.Offset));
+    }
+
+    [Fact]
+    public void Schedule_preview_returns_exactly_three_DST_safe_fall_occurrences()
+    {
+        var service = ScheduleService();
+        var baseline = new DateTimeOffset(2026, 11, 1, 4, 59, 0, TimeSpan.Zero);
+
+        var occurrences = service.PreviewOccurrences(
+            "30 1 * * *", "America/New_York", baseline);
+
+        Assert.Equal(
+            [
+                new DateTimeOffset(2026, 11, 1, 5, 30, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 11, 2, 6, 30, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 11, 3, 6, 30, 0, TimeSpan.Zero)
+            ],
+            occurrences);
+        Assert.True(occurrences.SequenceEqual(occurrences.Order()));
+    }
+
+    [Fact]
+    public void Schedule_preview_is_strictly_after_the_supplied_baseline()
+    {
+        var baseline = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+
+        var occurrences = ScheduleService().PreviewOccurrences(
+            "0 * * * *", "UTC", baseline);
+
+        Assert.Equal(
+            [baseline.AddHours(1), baseline.AddHours(2), baseline.AddHours(3)],
+            occurrences);
+        Assert.All(occurrences, occurrence => Assert.True(occurrence > baseline));
+    }
+
+    [Fact]
+    public void Schedule_preview_reuses_cron_timezone_and_future_occurrence_validation()
+    {
+        var service = ScheduleService();
+
+        Assert.Throws<Cronos.CronFormatException>(() =>
+            service.PreviewOccurrences("0 0 * * * *", "UTC", Noon));
+        Assert.Throws<TimeZoneNotFoundException>(() =>
+            service.PreviewOccurrences("0 * * * *", "Mars/Olympus", Noon));
+        Assert.Throws<TimeZoneNotFoundException>(() =>
+            service.PreviewOccurrences("0 * * * *", "Eastern Standard Time", Noon));
+        Assert.Throws<InvalidOperationException>(() =>
+            service.PreviewOccurrences(
+                "0 0 29 2 *",
+                "UTC",
+                new DateTimeOffset(9999, 3, 1, 0, 0, 0, TimeSpan.Zero)));
     }
 
     [Fact]
@@ -198,6 +268,13 @@ public sealed class ControlSchedulerTests
         Assert.Equal(4, result);
         Assert.Equal(1, audits.Calls);
         Assert.Equal(1, operations.Calls);
+    }
+
+    private static SyncScheduleService ScheduleService()
+    {
+        var policies = new SchedulePolicyRepository(Policy(safe: true));
+        return new SyncScheduleService(
+            new MemoryScheduleRepository(), policies, new ManualTimeProvider(Noon));
     }
 
     private static EntitySyncPolicy Policy(bool safe)

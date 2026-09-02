@@ -41,7 +41,7 @@ public sealed class SyncScheduleService(
         var policy = await RequireSafePolicyAsync(tenantId, request, cancellationToken)
             .ConfigureAwait(false);
         var zone = ResolveTimeZone(request.TimeZone);
-        Parse(request.CronExpression);
+        var expression = Parse(request.CronExpression);
         var schedule = new EntitySyncSchedule(
             tenantId,
             scheduleId,
@@ -52,7 +52,7 @@ public sealed class SyncScheduleService(
             request.CronExpression.Trim(),
             zone.Id,
             request.Enabled,
-            request.Enabled ? GetNextRun(request.CronExpression, zone, now) : null,
+            request.Enabled ? GetNextRun(expression, zone, now) : null,
             null,
             now,
             actor);
@@ -88,12 +88,12 @@ public sealed class SyncScheduleService(
         var policy = await RequireSafePolicyAsync(tenantId, request, cancellationToken)
             .ConfigureAwait(false);
         var zone = ResolveTimeZone(request.TimeZone);
-        Parse(request.CronExpression);
+        var expression = Parse(request.CronExpression);
         var next = latest.NextVersion(
             request.CronExpression.Trim(),
             zone.Id,
             request.Enabled,
-            request.Enabled ? GetNextRun(request.CronExpression, zone, now) : null,
+            request.Enabled ? GetNextRun(expression, zone, now) : null,
             actor,
             now,
             policy.PolicyId,
@@ -129,13 +129,38 @@ public sealed class SyncScheduleService(
         return next;
     }
 
+    public IReadOnlyList<DateTimeOffset> PreviewOccurrences(
+        string cronExpression,
+        string timeZone,
+        DateTimeOffset after)
+    {
+        var zone = ResolveTimeZone(timeZone);
+        var expression = Parse(cronExpression);
+        var occurrences = new DateTimeOffset[3];
+        var previous = after;
+        for (var index = 0; index < occurrences.Length; index++)
+        {
+            previous = GetNextRun(expression, zone, previous);
+            occurrences[index] = previous;
+        }
+        return occurrences;
+    }
+
     public static DateTimeOffset GetNextRun(
         string cronExpression,
         TimeZoneInfo timeZone,
         DateTimeOffset after)
     {
         ArgumentNullException.ThrowIfNull(timeZone);
-        var occurrence = Parse(cronExpression).GetNextOccurrence(
+        return GetNextRun(Parse(cronExpression), timeZone, after);
+    }
+
+    private static DateTimeOffset GetNextRun(
+        CronExpression expression,
+        TimeZoneInfo timeZone,
+        DateTimeOffset after)
+    {
+        var occurrence = expression.GetNextOccurrence(
             after.UtcDateTime,
             timeZone,
             inclusive: false);
@@ -175,8 +200,13 @@ public sealed class SyncScheduleService(
     private static CronExpression Parse(string expression) =>
         CronExpression.Parse(Require(expression, nameof(expression)), CronFormat.Standard);
 
-    private static TimeZoneInfo ResolveTimeZone(string id) =>
-        TimeZoneInfo.FindSystemTimeZoneById(Require(id, nameof(id)));
+    private static TimeZoneInfo ResolveTimeZone(string id)
+    {
+        var required = Require(id, nameof(id));
+        if (!TimeZoneInfo.TryConvertIanaIdToWindowsId(required, out _))
+            throw new TimeZoneNotFoundException("An IANA time zone is required.");
+        return TimeZoneInfo.FindSystemTimeZoneById(required);
+    }
 
     private static string Require(string? value, string parameterName) =>
         string.IsNullOrWhiteSpace(value)

@@ -58,6 +58,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         (HttpMethod.Get, "/api/v1/control/runs/{runId:guid}", ControlPolicies.Read),
         (HttpMethod.Get, "/api/v1/control/runs/{runId:guid}/items", ControlPolicies.Read),
         (HttpMethod.Get, "/api/v1/control/schedules", ControlPolicies.Read),
+        (HttpMethod.Post, "/api/v1/control/schedules/preview", ControlPolicies.Manage),
         (HttpMethod.Post, "/api/v1/control/schedules", ControlPolicies.Manage),
         (HttpMethod.Post, "/api/v1/control/schedules/{scheduleId:guid}/versions", ControlPolicies.Manage),
         (HttpMethod.Get, "/api/v1/control/audit", ControlPolicies.Read),
@@ -145,7 +146,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     }
 
     [Fact]
-    public void Only_database_only_mutations_use_atomic_database_idempotency()
+    public void State_mutations_declare_idempotency_and_schedule_preview_does_not()
     {
         var atomicRoutes = new HashSet<string>(StringComparer.Ordinal)
         {
@@ -168,6 +169,12 @@ public sealed class ControlApiTests(ControlApiFactory factory)
                 candidate.RoutePattern.RawText == template
                 && candidate.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods
                     .Contains(method.Method, StringComparer.Ordinal) == true);
+            if (template == "/api/v1/control/schedules/preview")
+            {
+                Assert.Null(endpoint.Metadata.GetMetadata<IdempotencyExecutionMetadata>());
+                continue;
+            }
+
             var expected = atomicRoutes.Contains(template)
                 ? IdempotencyExecutionMode.AtomicDatabase
                 : IdempotencyExecutionMode.Recoverable;
@@ -207,6 +214,24 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         using var response = await client.PostAsync(path, Json("{}"));
         Assert.Equal(status, (int)response.StatusCode);
         Assert.Equal("IDEMPOTENCY_KEY_REQUIRED", await ProblemCode(response));
+    }
+
+    [Theory]
+    [InlineData(ControlRoles.Manage, 400)]
+    [InlineData(ControlRoles.Read, 403)]
+    public async Task Schedule_preview_requires_Manage_without_idempotency(
+        string permission,
+        int status)
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, $"tid=tenant-a;oid=user-a;scp={permission}");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview", Json("{}"));
+
+        Assert.Equal(status, (int)response.StatusCode);
+        if (permission == ControlRoles.Manage)
+            Assert.NotEqual("IDEMPOTENCY_KEY_REQUIRED", await ProblemCode(response));
     }
 
     [Theory]
@@ -539,6 +564,102 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     }
 
     [Fact]
+    public async Task Schedule_preview_returns_three_server_clocked_occurrences_without_state_access()
+    {
+        var baseline = new DateTimeOffset(2026, 3, 7, 7, 30, 0, TimeSpan.Zero);
+        using var previewFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(new FixedTimeProvider(baseline));
+            }));
+        using var client = previewFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview",
+            Json("""{"cron_expression":"30 2 * * *","time_zone":"America/New_York"}"""));
+
+        response.EnsureSuccessStatusCode();
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var property = Assert.Single(body.RootElement.EnumerateObject());
+        Assert.Equal("occurrences", property.Name);
+        Assert.Equal(
+            [
+                new DateTimeOffset(2026, 3, 8, 7, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 3, 9, 6, 30, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 3, 10, 6, 30, 0, TimeSpan.Zero)
+            ],
+            property.Value.EnumerateArray()
+                .Select(value => value.GetDateTimeOffset()).ToArray());
+    }
+
+    [Fact]
+    public async Task Schedule_preview_request_rejects_caller_controlled_fields()
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview",
+            Json(
+                """{"cron_expression":"0 * * * *","time_zone":"UTC","count":4,"baseline":"2026-01-01T00:00:00Z"}"""));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_REQUEST", await ProblemCode(response));
+    }
+
+    [Theory]
+    [InlineData("CONTROL_API_SECRET_CRON", "UTC")]
+    [InlineData("0 * * * *", "CONTROL_API_SECRET_TIME_ZONE")]
+    public async Task Schedule_preview_validation_errors_are_safe(
+        string cronExpression,
+        string timeZone)
+    {
+        using var client = factory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+        var request = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["cron_expression"] = cronExpression,
+            ["time_zone"] = timeZone
+        });
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview", Json(request));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_REQUEST", await ProblemCode(response));
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(cronExpression, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(timeZone, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Exception", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Schedule_preview_no_future_occurrence_is_a_safe_problem()
+    {
+        using var previewFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<TimeProvider>();
+                services.AddSingleton<TimeProvider>(new FixedTimeProvider(
+                    new DateTimeOffset(9999, 3, 1, 0, 0, 0, TimeSpan.Zero)));
+            }));
+        using var client = previewFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/schedules/preview",
+            Json("""{"cron_expression":"0 0 29 2 *","time_zone":"UTC"}"""));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("STATE_CONFLICT", await ProblemCode(response));
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("no future occurrence", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Exception", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task OpenApi_is_Read_protected_and_has_unique_stable_operations_and_schemas()
     {
         using var anonymous = factory.CreateClient();
@@ -558,6 +679,69 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal(Inventory.Length,
             CountOccurrences(document, "\"operationId\": \""));
         using var openApi = JsonDocument.Parse(document);
+        var preview = openApi.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/control/schedules/preview")
+            .GetProperty("post");
+        Assert.Equal(
+            "PreviewControlSchedule",
+            preview.GetProperty("operationId").GetString());
+        Assert.False(preview.TryGetProperty("parameters", out _));
+        var previewRequestBody = preview.GetProperty("requestBody");
+        Assert.True(previewRequestBody.GetProperty("required").GetBoolean());
+        Assert.Equal(
+            "#/components/schemas/PreviewScheduleRequest",
+            previewRequestBody
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        Assert.Equal(
+            "#/components/schemas/PreviewScheduleResponse",
+            preview.GetProperty("responses")
+                .GetProperty("200")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        var schemas = openApi.RootElement
+            .GetProperty("components")
+            .GetProperty("schemas");
+        var previewRequest = schemas.GetProperty("PreviewScheduleRequest");
+        Assert.Equal(
+            ["cron_expression", "time_zone"],
+            previewRequest.GetProperty("properties")
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.Equal(
+            ["cron_expression", "time_zone"],
+            previewRequest.GetProperty("required")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.False(previewRequest.GetProperty("additionalProperties").GetBoolean());
+        var previewResponse = schemas.GetProperty("PreviewScheduleResponse");
+        var occurrences = Assert.Single(
+            previewResponse.GetProperty("properties").EnumerateObject());
+        Assert.Equal("occurrences", occurrences.Name);
+        Assert.Equal("array", occurrences.Value.GetProperty("type").GetString());
+        Assert.Equal(
+            "string",
+            occurrences.Value.GetProperty("items").GetProperty("type").GetString());
+        Assert.Equal(
+            "date-time",
+            occurrences.Value.GetProperty("items").GetProperty("format").GetString());
+        Assert.Equal(
+            ["occurrences"],
+            previewResponse.GetProperty("required")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .ToArray());
         var runList = openApi.RootElement
             .GetProperty("paths")
             .GetProperty("/api/v1/control/runs")
@@ -669,6 +853,11 @@ public sealed class ControlApiTests(ControlApiFactory factory)
              index += marker.Length) count++;
         return count;
     }
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
 }
 
 public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>

@@ -106,6 +106,9 @@ public static class ControlEndpoints
 
         Read(group.MapGet("/schedules", ListSchedulesAsync),
             "ListControlSchedules").Produces<ControlPage<ScheduleResponse>>();
+        Document(group.MapPost("/schedules/preview", PreviewSchedule),
+            "PreviewControlSchedule", ControlPolicies.Manage)
+            .Produces<PreviewScheduleResponse>();
         Mutate(group.MapPost("/schedules", CreateScheduleAsync),
             "CreateControlSchedule", ControlPolicies.Manage,
             IdempotencyExecutionMode.AtomicDatabase)
@@ -655,6 +658,18 @@ public static class ControlEndpoints
         return Page(values, pageSize, offset, cursors, "schedules", control);
     }
 
+    private static IResult PreviewSchedule(
+        PreviewScheduleRequest request,
+        SyncScheduleService service,
+        TimeProvider timeProvider)
+    {
+        var occurrences = service.PreviewOccurrences(
+            request.CronExpression,
+            request.TimeZone,
+            timeProvider.GetUtcNow());
+        return Results.Ok(new PreviewScheduleResponse(occurrences));
+    }
+
     private static async Task<IResult> CreateScheduleAsync(
         HttpContext http,
         CreateScheduleRequest request,
@@ -1016,7 +1031,9 @@ public static class ControlEndpoints
                 StatusCodes.Status400BadRequest,
                 "PAGE_SIZE_OUT_OF_RANGE",
                 "Page size must be between 1 and 100."),
-            BadHttpRequestException or ArgumentException or FormatException or NotSupportedException => (
+            BadHttpRequestException or ArgumentException or FormatException
+                or Cronos.CronFormatException or TimeZoneNotFoundException
+                or NotSupportedException => (
                 StatusCodes.Status400BadRequest,
                 "INVALID_REQUEST",
                 "The request is invalid."),
