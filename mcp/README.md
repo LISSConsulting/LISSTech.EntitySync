@@ -88,6 +88,23 @@ Permanent exclusions are stored in PostgreSQL and scoped to the exact tenant, so
 
 For AgentController, the MCP host uses the configured Entra service principal with the OAuth 2.0 `client_credentials` grant, then exchanges that Entra access token at `POST /v1/operator-token/exchange`. The exchange response supplies the operations/PostgREST base URL and short-lived bearer token; callers cannot provide either value. Configure `AGENTCONTROLLER_ENTRA_SCOPE` as the AgentController application audience plus `/.default`. The service principal must be assigned the `EntitySync.CustomerScopeSync` Entra app role and registered in AgentController with only `customer_scope_sync:write`. Tokens remain in memory and a rejected operations token is exchanged once before one retry.
 
+## Entity Inspection
+
+Use `get_entities` for read-only factual questions about connected vendor records. Supply `search` and a small `count` to narrow the result; set `includeDetails` to `true` when the question needs vendor detail reads such as addresses.
+
+```json
+{
+  "vendor": "NetSuite",
+  "entityType": "Customer",
+  "connectionId": "netsuite",
+  "search": "Ursula Capital",
+  "count": 5,
+  "includeDetails": true
+}
+```
+
+Each result includes the canonical primary, billing, and shipping addresses when available, plus contact data, site context, lifecycle timestamps, external IDs, and non-secret custom fields. Multiple matches remain separate records so the caller can identify ambiguity instead of guessing.
+
 ## Safe Workflow
 
 1. Call `connect_vendor` for the source and target and retain both connection IDs.

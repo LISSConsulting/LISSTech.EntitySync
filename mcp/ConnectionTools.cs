@@ -120,7 +120,7 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("Read a bounded page of canonical entities from a tenant-scoped connection.")]
+    [Description("Read a bounded page of canonical entities for factual questions and inspection. Search by name to narrow results. Responses include contact, site, address, lifecycle, external-ID, and custom-field data when the vendor provides them; set includeDetails=true for vendor detail reads.")]
     public static async Task<string> GetEntities(
         IEntityConnectionRepository connections,
         McpRequestContext context,
@@ -129,7 +129,8 @@ public static class ConnectionTools
         [Description("Connection ID. Required when multiple connections exist for this vendor.")] string? connectionId = null,
         [Description("Optional name search filter")] string? search = null,
         [Description("Include inactive entities")] bool includeInactive = false,
-        [Description("Maximum entities, from 1 through 1000")] int count = 100,
+        [Description("Maximum entities, from 1 through 1000. Keep this small when includeDetails is true.")] int count = 100,
+        [Description("Request full vendor records. Use true for questions about addresses or other detailed fields.")] bool includeDetails = false,
         CancellationToken cancellationToken = default)
     {
         if (count is < 1 or > 1000) return Error("Count must be between 1 and 1000.");
@@ -143,7 +144,7 @@ public static class ConnectionTools
                 EntityType = entityType,
                 Search = search,
                 IncludeInactive = includeInactive,
-                FullObjects = false,
+                FullObjects = includeDetails,
                 Count = count
             }, cancellationToken).ConfigureAwait(false);
             var result = entities.Take(count).Select(entity => new
@@ -155,7 +156,15 @@ public static class ConnectionTools
                 entity.Email,
                 entity.Phone,
                 entity.Website,
+                entity.Domain,
+                entity.PrimarySiteId,
+                entity.PrimarySiteName,
+                entity.PrimaryAddress,
+                entity.BillingAddress,
+                entity.ShippingAddress,
                 entity.IsActive,
+                entity.CreatedAt,
+                entity.UpdatedAt,
                 externalIds = FilterFields(entity.ExternalIds),
                 customFields = FilterFields(entity.CustomFields)
             });

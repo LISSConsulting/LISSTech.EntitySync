@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Adapters.NetSuite;
@@ -372,6 +373,54 @@ public sealed class HardeningTests
         Assert.Null(adapter.LastQuery);
     }
 
+    [Fact]
+    public async Task McpEntityReadReturnsCanonicalAddressesAndRequestsVendorDetails()
+    {
+        using var repository = new InMemoryEntityConnectionRepository();
+        var adapter = new RecordingAdapter(
+        [
+            new ExternalEntity
+            {
+                Vendor = "NetSuite",
+                EntityType = "Customer",
+                Id = "1816",
+                Name = "Ursula Capital",
+                Domain = "ursulacapital.example",
+                PrimaryAddress = new EntityAddress
+                {
+                    Attention = "Accounts Payable",
+                    Line1 = "123 Main Street",
+                    Line2 = "Suite 400",
+                    City = "New York",
+                    State = "NY",
+                    PostalCode = "10001",
+                    Country = "United States"
+                },
+                BillingAddress = new EntityAddress { Line1 = "PO Box 200", City = "New York", State = "NY", PostalCode = "10002" },
+                ShippingAddress = new EntityAddress { Line1 = "123 Main Street", City = "New York", State = "NY", PostalCode = "10001" }
+            }
+        ]);
+        repository.Register("tenant", "netsuite", adapter);
+
+        var result = await ConnectionTools.GetEntities(
+            repository,
+            new McpRequestContext("tenant", false),
+            "NetSuite",
+            connectionId: "netsuite",
+            search: "Ursula Capital",
+            count: 5,
+            includeDetails: true);
+
+        Assert.True(adapter.LastQuery?.FullObjects);
+        Assert.Equal("Ursula Capital", adapter.LastQuery?.Search);
+        using var document = JsonDocument.Parse(result);
+        var entity = document.RootElement.GetProperty("entities")[0];
+        Assert.Equal("Ursula Capital", entity.GetProperty("Name").GetString());
+        Assert.Equal("123 Main Street", entity.GetProperty("PrimaryAddress").GetProperty("Line1").GetString());
+        Assert.Equal("PO Box 200", entity.GetProperty("BillingAddress").GetProperty("Line1").GetString());
+        Assert.Equal("123 Main Street", entity.GetProperty("ShippingAddress").GetProperty("Line1").GetString());
+    }
+
     private static McpRequestContext HttpContext(string issuer, string subject)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
@@ -462,7 +511,7 @@ public sealed class HardeningTests
         }
     }
 
-    private sealed class RecordingAdapter : IEntityAdapter
+    private sealed class RecordingAdapter(IReadOnlyList<ExternalEntity>? entities = null) : IEntityAdapter
     {
         public string Vendor => "NetSuite";
         public IReadOnlyList<string> LookupTypes => [];
@@ -470,7 +519,7 @@ public sealed class HardeningTests
         public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
         {
             LastQuery = query;
-            return Task.FromResult<IReadOnlyList<ExternalEntity>>([]);
+            return Task.FromResult(entities ?? (IReadOnlyList<ExternalEntity>)[]);
         }
         public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(string type, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<EntitySyncLookup>>([]);
