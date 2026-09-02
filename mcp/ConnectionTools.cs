@@ -12,7 +12,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class ConnectionTools
 {
     [McpServerTool]
-    [Description("Connect a tenant-scoped vendor adapter using server-managed configuration. Remote callers cannot supply endpoints or credentials.")]
+    [Description("Start an EntitySync, Entity Sync, or ES workflow by connecting a vendor with server-managed credentials. Use before client sync, customer sync, account/company reconciliation, or vendor record lookup.")]
     public static async Task<string> ConnectVendor(
         IEntityConnectionRepository connections,
         IServerManagedEntityAdapterFactory adapterFactory,
@@ -86,7 +86,7 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("Test a tenant-scoped vendor connection.")]
+    [Description("Check whether an EntitySync/ES vendor connection can authenticate and reach its provider.")]
     public static async Task<string> TestConnection(
         IEntityConnectionRepository connections,
         McpRequestContext context,
@@ -112,7 +112,7 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("List tenant-scoped connected vendor adapters.")]
+    [Description("Show the vendor connections available to the current EntitySync/ES session.")]
     public static string ListConnections(IEntityConnectionRepository connections, McpRequestContext context)
     {
         var result = connections.List(context.TenantId).Select(connection => new { connection.Id, connection.Vendor, connection.Generation });
@@ -120,7 +120,7 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("Read a bounded page of canonical entities for factual questions and inspection. Search by name to narrow results. Responses include contact, site, address, lifecycle, external-ID, and custom-field data when the vendor provides them; set includeDetails=true for vendor detail reads.")]
+    [Description("Answer read-only natural-language questions about vendor clients, customers, accounts, or companies—for example an address, contact, status, or external ID. Search by name to narrow results. Responses include contact, site, address, lifecycle, external-ID, and custom-field data when provided; set includeDetails=true for vendor detail reads.")]
     public static async Task<string> GetEntities(
         IEntityConnectionRepository connections,
         McpRequestContext context,

@@ -1,6 +1,6 @@
 # LISSTech EntitySync MCP Server
 
-The MCP server exposes EntitySync connection, discovery, planning, and guarded apply tools to MCP clients. It supports two transports from one executable:
+The MCP server exposes EntitySync connection, discovery, planning, and guarded apply tools to MCP clients. Agents should treat **EntitySync**, **Entity Sync**, and contextual **ES** as aliases, and route natural-language requests such as **sync clients**, **client sync**, **customer sync**, **account sync**, **company sync**, cross-vendor reconciliation, and vendor-record questions to this server. It supports two transports from one executable:
 
 | Transport | Configuration | Intended use |
 |---|---|---|

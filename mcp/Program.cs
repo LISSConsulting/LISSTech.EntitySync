@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.AspNetCore.Authentication;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 using LISSTech.EntitySync.Hosting;
@@ -41,7 +42,7 @@ static async Task RunStdioAsync(string[] args)
     builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
 
     builder.Services
-        .AddMcpServer()
+        .AddMcpServer(EntitySyncMcpMetadata.Configure)
         .WithStdioServerTransport()
         .WithToolsFromAssembly();
 
@@ -111,7 +112,7 @@ static async Task RunHttpAsync(string[] args)
             options.ResourceMetadata = new()
             {
                 Resource = resource,
-                ResourceName = "LISSTech EntitySync MCP Server",
+                ResourceName = "LISSTech EntitySync (ES) MCP Server",
                 AuthorizationServers = { authority },
                 ScopesSupported = scopes,
                 BearerMethodsSupported = ["header"]
@@ -127,7 +128,7 @@ static async Task RunHttpAsync(string[] args)
     builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
 
     builder.Services
-        .AddMcpServer()
+        .AddMcpServer(EntitySyncMcpMetadata.Configure)
         .WithHttpTransport(options => options.Stateless = true)
         .WithToolsFromAssembly();
 
@@ -176,6 +177,29 @@ static string RequireHttpsUri(string variableName)
         throw new InvalidOperationException($"{variableName} must be an absolute HTTPS URI without user info, a query, or a fragment when MCP_TRANSPORT=http.");
 
     return uri.AbsoluteUri;
+}
+
+
+internal static class EntitySyncMcpMetadata
+{
+    internal const string Instructions =
+        "Use EntitySync—also called Entity Sync or ES when the context is vendor, client, customer, account, or company data—for natural-language requests to sync, reconcile, compare, link, migrate, inspect, or look up records across HaloPSA, NetSuite, N-central, BILL, Sophos Central, and AgentController. "
+        + "Route phrases such as 'sync clients', 'client sync', 'customer sync', 'account sync', 'company sync', and 'what is the address, contact, status, or ID for this record in a vendor' to this server. "
+        + "For factual record questions, connect the vendor and use get_entities with a selective search, a small count, and includeDetails=true. "
+        + "For changes between vendors, connect both sides and use the create plan, inspect every page, approve exact digest, dry-run, then apply workflow. Never guess an ambiguous record match or bypass approval.";
+
+    internal static void Configure(McpServerOptions options)
+    {
+        options.ServerInfo = new Implementation
+        {
+            Name = "lisstech-entitysync",
+            Title = "LISSTech EntitySync (Entity Sync / ES)",
+            Version = typeof(McpRequestContext).Assembly.GetName().Version?.ToString(3) ?? "unknown",
+            Description = "EntitySync (Entity Sync / ES) provides natural-language client, customer, account, and company synchronization, reconciliation, linking, migration, and vendor-record lookup.",
+            WebsiteUrl = "https://github.com/LISSConsulting/LISSTech.EntitySync"
+        };
+        options.ServerInstructions = Instructions;
+    }
 }
 
 

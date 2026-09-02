@@ -10,7 +10,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Create a tenant-scoped entity synchronization plan. Planning is read-only. Use sourceSearch/sourceCount to bound focused plans and sourceEntityId to assert the exact immutable source ID. Inspect every page and approve its digest before apply.")]
+    [Description("Plan an EntitySync, Entity Sync, ES, client sync, customer sync, or account/company reconciliation between supported vendors. Planning is read-only. Use sourceSearch/sourceCount for focused work and sourceEntityId to assert the immutable source ID. Inspect every page and approve its digest before apply.")]
     public static async Task<string> CreateSyncPlan(
         EntitySyncService service,
         McpRequestContext context,
@@ -91,7 +91,7 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Inspect a page of a plan. Every page must be reviewed before approving the returned digest.")]
+    [Description("Review one page of an EntitySync/ES plan. Inspect every page and its exact source/target records before approval.")]
     public static string GetSyncPlan(
         EntitySyncService service,
         McpRequestContext context,
@@ -115,7 +115,7 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Approve the exact inspected plan digest. Approval is required once and is consumed by apply.")]
+    [Description("Approve the exact digest of a fully inspected EntitySync/ES client, customer, account, or company sync plan. Approval is consumed by apply.")]
     public static string ApproveSyncPlan(
         EntitySyncService service,
         McpRequestContext context,
@@ -134,7 +134,7 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Dry-run a plan synchronously or start its approved apply in the background. apply=true returns the current snapshot immediately; poll get_sync_plan_apply until Applied or Failed. A plan starts at most once, so repeated starts return the existing operation and never retry writes.")]
+    [Description("Dry-run or execute an approved EntitySync/ES client, customer, account, or company sync plan. apply=false previews synchronously; apply=true starts writes in the background. Poll get_sync_plan_apply until Applied or Failed; repeated starts never retry writes.")]
     public static async Task<string> ApplySyncPlan(
         EntitySyncService service,
         EntitySyncApplyCoordinator coordinator,
@@ -177,7 +177,7 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Read-only: get aggregate progress and terminal status for a sync-plan apply started by apply_sync_plan with apply=true.")]
+    [Description("Read-only: check progress and terminal status for an EntitySync/ES sync started by apply_sync_plan with apply=true.")]
     public static string GetSyncPlanApply(
         EntitySyncApplyCoordinator coordinator,
         McpRequestContext context,

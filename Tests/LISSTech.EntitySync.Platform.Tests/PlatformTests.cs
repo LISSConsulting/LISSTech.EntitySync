@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Reflection;
 using System.Security.Claims;
 using System.Net;
 using System.Text.Json;
@@ -889,6 +891,46 @@ public sealed class PlatformTests
         Assert.DoesNotContain(parameters, name => name.Contains("url", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(parameters, name => name.Contains("secret", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(parameters, name => name.Contains("token", StringComparison.OrdinalIgnoreCase) && !name.Equals("cancellationToken", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void McpDiscoveryMetadataRoutesNaturalLanguageEntitySyncRequests()
+    {
+        var options = new ModelContextProtocol.Server.McpServerOptions();
+        EntitySyncMcpMetadata.Configure(options);
+
+        Assert.Equal("lisstech-entitysync", options.ServerInfo?.Name);
+        Assert.Contains("Entity Sync / ES", options.ServerInfo?.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vendor-record lookup", options.ServerInfo?.Description, StringComparison.OrdinalIgnoreCase);
+
+        var instructions = options.ServerInstructions ?? string.Empty;
+        foreach (var phrase in new[]
+        {
+            "EntitySync",
+            "Entity Sync",
+            "ES",
+            "sync clients",
+            "client sync",
+            "customer sync",
+            "account sync",
+            "company sync",
+            "what is the address"
+        })
+        {
+            Assert.Contains(phrase, instructions, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var connectDescription = typeof(ConnectionTools).GetMethod(nameof(ConnectionTools.ConnectVendor))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+        var entityDescription = typeof(ConnectionTools).GetMethod(nameof(ConnectionTools.GetEntities))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+        var planDescription = typeof(SyncTools).GetMethod(nameof(SyncTools.CreateSyncPlan))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+
+        Assert.Contains("client sync", connectDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("natural-language questions", entityDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("client sync", planDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("customer sync", planDescription, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
