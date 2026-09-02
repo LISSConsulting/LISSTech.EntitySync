@@ -68,7 +68,10 @@ public sealed class EntitySyncSchedulerHostTests
         string? value,
         string expectedMessage)
     {
-        await using var environment = SchedulerHostEnvironment.Create(variableName, value);
+        await using var environment = SchedulerHostEnvironment.Create(
+            variableName,
+            value,
+            automaticRunsEnabled: true);
 
         var error = Assert.Throws<TargetInvocationException>(BuildSchedulerApplication);
         var configurationError = Assert.IsType<InvalidOperationException>(error.InnerException);
@@ -299,7 +302,8 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
 
     public static SchedulerHostEnvironment Create(
         string? overriddenVariableName = null,
-        string? overriddenValue = null)
+        string? overriddenValue = null,
+        bool automaticRunsEnabled = false)
     {
         var variableNames = overriddenVariableName is null
             ? Values.Keys
@@ -311,6 +315,12 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
                 Environment.GetEnvironmentVariable,
                 StringComparer.Ordinal);
         foreach (var pair in Values) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+        if (automaticRunsEnabled)
+        {
+            Environment.SetEnvironmentVariable(
+                EntitySyncSchedulerOptions.AutomaticRunsEnabledEnvironmentVariable,
+                "true");
+        }
         if (overriddenVariableName is not null)
         {
             Environment.SetEnvironmentVariable(overriddenVariableName, overriddenValue);
