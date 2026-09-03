@@ -461,6 +461,94 @@ public sealed class ConnectionDefinitionServiceTests
         Assert.Equal(0, httpClientCreations);
     }
 
+    [Theory]
+    [InlineData("Testing", "true", "127.0.0.1", true)]
+    [InlineData("Development", "true", "127.0.0.1", true)]
+    [InlineData("Testing", null, "127.0.0.1", false)]
+    [InlineData("Production", "true", "127.0.0.1", false)]
+    [InlineData("Testing", "true", "directory.example", false)]
+    public void Orchestra_capture_preserves_only_explicit_nonproduction_loopback(
+        string environmentName,
+        string? allowHttp,
+        string host,
+        bool shouldPass)
+    {
+        var environment = ValidOrchestraEnvironment();
+        environment["ORCHESTRA_BASE_URL"] =
+            $"http://{host}:18083/api/v1/internal/client-directory/";
+        environment["ORCHESTRA_AUTHORITY"] = $"http://{host}:18083/tenant";
+        environment["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = allowHttp;
+        var factory = new ServerManagedEntityAdapterFactory(
+            environment,
+            environmentName);
+
+        var error = Record.Exception(() =>
+            factory.GetConnectionConfiguration(
+                EntitySyncVendors.OrchestraMSP,
+                profileSettings: null));
+
+        Assert.Equal(shouldPass, error is null);
+        if (error is not null)
+            Assert.Contains(
+                "ENTITYSYNC_CONFIG_URI_INVALID",
+                error.Message,
+                StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Testing", "true", "127.0.0.1", true)]
+    [InlineData("Development", "true", "127.0.0.1", true)]
+    [InlineData("Testing", null, "127.0.0.1", false)]
+    [InlineData("Production", "true", "127.0.0.1", false)]
+    [InlineData("Testing", "true", "directory.example", false)]
+    public async Task Durable_Orchestra_preserves_only_explicit_nonproduction_loopback(
+        string environmentName,
+        string? allowHttp,
+        string host,
+        bool shouldPass)
+    {
+        var environment = new Dictionary<string, string?>
+        {
+            ["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = allowHttp
+        };
+        var publicConfiguration = new Dictionary<string, JsonElement>
+        {
+            ["OrchestraBaseUrl"] = Json(
+                $"http://{host}:18083/api/v1/internal/client-directory/"),
+            ["OrchestraAuthority"] = Json($"http://{host}:18083/tenant"),
+            ["OrchestraTenantId"] = Json("tenant"),
+            ["OrchestraClientId"] = Json("client"),
+            ["OrchestraResource"] = Json("api://orchestra")
+        };
+        var httpClientCreations = 0;
+        var factory = new ServerManagedEntityAdapterFactory(
+            environment,
+            environmentName,
+            () =>
+            {
+                httpClientCreations++;
+                return new HttpClient();
+            });
+
+        var error = await Record.ExceptionAsync(() =>
+            factory.CreateDurableAsync(
+                EntitySyncVendors.OrchestraMSP,
+                publicConfiguration,
+                new Dictionary<string, string>
+                {
+                    ["OrchestraClientSecret"] = "secret"
+                },
+                default));
+
+        Assert.Equal(shouldPass, error is null);
+        Assert.Equal(shouldPass ? 1 : 0, httpClientCreations);
+        if (error is not null)
+            Assert.Contains(
+                "ENTITYSYNC_CONFIG_URI_INVALID",
+                error.Message,
+                StringComparison.Ordinal);
+    }
+
     private static Dictionary<string, string?> ValidOrchestraEnvironment() =>
         new(StringComparer.Ordinal)
         {

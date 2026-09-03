@@ -104,7 +104,8 @@ public sealed class ControlPlaneEndToEndTests
                         ["ORCHESTRA_TENANT_ID"] = "tenant",
                         ["ORCHESTRA_CLIENT_ID"] = "source-client",
                         ["ORCHESTRA_RESOURCE"] = "api://orchestra-directory",
-                        ["ORCHESTRA_CLIENT_SECRET"] = "source-secret"
+                        ["ORCHESTRA_CLIENT_SECRET"] = "source-secret",
+                        ["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = "true"
                     });
                 var target = ConnectionConfiguration(
                     "NCentral",
@@ -598,6 +599,7 @@ public sealed class ControlPlaneEndToEndTests
                 JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
         request.Headers.Add("Idempotency-Key", idempotencyKey);
+        request.Headers.Add("X-Correlation-ID", Guid.NewGuid().ToString("D"));
         using var response = await client.SendAsync(request);
         var text = await response.Content.ReadAsStringAsync();
         Assert.True(
@@ -636,20 +638,29 @@ public sealed class ControlPlaneEndToEndTests
             $"Run {runId:D} did not reach a terminal status: {current}");
     }
 
-    private static ServiceProvider BuildProvider(string connectionString) =>
-        new ServiceCollection()
+    private static ServiceProvider BuildProvider(string connectionString)
+    {
+        var services = new ServiceCollection()
             .AddLogging()
-            .AddEntitySyncPlatform(connectionString, EntitySyncHostMode.Http)
-            .BuildServiceProvider(new ServiceProviderOptions
-            {
-                ValidateOnBuild = true,
-                ValidateScopes = true
-            });
+            .AddEntitySyncPlatform(connectionString, EntitySyncHostMode.Http);
+        services.AddSingleton<IServerManagedEntityAdapterFactory>(
+            new ServerManagedEntityAdapterFactory(
+                new Dictionary<string, string?>
+                {
+                    ["ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"] = "true"
+                },
+                "Testing"));
+        return services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateOnBuild = true,
+            ValidateScopes = true
+        });
+    }
 
     private static ServerManagedConnectionConfiguration ConnectionConfiguration(
         string vendor,
         IReadOnlyDictionary<string, string?> environment) =>
-        new ServerManagedEntityAdapterFactory(environment)
+        new ServerManagedEntityAdapterFactory(environment, "Testing")
             .GetConnectionConfiguration(vendor, null);
 
     private static async Task CreateConnectionAsync(

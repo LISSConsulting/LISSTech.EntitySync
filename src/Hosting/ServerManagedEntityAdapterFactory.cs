@@ -12,6 +12,7 @@ using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.OrchestraMSP;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Ports;
+using Microsoft.Extensions.Hosting;
 
 namespace LISSTech.EntitySync.Hosting;
 
@@ -55,22 +56,40 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         "ORCHESTRA_TENANT_ID",
         "ORCHESTRA_CLIENT_ID",
         "ORCHESTRA_RESOURCE",
-        "ORCHESTRA_CLIENT_SECRET"
+        "ORCHESTRA_CLIENT_SECRET",
+        "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"
     ];
 
     private readonly IReadOnlyDictionary<string, string?> environment;
     private readonly Func<Dictionary<string, string>> createSecretConfiguration;
     private readonly Func<HttpClient> createOrchestraHttpClient;
+    private readonly bool allowLoopbackHttp;
 
     public ServerManagedEntityAdapterFactory()
-        : this(ReadCurrentEnvironment())
+        : this(ReadCurrentEnvironment(), Environments.Production)
+    {
+    }
+
+    public ServerManagedEntityAdapterFactory(IHostEnvironment hostEnvironment)
+        : this(
+            ReadCurrentEnvironment(),
+            (hostEnvironment
+             ?? throw new ArgumentNullException(nameof(hostEnvironment))).EnvironmentName)
     {
     }
 
     public ServerManagedEntityAdapterFactory(
         IReadOnlyDictionary<string, string?> environment)
+        : this(environment, Environments.Production)
+    {
+    }
+
+    internal ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment,
+        string environmentName)
         : this(
             environment,
+            environmentName,
             () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             static () => new HttpClient())
     {
@@ -79,7 +98,11 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
     internal ServerManagedEntityAdapterFactory(
         IReadOnlyDictionary<string, string?> environment,
         Func<Dictionary<string, string>> createSecretConfiguration)
-        : this(environment, createSecretConfiguration, static () => new HttpClient())
+        : this(
+            environment,
+            Environments.Production,
+            createSecretConfiguration,
+            static () => new HttpClient())
     {
     }
 
@@ -88,6 +111,19 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         Func<HttpClient> createOrchestraHttpClient)
         : this(
             environment,
+            Environments.Production,
+            () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            createOrchestraHttpClient)
+    {
+    }
+
+    internal ServerManagedEntityAdapterFactory(
+        IReadOnlyDictionary<string, string?> environment,
+        string environmentName,
+        Func<HttpClient> createOrchestraHttpClient)
+        : this(
+            environment,
+            environmentName,
             () => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             createOrchestraHttpClient)
     {
@@ -95,15 +131,24 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
 
     private ServerManagedEntityAdapterFactory(
         IReadOnlyDictionary<string, string?> environment,
+        string environmentName,
         Func<Dictionary<string, string>> createSecretConfiguration,
         Func<HttpClient> createOrchestraHttpClient)
     {
         ArgumentNullException.ThrowIfNull(environment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(environmentName);
         ArgumentNullException.ThrowIfNull(createSecretConfiguration);
         ArgumentNullException.ThrowIfNull(createOrchestraHttpClient);
         this.environment = new Dictionary<string, string?>(
             environment,
             StringComparer.Ordinal);
+        environment.TryGetValue(
+            "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA",
+            out var allowInsecureValue);
+        allowLoopbackHttp =
+            EntitySyncProductionConfiguration.AllowLoopbackOrchestra(
+                environmentName,
+                allowInsecureValue);
         this.createSecretConfiguration = createSecretConfiguration;
         this.createOrchestraHttpClient = createOrchestraHttpClient;
     }
@@ -467,7 +512,8 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                 tenantId,
                 clientId,
                 resource,
-                clientSecret);
+                clientSecret,
+                allowLoopbackHttp);
             AddPublic("OrchestraBaseUrl", baseUrl);
             AddPublic("OrchestraAuthority", authority);
             AddPublic("OrchestraTenantId", tenantId);
@@ -493,7 +539,7 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         }
     }
 
-    private static void ValidateOrchestraSettings(
+    private void ValidateOrchestraSettings(
         IReadOnlyDictionary<string, string> settings) =>
         EntitySyncProductionConfiguration.ValidateOrchestraConnection(
             RequireSetting(settings, "OrchestraBaseUrl"),
@@ -501,7 +547,8 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             RequireSetting(settings, "OrchestraTenantId"),
             RequireSetting(settings, "OrchestraClientId"),
             RequireSetting(settings, "OrchestraResource"),
-            RequireSetting(settings, "OrchestraClientSecret"));
+            RequireSetting(settings, "OrchestraClientSecret"),
+            allowLoopbackHttp);
 
     private OrchestraEntityAdapter CreateOrchestraAdapter(
         IReadOnlyDictionary<string, string> settings,

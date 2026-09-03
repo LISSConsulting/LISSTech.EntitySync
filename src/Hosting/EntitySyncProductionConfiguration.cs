@@ -99,11 +99,9 @@ public static class EntitySyncProductionConfiguration
         environment.TryGetValue(
             "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA",
             out var allowInsecureValue);
-        var allowLoopbackHttp =
-            (environmentName.Equals("Testing", StringComparison.OrdinalIgnoreCase)
-             || environmentName.Equals("Development", StringComparison.OrdinalIgnoreCase))
-            && bool.TryParse(allowInsecureValue, out var allowInsecure)
-            && allowInsecure;
+        var allowLoopbackHttp = AllowLoopbackOrchestra(
+            environmentName,
+            allowInsecureValue);
         ValidateOrchestraConnection(
             Require(environment, "ORCHESTRA_BASE_URL"),
             Require(environment, "ORCHESTRA_AUTHORITY"),
@@ -112,6 +110,17 @@ public static class EntitySyncProductionConfiguration
             Require(environment, "ORCHESTRA_RESOURCE"),
             Require(environment, "ORCHESTRA_CLIENT_SECRET"),
             allowLoopbackHttp);
+    }
+
+    public static bool AllowLoopbackOrchestra(
+        string environmentName,
+        string? configuredValue)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(environmentName);
+        return (environmentName.Equals("Testing", StringComparison.OrdinalIgnoreCase)
+                || environmentName.Equals("Development", StringComparison.OrdinalIgnoreCase))
+               && bool.TryParse(configuredValue, out var allowInsecure)
+               && allowInsecure;
     }
 
     public static void ValidateOrchestraConnection(
