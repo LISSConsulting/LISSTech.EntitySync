@@ -1,9 +1,12 @@
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+
 namespace LISSTech.EntitySync.Mcp.ControlApi;
 
 public sealed record SuiteQlRequest(
     string ConnectionId,
     string Query,
-    int MaximumRows = 100);
+    [property: Range(1, 1000), DefaultValue(100)] int MaximumRows = 100);
 
 public sealed record SuiteQlResponse(
     string ConnectionId,

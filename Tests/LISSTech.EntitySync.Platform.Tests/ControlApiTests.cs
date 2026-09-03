@@ -687,6 +687,35 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     }
 
     [Fact]
+    public async Task SuiteQl_row_limit_above_one_thousand_is_a_safe_problem()
+    {
+        using var routeFactory = new ControlApiFactory(null, executeControlCommands: true);
+        using var client = routeFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Expert");
+        client.DefaultRequestHeaders.Add(
+            IdempotencyEndpointFilter.HeaderName,
+            $"suiteql-{Guid.NewGuid():N}");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/expert/suiteql",
+            Json(
+                """
+                {
+                  "connectionId": "netsuite-main",
+                  "query": "SELECT id FROM customer",
+                  "maximumRows": 1001
+                }
+                """));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_REQUEST", await ProblemCode(response));
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("1001", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("ArgumentOutOfRangeException", body, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
     public async Task Schedule_preview_no_future_occurrence_is_a_safe_problem()
     {
         using var previewFactory = factory.WithWebHostBuilder(builder =>
@@ -760,6 +789,13 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         var schemas = openApi.RootElement
             .GetProperty("components")
             .GetProperty("schemas");
+        var suiteQlRequest = schemas.GetProperty("SuiteQlRequest");
+        var maximumRows = suiteQlRequest
+            .GetProperty("properties")
+            .GetProperty("maximumRows");
+        Assert.Equal(1, maximumRows.GetProperty("minimum").GetInt32());
+        Assert.Equal(1000, maximumRows.GetProperty("maximum").GetInt32());
+        Assert.Equal(100, maximumRows.GetProperty("default").GetInt32());
         var previewRequest = schemas.GetProperty("PreviewScheduleRequest");
         Assert.Equal(
             ["cron_expression", "time_zone"],

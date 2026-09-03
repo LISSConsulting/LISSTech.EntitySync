@@ -18,9 +18,9 @@ public sealed class ExpertOperationService(
         int maximumRows,
         CancellationToken cancellationToken)
     {
-        if (maximumRows is <= 0 or > 100)
+        if (maximumRows is <= 0 or > 1000)
             throw new ArgumentOutOfRangeException(
-                nameof(maximumRows), maximumRows, "Maximum rows must be between 1 and 100.");
+                nameof(maximumRows), maximumRows, "Maximum rows must be between 1 and 1000.");
         query = Require(query, nameof(query));
         if (query.Length > 20_000)
             throw new ArgumentException("SuiteQL cannot exceed 20000 characters.", nameof(query));
