@@ -55,6 +55,8 @@ public sealed class CanonicalShadowProjectionTests
 
         Assert.Null(request.ToDomain(ClientId, 7).CustomFields["nullable"]);
         Assert.Throws<ArgumentException>(() => request.ToDomain(ClientId, 8));
+        Assert.Throws<ArgumentException>(() =>
+            (request with { Email = " padded@example.test " }).ToDomain(ClientId, 7));
     }
 
     [Fact]
@@ -87,6 +89,7 @@ public sealed class CanonicalShadowProjectionTests
             ["website"] = JsonSerializer.SerializeToElement("https://acme.example"),
             ["domain"] = JsonSerializer.SerializeToElement("acme.example"),
             ["nullable"] = JsonSerializer.SerializeToElement<string?>(null),
+            ["empty"] = JsonSerializer.SerializeToElement(string.Empty),
             ["object"] = JsonSerializer.SerializeToElement(new { z = 2, a = 1 })
         },
         Tags = ["priority", "west"],
@@ -139,7 +142,7 @@ public sealed class CanonicalShadowProjectionTests
         ClientId = ClientId,
         SiteId = SiteId,
         Version = 2,
-        AddressType = "billing",
+        AddressType = string.Empty,
         Attention = "Ops",
         Line1 = "1 Main",
         Line2 = "Suite 200",
@@ -149,7 +152,8 @@ public sealed class CanonicalShadowProjectionTests
         Country = "US",
         Fields = new Dictionary<string, JsonElement>
         {
-            ["zone"] = JsonSerializer.SerializeToElement("central")
+            ["zone"] = JsonSerializer.SerializeToElement("central"),
+            ["empty"] = JsonSerializer.SerializeToElement(string.Empty)
         },
         Tags = ["primary"],
         PlatformLinks =

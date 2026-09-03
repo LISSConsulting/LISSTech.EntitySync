@@ -247,14 +247,21 @@ public sealed record CanonicalShadowEntityRequest(
         return candidate;
     }
 
-    internal static string Required(string value, int maximum, string name) =>
-        Optional(value, maximum, name)
-        ?? throw new ArgumentException($"{name} is required.", name);
+    internal static string Required(string value, int maximum, string name)
+    {
+        if (string.IsNullOrEmpty(value)
+            || value.Length > maximum
+            || value != value.Trim()
+            || value.Any(character => char.IsControl(character)))
+            throw new ArgumentException($"{name} is invalid.", name);
+        return value;
+    }
 
     internal static string? Optional(string? value, int maximum, string name)
     {
         if (value is null) return null;
-        if (value.Length == 0 || value.Length > maximum || value != value.Trim()
+        if (value.Length > maximum
+            || (value.Length > 0 && value != value.Trim())
             || value.Any(character => char.IsControl(character)))
             throw new ArgumentException($"{name} is invalid.", name);
         return value;
