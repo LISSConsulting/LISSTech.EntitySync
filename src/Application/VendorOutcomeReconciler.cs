@@ -235,8 +235,15 @@ public sealed class VendorOutcomeReconciler(
         EntitySyncChangeState? checkpoint = null;
         if (policy.Definition.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)
         {
+            var changeStateScope = EntitySyncCanonicalDigest.Compute(new
+            {
+                policy.TenantId,
+                policy.RouteScope,
+                policy.PolicyId,
+                policy.Version
+            }).Value;
             var route = EntitySyncChangeStateRoute.Create(
-                tenantId, operation.RouteScope, claim.Item.SourceVendor,
+                tenantId, changeStateScope, claim.Item.SourceVendor,
                 claim.Item.SourceConnectionId, claim.Item.SourceEntityType,
                 claim.Item.TargetVendor, claim.Item.TargetConnectionId,
                 claim.Item.TargetEntityType);

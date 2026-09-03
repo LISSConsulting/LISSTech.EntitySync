@@ -1058,25 +1058,32 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
     private readonly IEntitySyncControlCommands? controlCommands;
     private readonly bool executeControlCommands;
     private readonly bool preserveProductionQueries;
+    private readonly IConnectionRuntimeFactory? connectionRuntime;
 
     public SensitiveLogRecorder LogRecorder { get; } = new();
 
     public ControlApiFactory()
-        : this(null, false, null, false)
+        : this(null, false, null, false, null)
     {
     }
 
     internal ControlApiFactory(
         IEntitySyncControlCommands? controlCommands,
         bool executeControlCommands)
-        : this(controlCommands, executeControlCommands, null, false)
+        : this(controlCommands, executeControlCommands, null, false, null)
     {
     }
 
     internal ControlApiFactory(
         string connectionString,
-        bool preserveProductionQueries)
-        : this(null, false, connectionString, preserveProductionQueries)
+        bool preserveProductionQueries,
+        IConnectionRuntimeFactory? connectionRuntime = null)
+        : this(
+            null,
+            false,
+            connectionString,
+            preserveProductionQueries,
+            connectionRuntime)
     {
     }
 
@@ -1084,11 +1091,13 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
         IEntitySyncControlCommands? controlCommands,
         bool executeControlCommands,
         string? connectionString,
-        bool preserveProductionQueries)
+        bool preserveProductionQueries,
+        IConnectionRuntimeFactory? connectionRuntime)
     {
         this.controlCommands = controlCommands;
         this.executeControlCommands = executeControlCommands;
         this.preserveProductionQueries = preserveProductionQueries;
+        this.connectionRuntime = connectionRuntime;
         Directory.CreateDirectory(keyPath);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -1135,6 +1144,11 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
                     TestAuthenticationHandler.Scheme, _ => { });
             services.RemoveAll<IControlReadinessProbe>();
             services.AddSingleton<IControlReadinessProbe>(new ReadyProbe());
+            if (connectionRuntime is not null)
+            {
+                services.RemoveAll<IConnectionRuntimeFactory>();
+                services.AddSingleton(connectionRuntime);
+            }
             if (!preserveProductionQueries)
             {
                 services.RemoveAll<IControlApiQueries>();
