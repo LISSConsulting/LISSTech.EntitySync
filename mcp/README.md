@@ -65,8 +65,8 @@ For the current runtime, supply `ORCHESTRA_BASE_URL`, `ORCHESTRA_AUTHORITY`,
 the regular scheduler and API free of those variables:
 
 ```bash
-docker compose stop entitysync-mcp
-docker compose run --rm --detach --no-deps \
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" stop entitysync-mcp
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" run --rm --detach --no-deps \
   --name entitysync-orchestra-capture \
   --publish 127.0.0.1:18080:8080 \
   -e ORCHESTRA_BASE_URL \
@@ -84,7 +84,7 @@ curl --fail --silent --show-error \
   --header "Content-Type: application/json" \
   --data '{"vendor":"OrchestraMSP","connectionId":"orchestra-primary","displayName":"OrchestraMSP Client Directory"}'
 docker stop entitysync-orchestra-capture
-docker compose up -d entitysync-mcp
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" up -d entitysync-mcp
 ```
 
 Export the six capture values from a secret manager, not a checked-in env file; unset
@@ -179,13 +179,13 @@ Backups can retain older ciphertext beyond the live 365-day window. Apply equiva
 6. Start the API. Require liveness and then readiness:
 
 ```bash
-docker compose exec entitysync-db \
-  pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-docker compose exec entitysync-scheduler \
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" exec entitysync-db \
+  sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" exec entitysync-scheduler \
   wget -qO- http://127.0.0.1:8080/health
-docker compose exec entitysync-mcp \
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" exec entitysync-mcp \
   wget -qO- http://127.0.0.1:8080/health
-docker compose exec entitysync-mcp \
+docker compose --env-file "$ENTITYSYNC_ENV_FILE" exec entitysync-mcp \
   wget -qO- http://127.0.0.1:8080/health/ready
 ```
 

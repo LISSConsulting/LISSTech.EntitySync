@@ -6,6 +6,8 @@ namespace LISSTech.EntitySync.Platform.Tests;
 
 public sealed class DeploymentContractTests
 {
+    private static readonly string Repository =
+        Path.GetFullPath("../../../../../", AppContext.BaseDirectory);
     private static readonly JsonElement Compose = RenderCompose();
 
     [Fact]
@@ -110,6 +112,61 @@ public sealed class DeploymentContractTests
             volumeNames);
     }
 
+    [Fact]
+    public void Release_smoke_uses_the_production_keyring_path_as_numeric_user()
+    {
+        var workflow = File.ReadAllText(
+            Path.Combine(Repository, ".github/workflows/release-mcp.yml"));
+
+        Assert.DoesNotContain("/var/lib/entitysync-dataprotection", workflow);
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                workflow,
+                "--mount \"type=volume,source=$key_volume,target=/var/lib/entitysync/keys\""));
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                workflow,
+                "--env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync/keys"));
+        Assert.Contains(
+            "docker exec --user 1654:1654 \"$api_container\"",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "docker exec --user 1654:1654 \"$scheduler_container\"",
+            workflow,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(workflow, "test -w /var/lib/entitysync/keys"));
+    }
+
+    [Fact]
+    public void Readme_commands_preserve_the_env_file_and_expand_database_identity_in_container()
+    {
+        var readme = File.ReadAllText(Path.Combine(Repository, "mcp/README.md"));
+        var composeCommands = readme.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("docker compose", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(composeCommands);
+        Assert.All(
+            composeCommands,
+            command => Assert.Contains(
+                "--env-file \"$ENTITYSYNC_ENV_FILE\"",
+                command,
+                StringComparison.Ordinal));
+        Assert.Contains(
+            "sh -c 'pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"'",
+            readme,
+            StringComparison.Ordinal);
+    }
+
+    private static int CountOccurrences(string value, string expected) =>
+        value.Split(expected, StringSplitOptions.None).Length - 1;
+
     private static void AssertKeyringMount(JsonElement service)
     {
         var mounts = service.GetProperty("volumes").EnumerateArray().ToArray();
@@ -142,7 +199,7 @@ public sealed class DeploymentContractTests
 
     private static JsonElement RenderCompose()
     {
-        var repository = Path.GetFullPath("../../../../../", AppContext.BaseDirectory);
+        var repository = Repository;
         var envFile = Path.Combine(Path.GetTempPath(), $"entitysync-compose-{Guid.NewGuid():N}.env");
         File.WriteAllLines(envFile,
         [

@@ -33,18 +33,13 @@ jobs:
       ENTITYSYNC_WORKER_LEASE_SECONDS: '60'
       ENTITYSYNC_WORKER_HEARTBEAT_SECONDS: '10'
       ENTITYSYNC_WORKER_RETRY_SECONDS: '5'
-      ORCHESTRA_BASE_URL: https://orchestra.example.com/api/v1/internal/client-directory/
-      ORCHESTRA_AUTHORITY: https://login.example.com
-      ORCHESTRA_TENANT_ID: release-verification
-      ORCHESTRA_CLIENT_ID: release-verification
-      ORCHESTRA_RESOURCE: api://orchestra
-      ORCHESTRA_CLIENT_SECRET: ${{ secrets.ENTITYSYNC_TEST_ORCHESTRA_CLIENT_SECRET }}
       MCP_TRANSPORT: http
       MCP_OAUTH_AUTHORITY: https://auth.example.com
       MCP_OAUTH_RESOURCE: https://entitysync.example.com/mcp
-      MCP_OAUTH_AUDIENCE: https://entitysync.example.com/mcp
-      MCP_OAUTH_SCOPES: mcp:tools
-      MCP_OAUTH_REQUIRED_SCOPE: mcp:tools
+      MCP_OAUTH_AUDIENCE: api://entitysync
+      MCP_OAUTH_SCOPES: EntitySync.Read EntitySync.Operate EntitySync.Approve EntitySync.Manage EntitySync.Audit EntitySync.Expert
+      MCP_OAUTH_REQUIRED_SCOPE: EntitySync.Read
+      ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST: release-verification
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: https://logfire-us.pydantic.dev/v1/logs
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.ENTITYSYNC_TEST_OTEL_HEADERS }}
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
@@ -131,24 +126,18 @@ jobs:
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
-            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync-dataprotection" \
+            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync/keys" \
             --env ASPNETCORE_URLS=http://127.0.0.1:18081 \
             --env DATABASE_URL \
             --env ENTITYSYNC_TENANT_IDS \
             --env ENTITYSYNC_WORKER_LEASE_SECONDS \
             --env ENTITYSYNC_WORKER_HEARTBEAT_SECONDS \
             --env ENTITYSYNC_WORKER_RETRY_SECONDS \
-            --env ORCHESTRA_BASE_URL \
-            --env ORCHESTRA_AUTHORITY \
-            --env ORCHESTRA_TENANT_ID \
-            --env ORCHESTRA_CLIENT_ID \
-            --env ORCHESTRA_RESOURCE \
-            --env ORCHESTRA_CLIENT_SECRET \
             --env OTEL_EXPORTER_OTLP_LOGS_ENDPOINT \
             --env OTEL_EXPORTER_OTLP_HEADERS \
             --env OTEL_EXPORTER_OTLP_PROTOCOL \
             --env OTEL_SERVICE_NAME=lisstech-entitysync-scheduler-release-check \
-            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync-dataprotection \
+            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync/keys \
             entitysync-scheduler:release-check >/dev/null
 
           docker run --detach --name "$api_container" \
@@ -157,30 +146,25 @@ jobs:
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
-            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync-dataprotection" \
+            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync/keys" \
             --env ASPNETCORE_URLS=http://127.0.0.1:18080 \
             --env DATABASE_URL \
             --env ENTITYSYNC_TENANT_IDS \
             --env ENTITYSYNC_WORKER_LEASE_SECONDS \
             --env ENTITYSYNC_WORKER_HEARTBEAT_SECONDS \
             --env ENTITYSYNC_WORKER_RETRY_SECONDS \
-            --env ORCHESTRA_BASE_URL \
-            --env ORCHESTRA_AUTHORITY \
-            --env ORCHESTRA_TENANT_ID \
-            --env ORCHESTRA_CLIENT_ID \
-            --env ORCHESTRA_RESOURCE \
-            --env ORCHESTRA_CLIENT_SECRET \
             --env MCP_TRANSPORT \
             --env MCP_OAUTH_AUTHORITY \
             --env MCP_OAUTH_RESOURCE \
             --env MCP_OAUTH_AUDIENCE \
             --env MCP_OAUTH_SCOPES \
             --env MCP_OAUTH_REQUIRED_SCOPE \
+            --env ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST \
             --env OTEL_EXPORTER_OTLP_LOGS_ENDPOINT \
             --env OTEL_EXPORTER_OTLP_HEADERS \
             --env OTEL_EXPORTER_OTLP_PROTOCOL \
             --env OTEL_SERVICE_NAME=lisstech-entitysync-mcp-release-check \
-            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync-dataprotection \
+            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync/keys \
             entitysync-mcp:release-check >/dev/null
 
           test "$(docker inspect --format '{{.Config.User}}' "$api_container")" = '1654:1654'
@@ -191,6 +175,10 @@ jobs:
           test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$scheduler_container")" = '["ALL"]'
           test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$api_container")" = '["no-new-privileges"]'
           test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$scheduler_container")" = '["no-new-privileges"]'
+          docker exec --user 1654:1654 "$api_container" \
+            sh -c 'test -w /var/lib/entitysync/keys && touch /var/lib/entitysync/keys/api-write-check'
+          docker exec --user 1654:1654 "$scheduler_container" \
+            sh -c 'test -w /var/lib/entitysync/keys && touch /var/lib/entitysync/keys/scheduler-write-check'
 
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error http://127.0.0.1:18081/health >/dev/null \

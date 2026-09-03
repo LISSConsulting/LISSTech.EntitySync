@@ -388,6 +388,91 @@ public sealed class ConnectionDefinitionServiceTests
                 default));
     }
 
+    [Theory]
+    [InlineData(
+        "ORCHESTRA_BASE_URL",
+        "http://directory.example/api/v1/internal/client-directory/")]
+    [InlineData(
+        "ORCHESTRA_BASE_URL",
+        "https://directory.example/api/v1/internal/not-client-directory/")]
+    [InlineData(
+        "ORCHESTRA_AUTHORITY",
+        "https://user:password@login.example/tenant")] // pragma: allowlist secret
+    public void Orchestra_capture_rejects_unsafe_configuration_before_persistence(
+        string name,
+        string value)
+    {
+        var environment = ValidOrchestraEnvironment();
+        environment[name] = value;
+        var factory = new ServerManagedEntityAdapterFactory(environment);
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            factory.GetConnectionConfiguration(
+                EntitySyncVendors.OrchestraMSP,
+                profileSettings: null));
+
+        Assert.Contains("ENTITYSYNC_CONFIG_URI_INVALID", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(
+        "OrchestraBaseUrl",
+        "http://directory.example/api/v1/internal/client-directory/")]
+    [InlineData(
+        "OrchestraBaseUrl",
+        "https://directory.example/api/v1/internal/not-client-directory/")]
+    [InlineData(
+        "OrchestraAuthority",
+        "https://user:password@login.example/tenant")] // pragma: allowlist secret
+    public async Task Durable_Orchestra_configuration_is_validated_before_HTTP_client_creation(
+        string name,
+        string value)
+    {
+        var publicConfiguration = new Dictionary<string, JsonElement>
+        {
+            ["OrchestraBaseUrl"] = Json(
+                "https://directory.example/api/v1/internal/client-directory/"),
+            ["OrchestraAuthority"] = Json("https://login.example/tenant"),
+            ["OrchestraTenantId"] = Json("tenant"),
+            ["OrchestraClientId"] = Json("client"),
+            ["OrchestraResource"] = Json("api://orchestra")
+        };
+        publicConfiguration[name] = Json(value);
+        var httpClientCreations = 0;
+        var factory = new ServerManagedEntityAdapterFactory(
+            new Dictionary<string, string?>(),
+            () =>
+            {
+                httpClientCreations++;
+                return new HttpClient();
+            });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            factory.CreateDurableAsync(
+                EntitySyncVendors.OrchestraMSP,
+                publicConfiguration,
+                new Dictionary<string, string>
+                {
+                    ["OrchestraClientSecret"] = "secret"
+                },
+                default));
+
+        Assert.Contains("ENTITYSYNC_CONFIG_URI_INVALID", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, httpClientCreations);
+    }
+
+    private static Dictionary<string, string?> ValidOrchestraEnvironment() =>
+        new(StringComparer.Ordinal)
+        {
+            ["ORCHESTRA_BASE_URL"] =
+                "https://directory.example/api/v1/internal/client-directory/",
+            ["ORCHESTRA_AUTHORITY"] = "https://login.example/tenant",
+            ["ORCHESTRA_TENANT_ID"] = "tenant",
+            ["ORCHESTRA_CLIENT_ID"] = "client",
+            ["ORCHESTRA_RESOURCE"] = "api://orchestra",
+            ["ORCHESTRA_CLIENT_SECRET"] = "secret"
+        };
+
     [Fact]
     public async Task Production_planner_acquires_current_durable_generations_and_disposes_leases()
     {
@@ -523,7 +608,7 @@ public sealed class ConnectionDefinitionServiceTests
     private static ConnectionDefinitionRequest Request(
         string vendor = "HaloPSA",
         string connectionId = "halo-main",
-        string secret = "super-secret",
+        string secret = "super-secret", // pragma: allowlist secret
         IReadOnlyDictionary<string, JsonElement>? publicConfiguration = null,
         IReadOnlyDictionary<string, string>? secretConfiguration = null) =>
         new(

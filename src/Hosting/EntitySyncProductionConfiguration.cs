@@ -68,13 +68,6 @@ public sealed record EntitySyncWorkerSettings(
 
 public static class EntitySyncProductionConfiguration
 {
-    private static readonly string[] RequiredOrchestraValues =
-    [
-        "ORCHESTRA_TENANT_ID",
-        "ORCHESTRA_CLIENT_ID",
-        "ORCHESTRA_RESOURCE",
-        "ORCHESTRA_CLIENT_SECRET"
-    ];
 
     public static void ValidateOrchestraCurrentEnvironment(string environmentName) =>
         ValidateOrchestra(
@@ -103,9 +96,6 @@ public static class EntitySyncProductionConfiguration
         string environmentName)
     {
         ArgumentNullException.ThrowIfNull(environment);
-        var baseUrl = Require(environment, "ORCHESTRA_BASE_URL");
-        var authority = Require(environment, "ORCHESTRA_AUTHORITY");
-        foreach (var name in RequiredOrchestraValues) Require(environment, name);
         environment.TryGetValue(
             "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA",
             out var allowInsecureValue);
@@ -114,6 +104,25 @@ public static class EntitySyncProductionConfiguration
              || environmentName.Equals("Development", StringComparison.OrdinalIgnoreCase))
             && bool.TryParse(allowInsecureValue, out var allowInsecure)
             && allowInsecure;
+        ValidateOrchestraConnection(
+            Require(environment, "ORCHESTRA_BASE_URL"),
+            Require(environment, "ORCHESTRA_AUTHORITY"),
+            Require(environment, "ORCHESTRA_TENANT_ID"),
+            Require(environment, "ORCHESTRA_CLIENT_ID"),
+            Require(environment, "ORCHESTRA_RESOURCE"),
+            Require(environment, "ORCHESTRA_CLIENT_SECRET"),
+            allowLoopbackHttp);
+    }
+
+    public static void ValidateOrchestraConnection(
+        string baseUrl,
+        string authority,
+        string tenantId,
+        string clientId,
+        string resource,
+        string clientSecret,
+        bool allowLoopbackHttp = false)
+    {
         ValidateServiceUri(
             baseUrl,
             "ORCHESTRA_BASE_URL",
@@ -124,6 +133,14 @@ public static class EntitySyncProductionConfiguration
             "ORCHESTRA_AUTHORITY",
             requireDirectoryPath: false,
             allowLoopbackHttp);
+        ValidateBoundedValue(tenantId, "ORCHESTRA_TENANT_ID", 200);
+        ValidateBoundedValue(clientId, "ORCHESTRA_CLIENT_ID", 200);
+        ValidateResource(resource);
+        ValidateBoundedValue(
+            clientSecret,
+            "ORCHESTRA_CLIENT_SECRET",
+            8192,
+            allowWhitespace: true);
     }
 
     private static string Require(
@@ -141,13 +158,48 @@ public static class EntitySyncProductionConfiguration
         return value;
     }
 
+    private static void ValidateBoundedValue(
+        string value,
+        string name,
+        int maximumLength,
+        bool allowWhitespace = false)
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Length > maximumLength
+            || value.Any(char.IsControl)
+            || (!allowWhitespace && value.Any(char.IsWhiteSpace)))
+        {
+            throw new InvalidOperationException(
+                $"{name} is invalid [ENTITYSYNC_CONFIG_VALUE_INVALID].");
+        }
+    }
+
+    private static void ValidateResource(string value)
+    {
+        ValidateBoundedValue(value, "ORCHESTRA_RESOURCE", 2048);
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || (!uri.Scheme.Equals("api", StringComparison.OrdinalIgnoreCase)
+                && !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new InvalidOperationException(
+                "ORCHESTRA_RESOURCE is invalid [ENTITYSYNC_CONFIG_VALUE_INVALID].");
+        }
+    }
+
     private static void ValidateServiceUri(
         string value,
         string name,
         bool requireDirectoryPath,
         bool allowLoopbackHttp)
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        if (string.IsNullOrWhiteSpace(value)
+            || value.Length > 2048
+            || value.Any(char.IsWhiteSpace)
+            || value.Any(char.IsControl)
+            || !Uri.TryCreate(value, UriKind.Absolute, out var uri)
             || (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
                 && !(allowLoopbackHttp
                      && uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
@@ -157,7 +209,7 @@ public static class EntitySyncProductionConfiguration
             || !string.IsNullOrEmpty(uri.Query)
             || !string.IsNullOrEmpty(uri.Fragment)
             || (requireDirectoryPath
-                && !uri.AbsolutePath.EndsWith(
+                && !uri.AbsolutePath.Equals(
                     "/api/v1/internal/client-directory/",
                     StringComparison.Ordinal)))
         {

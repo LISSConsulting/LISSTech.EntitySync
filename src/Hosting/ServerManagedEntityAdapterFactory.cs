@@ -253,7 +253,10 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             }
 
             if (EntitySyncVendors.IsOrchestraMSP(vendor))
+            {
+                ValidateOrchestraSettings(settings);
                 return CreateOrchestraAdapter(settings, connectionGeneration);
+            }
 
             if (EntitySyncVendors.IsAgentController(vendor))
             {
@@ -446,27 +449,31 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         }
         else if (EntitySyncVendors.IsOrchestraMSP(normalized))
         {
-            AddPublic(
-                "OrchestraBaseUrl",
-                Resolve(profileSettings, "OrchestraBaseUrl", "ORCHESTRA_BASE_URL"));
-            AddPublic(
-                "OrchestraAuthority",
-                Resolve(profileSettings, "OrchestraAuthority", "ORCHESTRA_AUTHORITY"));
-            AddPublic(
-                "OrchestraTenantId",
-                Resolve(profileSettings, "OrchestraTenantId", "ORCHESTRA_TENANT_ID"));
-            AddPublic(
-                "OrchestraClientId",
-                Resolve(profileSettings, "OrchestraClientId", "ORCHESTRA_CLIENT_ID"));
-            AddPublic(
-                "OrchestraResource",
-                Resolve(profileSettings, "OrchestraResource", "ORCHESTRA_RESOURCE"));
-            secretConfiguration.Add(
-                "OrchestraClientSecret",
-                Resolve(
-                    profileSettings,
-                    "OrchestraClientSecret",
-                    "ORCHESTRA_CLIENT_SECRET"));
+            var baseUrl = Resolve(
+                profileSettings, "OrchestraBaseUrl", "ORCHESTRA_BASE_URL");
+            var authority = Resolve(
+                profileSettings, "OrchestraAuthority", "ORCHESTRA_AUTHORITY");
+            var tenantId = Resolve(
+                profileSettings, "OrchestraTenantId", "ORCHESTRA_TENANT_ID");
+            var clientId = Resolve(
+                profileSettings, "OrchestraClientId", "ORCHESTRA_CLIENT_ID");
+            var resource = Resolve(
+                profileSettings, "OrchestraResource", "ORCHESTRA_RESOURCE");
+            var clientSecret = Resolve(
+                profileSettings, "OrchestraClientSecret", "ORCHESTRA_CLIENT_SECRET");
+            EntitySyncProductionConfiguration.ValidateOrchestraConnection(
+                baseUrl,
+                authority,
+                tenantId,
+                clientId,
+                resource,
+                clientSecret);
+            AddPublic("OrchestraBaseUrl", baseUrl);
+            AddPublic("OrchestraAuthority", authority);
+            AddPublic("OrchestraTenantId", tenantId);
+            AddPublic("OrchestraClientId", clientId);
+            AddPublic("OrchestraResource", resource);
+            secretConfiguration.Add("OrchestraClientSecret", clientSecret);
         }
         else
         {
@@ -485,6 +492,16 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             throw;
         }
     }
+
+    private static void ValidateOrchestraSettings(
+        IReadOnlyDictionary<string, string> settings) =>
+        EntitySyncProductionConfiguration.ValidateOrchestraConnection(
+            RequireSetting(settings, "OrchestraBaseUrl"),
+            RequireSetting(settings, "OrchestraAuthority"),
+            RequireSetting(settings, "OrchestraTenantId"),
+            RequireSetting(settings, "OrchestraClientId"),
+            RequireSetting(settings, "OrchestraResource"),
+            RequireSetting(settings, "OrchestraClientSecret"));
 
     private OrchestraEntityAdapter CreateOrchestraAdapter(
         IReadOnlyDictionary<string, string> settings,
