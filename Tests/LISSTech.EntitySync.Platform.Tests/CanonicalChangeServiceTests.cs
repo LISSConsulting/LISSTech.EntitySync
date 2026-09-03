@@ -117,7 +117,7 @@ public sealed class CanonicalChangeServiceTests
             SourceConnectionId = "source",
             SourceEntityType = "Client",
             SourceEntityId = id.ToString("D"),
-            PinnedCanonicalSource = new CanonicalEntityVersion(id, 7, pinned),
+            PinnedCanonicalSources = [new CanonicalEntityVersion(id, 7, pinned)],
             TargetVendor = "HaloPSA",
             TargetConnectionId = "target",
             TargetEntityType = "Client"
@@ -126,6 +126,55 @@ public sealed class CanonicalChangeServiceTests
         Assert.Equal(0, source.EntityReads);
         Assert.Single(plan.Items);
         Assert.Equal("version-7", plan.Items[0].Source.Name);
+    }
+
+    [Fact]
+    public async Task Multiple_pinned_canonical_snapshots_plan_once_without_vendor_writes()
+    {
+        var firstId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var secondId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var sources = new[]
+        {
+            new CanonicalEntityVersion(firstId, 7, new ExternalEntity
+            {
+                Vendor = "OrchestraMSP", EntityType = "Client",
+                Id = firstId.ToString("D"), Name = "First", Email = "first@example.test"
+            }),
+            new CanonicalEntityVersion(secondId, 9, new ExternalEntity
+            {
+                Vendor = "OrchestraMSP", EntityType = "Client",
+                Id = secondId.ToString("D"), Name = "Second", Email = "second@example.test"
+            })
+        };
+        using var connections = new InMemoryEntityConnectionRepository();
+        var source = new CountingAdapter("OrchestraMSP", []);
+        var target = new CountingAdapter("HaloPSA", []);
+        connections.Register("tenant", "source", source);
+        connections.Register("tenant", "target", target);
+        var planner = new EntitySyncPlanner(
+            connections,
+            new TestEntitySyncPlanRepository(),
+            new InMemoryEntityExclusionRepository(),
+            new WeightedEntityMatcher(),
+            new DefaultEntityMapper(),
+            new InMemoryEntitySyncChangeStateRepository());
+
+        var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "OrchestraMSP",
+            SourceConnectionId = "source",
+            SourceEntityType = "Client",
+            PinnedCanonicalSources = sources,
+            TargetVendor = "HaloPSA",
+            TargetConnectionId = "target",
+            TargetEntityType = "Client"
+        }, default);
+
+        Assert.Equal(0, source.EntityReads);
+        Assert.Equal(2, plan.Items.Count);
+        Assert.Equal([firstId.ToString("D"), secondId.ToString("D")],
+            plan.Items.Select(item => item.Source.Id));
     }
 
     private sealed class MemoryCanonicalRepository : ICanonicalChangeRepository

@@ -4,6 +4,7 @@ using System.IO.Compression;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Commands;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
 using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
@@ -135,6 +136,90 @@ public sealed class DurablePlanServiceTests
             new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         Assert.NotEqual(first.Plan.PlanDigestSha256, changed.Plan.PlanDigestSha256);
         Assert.NotEqual(first.Items[0].DesiredPayloadSha256, changed.Items[0].DesiredPayloadSha256);
+    }
+
+    [Fact]
+    public async Task Pinned_shadow_plan_uses_real_mapper_without_source_or_vendor_writes()
+    {
+        var canonicalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var sourceEntity = new ExternalEntity
+        {
+            Vendor = "OrchestraMSP",
+            EntityType = "Client",
+            Id = canonicalId.ToString("D"),
+            Name = "Mapped Client",
+            Email = "new@example.test",
+            ExternalIds = { ["OrchestraClientId"] = canonicalId.ToString("D") }
+        };
+        var targetEntity = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "target-1",
+            Name = "Mapped Client",
+            Email = "old@example.test",
+            CustomFields = { ["CFOrchestraClientID"] = canonicalId.ToString("D") }
+        };
+        var instant = new DateTimeOffset(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
+        var creator = new EntitySyncActor("creator");
+        EntitySyncConnectionDefinition Definition(string id, string vendor) => new(
+            Fixture.Tenant,
+            id,
+            vendor,
+            id,
+            1,
+            true,
+            new EntitySyncJsonValue("{}"),
+            "ciphertext",
+            instant,
+            creator,
+            instant,
+            creator);
+        using var connections = new DefinitionAndRuntimeRepository(
+            Definition(Fixture.SourceConnectionId, "OrchestraMSP"),
+            new TestAdapter("OrchestraMSP", []),
+            Definition(Fixture.TargetConnectionId, "HaloPSA"),
+            new TestAdapter("HaloPSA", [targetEntity]));
+        var definition = new EntitySyncPolicyDefinition(
+            "OrchestraMSP", Fixture.SourceConnectionId, "Client",
+            "HaloPSA", Fixture.TargetConnectionId, "Client",
+            false, false, 90, 70, "OrchestraClientId", "CFOrchestraClientID",
+            EntitySyncUpdatePolicy.Standard, ["name", "contactemail"], [], false);
+        var policy = EntitySyncPolicy.Create(
+            Fixture.Tenant,
+            Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "shadow", "shadow-route", definition, true, instant, creator);
+        var policies = new MemoryPolicyRepository(policy);
+        var exclusions = new RecordingExclusionRepository();
+        var time = new ManualTimeProvider(instant);
+        var repository = new MemoryDurableRepository(time, policies, connections);
+        var mapper = new DefaultEntityMapper();
+        var planner = new EntitySyncPlanner(
+            connections, new TestEntitySyncPlanRepository(), exclusions,
+            new WeightedEntityMatcher(), mapper,
+            new InMemoryEntitySyncChangeStateRepository());
+        var service = new DurablePlanService(
+            planner, new PlanManifestBuilder(mapper), policies, connections,
+            connections, exclusions, repository, time);
+
+        var result = await service.CreatePlanAsync(new CreateDurablePlanRequest
+        {
+            TenantId = Fixture.Tenant,
+            IdempotencyKey = "shadow-mapped",
+            PolicyId = policy.PolicyId,
+            PolicyVersion = policy.Version,
+            PinnedCanonicalSources =
+            [
+                new CanonicalEntityVersion(canonicalId, 7, sourceEntity)
+            ],
+            PlanLifetime = TimeSpan.FromHours(1)
+        }, new EntitySyncActor("operator"), default);
+
+        Assert.Equal(EntitySyncDurablePlanStatus.Draft, repository.Manifest!.Plan.Status);
+        Assert.Equal(1, result.ItemCount);
+        var desired = repository.Manifest.Items[0].RedactedDesired.Json;
+        Assert.Contains("\"contactemail\":\"new@example.test\"", desired);
+        Assert.DoesNotContain("\"email\":", desired);
     }
 
     [Fact]

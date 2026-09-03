@@ -50,6 +50,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         (HttpMethod.Post, "/api/v1/control/policies/{policyId:guid}/versions", ControlPolicies.Manage),
         (HttpMethod.Get, "/api/v1/control/plans", ControlPolicies.Read),
         (HttpMethod.Post, "/api/v1/control/plans", ControlPolicies.Operate),
+        (HttpMethod.Post, "/api/v1/control/plans/shadow-projection", ControlPolicies.Operate),
         (HttpMethod.Get, "/api/v1/control/plans/{planId:guid}/items", ControlPolicies.Read),
         (HttpMethod.Post, "/api/v1/control/plans/{planId:guid}/inspections", ControlPolicies.Operate),
         (HttpMethod.Post, "/api/v1/control/plans/{planId:guid}/approvals", ControlPolicies.Approve),

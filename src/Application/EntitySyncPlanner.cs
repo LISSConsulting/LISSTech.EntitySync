@@ -78,20 +78,30 @@ public sealed class EntitySyncPlanner(
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
 
         IReadOnlyList<ExternalEntity> sources;
-        if (request.PinnedCanonicalSource is not null)
+        if (request.PinnedCanonicalSources.Count > 0)
         {
             if (!sourceVendor.Equals("OrchestraMSP", StringComparison.Ordinal))
                 throw new InvalidOperationException(
                     "Pinned canonical sources are restricted to OrchestraMSP control work.");
-            var pinned = request.PinnedCanonicalSource;
             var expectedSourceId = request.SourceEntityId?.Trim();
-            if (expectedSourceId is null
-                || pinned.CanonicalEntityId.ToString("D") != expectedSourceId
-                || !pinned.Entity.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase)
-                || !pinned.Entity.EntityType.Equals(sourceType, StringComparison.OrdinalIgnoreCase))
+            var pinnedIds = new HashSet<Guid>();
+            foreach (var pinned in request.PinnedCanonicalSources)
+            {
+                if (!pinnedIds.Add(pinned.CanonicalEntityId)
+                    || pinned.CanonicalVersion <= 0
+                    || !pinned.Entity.Vendor.Equals("OrchestraMSP", StringComparison.Ordinal)
+                    || pinned.Entity.Id != pinned.CanonicalEntityId.ToString("D")
+                    || !pinned.Entity.EntityType.Equals(sourceType, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Pinned canonical source identity or version is invalid.");
+            }
+            if (expectedSourceId is not null
+                && (request.PinnedCanonicalSources.Count != 1
+                    || request.PinnedCanonicalSources[0].CanonicalEntityId.ToString("D")
+                        != expectedSourceId))
                 throw new InvalidOperationException(
                     "Pinned canonical source identity does not match the durable selection.");
-            sources = [pinned.Entity];
+            sources = request.PinnedCanonicalSources.Select(value => value.Entity).ToArray();
         }
         else
         {
@@ -436,6 +446,13 @@ public sealed class EntitySyncPlanner(
             if (string.IsNullOrWhiteSpace(request.SourceEntityId)) throw new ArgumentException("Source entity ID cannot be blank when supplied.", nameof(request));
             if (request.SourceEntityId.Trim().Length > 512) throw new ArgumentException("Source entity ID cannot exceed 512 characters.", nameof(request));
         }
+        if (request.PinnedCanonicalSources.Count > MaxEntitiesPerPlanSide)
+            throw new ArgumentOutOfRangeException(
+                nameof(request), $"Pinned canonical sources are limited to {MaxEntitiesPerPlanSide}.");
+        if (request.PinnedCanonicalSources.Count > 0
+            && (request.SourceSearch is not null || request.SourceCount is not null))
+            throw new ArgumentException(
+                "Pinned canonical work cannot combine bounded search inputs.", nameof(request));
         if (request.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly
             && !IsValidChangeStateScope(request.ChangeStateScope))
             throw new ArgumentException(

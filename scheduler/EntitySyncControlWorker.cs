@@ -334,7 +334,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
                         PolicyId = work.PolicyId,
                         PolicyVersion = work.PolicyVersion,
                         SourceEntityId = sourceEntityId,
-                        PinnedCanonicalSource = pinnedCanonicalSource,
+                        PinnedCanonicalSources = [pinnedCanonicalSource],
                         PlanLifetime = TimeSpan.FromHours(4)
                     },
                     actor,

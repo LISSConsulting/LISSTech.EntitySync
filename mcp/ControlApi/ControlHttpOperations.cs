@@ -35,6 +35,37 @@ public static class ControlHttpOperations
         }, control.Actor, cancellationToken);
     }
 
+    public static Task<DurablePlanCommandResult> CreateShadowPlanAsync(
+        IEntitySyncControlCommands commands,
+        ControlRequestContext control,
+        CreateShadowPlanRequest request,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.PolicyId == Guid.Empty || request.PolicyVersion <= 0)
+            throw new ArgumentException("An exact policy ID and version are required.");
+        if (request.LifetimeMinutes is < 1 or > 1440)
+            throw new ArgumentOutOfRangeException(
+                nameof(request.LifetimeMinutes),
+                "Lifetime must be between 1 and 1440 minutes.");
+        if (request.Sources is null || request.Sources.Count is < 1 or > 5000)
+            throw new ArgumentException("Canonical shadow sources must contain 1 to 5000 items.");
+        var sources = request.Sources.Select(source => source.ToDomain()).ToArray();
+        if (sources.Select(source => source.CanonicalEntityId).Distinct().Count()
+            != sources.Length)
+            throw new ArgumentException("Canonical shadow source IDs must be unique.");
+        return commands.CreatePlanAsync(new CreateDurablePlanRequest
+        {
+            TenantId = control.TenantId,
+            IdempotencyKey = idempotencyKey,
+            PolicyId = request.PolicyId,
+            PolicyVersion = request.PolicyVersion,
+            PinnedCanonicalSources = sources,
+            PlanLifetime = TimeSpan.FromMinutes(request.LifetimeMinutes)
+        }, control.Actor, cancellationToken);
+    }
+
     public static Task<DurablePlanInspectionPage> InspectPlanAsync(
         IEntitySyncControlCommands commands,
         ControlRequestContext control,

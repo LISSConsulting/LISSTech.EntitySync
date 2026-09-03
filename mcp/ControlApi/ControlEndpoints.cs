@@ -82,6 +82,9 @@ public static class ControlEndpoints
         Mutate(group.MapPost("/plans", CreatePlanAsync),
             "CreateControlPlan", ControlPolicies.Operate)
             .Produces<PlanResponse>(StatusCodes.Status201Created);
+        Mutate(group.MapPost("/plans/shadow-projection", CreateShadowPlanAsync),
+            "CreateControlShadowPlan", ControlPolicies.Operate)
+            .Produces<PlanResponse>(StatusCodes.Status201Created);
         Read(group.MapGet("/plans/{planId:guid}/items", GetPlanItemsAsync),
             "ListControlPlanItems").Produces<ControlPage<PlanItemResponse>>();
         Mutate(group.MapPost("/plans/{planId:guid}/inspections", InspectPlanAsync),
@@ -431,6 +434,24 @@ public static class ControlEndpoints
             cancellationToken).ConfigureAwait(false);
         var persisted = command.Plan;
         return Results.Json(PlanResponse.From(persisted), statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> CreateShadowPlanAsync(
+        HttpContext http,
+        CreateShadowPlanRequest request,
+        IEntitySyncControlCommands commands,
+        ControlRequestContext control,
+        CancellationToken cancellationToken)
+    {
+        var command = await ControlHttpOperations.CreateShadowPlanAsync(
+            commands,
+            control,
+            request,
+            IdempotencyEndpointFilter.GetCallerKey(http),
+            cancellationToken).ConfigureAwait(false);
+        return Results.Json(
+            PlanResponse.From(command.Plan),
+            statusCode: StatusCodes.Status201Created);
     }
 
     private static async Task<IResult> GetPlanItemsAsync(

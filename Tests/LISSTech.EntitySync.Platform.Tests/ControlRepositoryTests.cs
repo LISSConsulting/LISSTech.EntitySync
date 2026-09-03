@@ -3104,10 +3104,12 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         CreateDurablePlanRequest request,
         EntitySyncActor actor)
     {
-        var selection = new EntitySyncSelectionBounds(
-            request.SourceSearch,
-            request.SourceCount,
-            request.SourceEntityId);
+        var selection = request.PinnedCanonicalSources.Count > 0
+            ? new EntitySyncSelectionBounds(null, request.PinnedCanonicalSources.Count, null)
+            : new EntitySyncSelectionBounds(
+                request.SourceSearch,
+                request.SourceCount,
+                request.SourceEntityId);
         return EntitySyncCanonicalDigest.Compute(new
         {
             SchemaVersion = 1,
@@ -3119,10 +3121,15 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
-            PinnedCanonicalVersion = request.PinnedCanonicalSource?.CanonicalVersion,
-            PinnedCanonicalEntitySha256 = request.PinnedCanonicalSource is null
-                ? null
-                : EntitySyncCanonicalDigest.Compute(request.PinnedCanonicalSource.Entity).Value,
+            PinnedCanonicalSources = request.PinnedCanonicalSources
+                .OrderBy(source => source.CanonicalEntityId)
+                .Select(source => new
+                {
+                    source.CanonicalEntityId,
+                    source.CanonicalVersion,
+                    EntitySha256 = EntitySyncCanonicalDigest.Compute(source.Entity).Value
+                })
+                .ToArray(),
             PlanLifetimeTicks = request.PlanLifetime.Ticks,
             CreatedBy = actor.ActorId
         });

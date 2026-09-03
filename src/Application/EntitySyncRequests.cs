@@ -14,7 +14,7 @@ public sealed class CreateEntitySyncPlanRequest
     public string? SourceSearch { get; init; }
     public int? SourceCount { get; init; }
     public string? SourceEntityId { get; init; }
-    internal CanonicalEntityVersion? PinnedCanonicalSource { get; init; }
+    internal IReadOnlyList<CanonicalEntityVersion> PinnedCanonicalSources { get; init; } = [];
     public string? TargetEntityType { get; init; }
     public bool CreateMissing { get; init; }
     public bool IncludeInactive { get; init; }
@@ -35,7 +35,7 @@ public sealed class CreateDurablePlanRequest
     public string? SourceSearch { get; init; }
     public int? SourceCount { get; init; }
     public string? SourceEntityId { get; init; }
-    internal CanonicalEntityVersion? PinnedCanonicalSource { get; init; }
+    public IReadOnlyList<CanonicalEntityVersion> PinnedCanonicalSources { get; init; } = [];
     public TimeSpan PlanLifetime { get; init; } = TimeSpan.FromHours(4);
 }
 

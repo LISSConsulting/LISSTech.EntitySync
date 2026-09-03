@@ -29,10 +29,12 @@ public sealed class DurablePlanService(
         var tenantId = request.TenantId.Trim();
         var idempotencyKey = request.IdempotencyKey.Trim();
         var planId = CreatePlanId(tenantId, idempotencyKey);
-        var selection = new EntitySyncSelectionBounds(
-            request.SourceSearch,
-            request.SourceCount,
-            request.SourceEntityId);
+        var selection = request.PinnedCanonicalSources.Count > 0
+            ? new EntitySyncSelectionBounds(null, request.PinnedCanonicalSources.Count, null)
+            : new EntitySyncSelectionBounds(
+                request.SourceSearch,
+                request.SourceCount,
+                request.SourceEntityId);
         var requestSha256 = ComputeCreateRequestSha256(
             request, tenantId, idempotencyKey, selection, actor);
         var ownerToken = Guid.NewGuid();
@@ -278,7 +280,7 @@ public sealed class DurablePlanService(
         var policy = await ResolveCurrentPolicyAsync(
             tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
-        if (request.PinnedCanonicalSource is not null
+        if (request.PinnedCanonicalSources.Count > 0
             && !policy.Definition.SourceVendor.Equals(
                 "OrchestraMSP", StringComparison.Ordinal))
             throw new InvalidOperationException(
@@ -684,7 +686,7 @@ public sealed class DurablePlanService(
             SourceSearch = request.SourceSearch,
             SourceCount = request.SourceCount,
             SourceEntityId = request.SourceEntityId,
-            PinnedCanonicalSource = request.PinnedCanonicalSource,
+            PinnedCanonicalSources = request.PinnedCanonicalSources,
             TargetEntityType = policy.Definition.TargetEntityType,
             CreateMissing = policy.Definition.CreateMissing,
             IncludeInactive = policy.Definition.IncludeInactive,
@@ -772,10 +774,15 @@ public sealed class DurablePlanService(
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
-            PinnedCanonicalVersion = request.PinnedCanonicalSource?.CanonicalVersion,
-            PinnedCanonicalEntitySha256 = request.PinnedCanonicalSource is null
-                ? null
-                : EntitySyncCanonicalDigest.Compute(request.PinnedCanonicalSource.Entity).Value,
+            PinnedCanonicalSources = request.PinnedCanonicalSources
+                .OrderBy(source => source.CanonicalEntityId)
+                .Select(source => new
+                {
+                    source.CanonicalEntityId,
+                    source.CanonicalVersion,
+                    EntitySha256 = EntitySyncCanonicalDigest.Compute(source.Entity).Value
+                })
+                .ToArray(),
             PlanLifetimeTicks = request.PlanLifetime.Ticks,
             CreatedBy = actor.ActorId
         });
@@ -819,16 +826,24 @@ public sealed class DurablePlanService(
             throw new ArgumentException("Policy ID is required.", nameof(request));
         if (request.PolicyVersion is <= 0)
             throw new ArgumentOutOfRangeException(nameof(request.PolicyVersion));
-        if (request.PinnedCanonicalSource is not null)
+        if (request.PinnedCanonicalSources.Count > 0)
         {
-            if (request.SourceEntityId is null
-                || request.PinnedCanonicalSource.CanonicalEntityId.ToString("D")
-                    != request.SourceEntityId.Trim())
+            if (request.SourceEntityId is not null
+                && (request.PinnedCanonicalSources.Count != 1
+                    || request.PinnedCanonicalSources[0].CanonicalEntityId.ToString("D")
+                        != request.SourceEntityId.Trim()))
                 throw new ArgumentException(
                     "Pinned canonical source must match SourceEntityId.", nameof(request));
             if (request.SourceSearch is not null || request.SourceCount is not null)
                 throw new ArgumentException(
                     "Pinned canonical work cannot combine bounded search inputs.", nameof(request));
+            if (request.PinnedCanonicalSources.Count > 5000
+                || request.PinnedCanonicalSources.Select(value => value.CanonicalEntityId)
+                    .Distinct().Count() != request.PinnedCanonicalSources.Count
+                || request.PinnedCanonicalSources.Any(value => value.CanonicalVersion <= 0))
+                throw new ArgumentException(
+                    "Pinned canonical sources must be bounded, unique, and versioned.",
+                    nameof(request));
         }
         if (request.SourceCount is <= 0)
             throw new ArgumentOutOfRangeException(nameof(request.SourceCount));
