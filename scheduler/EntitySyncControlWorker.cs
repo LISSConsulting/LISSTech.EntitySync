@@ -334,7 +334,9 @@ public sealed class EntitySyncControlWorker : BackgroundService
                         PolicyId = work.PolicyId,
                         PolicyVersion = work.PolicyVersion,
                         SourceEntityId = sourceEntityId,
-                        PinnedCanonicalSources = [pinnedCanonicalSource],
+                        PinnedCanonicalOnly = pinnedCanonicalSource is not null,
+                        PinnedCanonicalSources =
+                            PinnedCanonicalSourcesFor(pinnedCanonicalSource),
                         PlanLifetime = TimeSpan.FromHours(4)
                     },
                     actor,
@@ -545,6 +547,10 @@ public sealed class EntitySyncControlWorker : BackgroundService
                 .ConfigureAwait(false);
         }
     }
+
+    internal static IReadOnlyList<CanonicalEntityVersion> PinnedCanonicalSourcesFor(
+        CanonicalEntityVersion? source) =>
+        source is null ? [] : [source];
 
     private static bool IsExpectedPlan(
         SyncControlWork work,

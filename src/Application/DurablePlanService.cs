@@ -29,8 +29,14 @@ public sealed class DurablePlanService(
         var tenantId = request.TenantId.Trim();
         var idempotencyKey = request.IdempotencyKey.Trim();
         var planId = CreatePlanId(tenantId, idempotencyKey);
-        var selection = request.PinnedCanonicalSources.Count > 0
-            ? new EntitySyncSelectionBounds(null, request.PinnedCanonicalSources.Count, null)
+        var selection = request.PinnedCanonicalOnly
+                        || request.PinnedCanonicalSources.Count > 0
+            ? new EntitySyncSelectionBounds(
+                null,
+                request.PinnedCanonicalSources.Count == 0
+                    ? null
+                    : request.PinnedCanonicalSources.Count,
+                null)
             : new EntitySyncSelectionBounds(
                 request.SourceSearch,
                 request.SourceCount,
@@ -280,7 +286,7 @@ public sealed class DurablePlanService(
         var policy = await ResolveCurrentPolicyAsync(
             tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
-        if (request.PinnedCanonicalSources.Count > 0
+        if ((request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
             && !policy.Definition.SourceVendor.Equals(
                 "OrchestraMSP", StringComparison.Ordinal))
             throw new InvalidOperationException(
@@ -362,7 +368,8 @@ public sealed class DurablePlanService(
             .ConfigureAwait(false)
             ?? throw new DurablePlanNotFoundException(planId);
         var offset = checked((long)(page - 1) * pageSize);
-        if (plan.ItemCount == 0 || offset >= plan.ItemCount)
+        if ((plan.ItemCount == 0 && page != 1)
+            || (plan.ItemCount > 0 && offset >= plan.ItemCount))
             throw new ArgumentOutOfRangeException(nameof(page), page, "Page is outside the plan.");
         if (plan.Status != EntitySyncDurablePlanStatus.Draft)
             throw new InvalidOperationException("Only a draft plan can be inspected.");
@@ -371,7 +378,9 @@ public sealed class DurablePlanService(
 
         var persistedPage = await plans.GetPageAsync(
             tenantId, planId, page, pageSize, cancellationToken).ConfigureAwait(false);
-        if (persistedPage.TotalItems != plan.ItemCount || persistedPage.Items.Count == 0)
+        if (persistedPage.TotalItems != plan.ItemCount
+            || (plan.ItemCount > 0 && persistedPage.Items.Count == 0)
+            || (plan.ItemCount == 0 && persistedPage.Items.Count != 0))
             throw new InvalidOperationException("The durable plan page is inconsistent with its manifest.");
         var session = await plans.GetOrOpenInspectionAsync(
             tenantId,
@@ -385,10 +394,10 @@ public sealed class DurablePlanService(
             actor,
             now,
             cancellationToken).ConfigureAwait(false);
-        var start = persistedPage.Items[0].ItemOrdinal;
-        var end = persistedPage.Items[^1].ItemOrdinal;
-        if (session.Status == EntitySyncInspectionStatus.Open)
+        if (persistedPage.Items.Count > 0 && session.Status == EntitySyncInspectionStatus.Open)
         {
+            var start = persistedPage.Items[0].ItemOrdinal;
+            var end = persistedPage.Items[^1].ItemOrdinal;
             var rangeId = StableGuid(EntitySyncCanonicalDigest.Compute(new
             {
                 session.InspectionId,
@@ -407,7 +416,7 @@ public sealed class DurablePlanService(
         var ranges = await plans.ListInspectionRangesAsync(
             tenantId, session.InspectionId, cancellationToken).ConfigureAwait(false);
         var coverage = MergeCoverage(ranges, plan.ItemCount);
-        var complete = IsExactCoverage(coverage, plan.ItemCount);
+        var complete = plan.ItemCount == 0 || IsExactCoverage(coverage, plan.ItemCount);
         if (complete && session.Status == EntitySyncInspectionStatus.Open)
         {
             session = await plans.CompleteInspectionAsync(
@@ -687,6 +696,7 @@ public sealed class DurablePlanService(
             SourceCount = request.SourceCount,
             SourceEntityId = request.SourceEntityId,
             PinnedCanonicalSources = request.PinnedCanonicalSources,
+            PinnedCanonicalOnly = request.PinnedCanonicalOnly,
             TargetEntityType = policy.Definition.TargetEntityType,
             CreateMissing = policy.Definition.CreateMissing,
             IncludeInactive = policy.Definition.IncludeInactive,
@@ -774,6 +784,7 @@ public sealed class DurablePlanService(
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
+            request.PinnedCanonicalOnly,
             PinnedCanonicalSources = request.PinnedCanonicalSources
                 .OrderBy(source => source.CanonicalEntityId)
                 .Select(source => new
@@ -826,7 +837,8 @@ public sealed class DurablePlanService(
             throw new ArgumentException("Policy ID is required.", nameof(request));
         if (request.PolicyVersion is <= 0)
             throw new ArgumentOutOfRangeException(nameof(request.PolicyVersion));
-        if (request.PinnedCanonicalSources.Count > 0)
+        ArgumentNullException.ThrowIfNull(request.PinnedCanonicalSources);
+        if (request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
         {
             if (request.SourceEntityId is not null
                 && (request.PinnedCanonicalSources.Count != 1
@@ -840,7 +852,8 @@ public sealed class DurablePlanService(
             if (request.PinnedCanonicalSources.Count > 5000
                 || request.PinnedCanonicalSources.Select(value => value.CanonicalEntityId)
                     .Distinct().Count() != request.PinnedCanonicalSources.Count
-                || request.PinnedCanonicalSources.Any(value => value.CanonicalVersion <= 0))
+                || request.PinnedCanonicalSources.Any(value =>
+                    value is null || value.CanonicalVersion <= 0))
                 throw new ArgumentException(
                     "Pinned canonical sources must be bounded, unique, and versioned.",
                     nameof(request));

@@ -721,6 +721,36 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.DoesNotContain("could not be converted", body, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Shadow_projection_rejects_null_source_as_a_safe_bad_request()
+    {
+        using var routeFactory = new ControlApiFactory(null, executeControlCommands: true);
+        using var client = routeFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Operate");
+        client.DefaultRequestHeaders.Add(
+            IdempotencyEndpointFilter.HeaderName,
+            $"shadow-null-{Guid.NewGuid():N}");
+
+        using var response = await client.PostAsync(
+            "/api/v1/control/plans/shadow-projection",
+            Json(
+                $$"""
+                {
+                  "policy_id": "{{Guid.NewGuid():D}}",
+                  "policy_version": 1,
+                  "sources": [null],
+                  "lifetime_minutes": 60
+                }
+                """));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("INVALID_REQUEST", await ProblemCode(response));
+        Assert.DoesNotContain(
+            "NullReferenceException",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("CONTROL_API_SECRET_CRON", "UTC")]
     [InlineData("0 * * * *", "CONTROL_API_SECRET_TIME_ZONE")]
@@ -856,6 +886,12 @@ public sealed class ControlApiTests(ControlApiFactory factory)
             .GetProperty("maximumRows");
         Assert.Equal(1, maximumRows.GetProperty("minimum").GetInt32());
         Assert.Equal(1000, maximumRows.GetProperty("maximum").GetInt32());
+        var shadowEntity = schemas.GetProperty("CanonicalShadowEntityRequest");
+        var customFieldValues = shadowEntity
+            .GetProperty("properties")
+            .GetProperty("customFields")
+            .GetProperty("additionalProperties");
+        Assert.True(customFieldValues.GetProperty("nullable").GetBoolean());
         Assert.Equal(100, maximumRows.GetProperty("default").GetInt32());
         var previewRequest = schemas.GetProperty("PreviewScheduleRequest");
         Assert.Equal(

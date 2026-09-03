@@ -175,9 +175,10 @@ public sealed class DurablePlanServiceTests
             creator,
             instant,
             creator);
+        var sourceAdapter = new TestAdapter("OrchestraMSP", []);
         using var connections = new DefinitionAndRuntimeRepository(
             Definition(Fixture.SourceConnectionId, "OrchestraMSP"),
-            new TestAdapter("OrchestraMSP", []),
+            sourceAdapter,
             Definition(Fixture.TargetConnectionId, "HaloPSA"),
             new TestAdapter("HaloPSA", [targetEntity]));
         var definition = new EntitySyncPolicyDefinition(
@@ -220,6 +221,53 @@ public sealed class DurablePlanServiceTests
         var desired = repository.Manifest.Items[0].RedactedDesired.Json;
         Assert.Contains("\"contactemail\":\"new@example.test\"", desired);
         Assert.DoesNotContain("\"email\":", desired);
+
+        var emptyShadow = await service.CreatePlanAsync(new CreateDurablePlanRequest
+        {
+            TenantId = Fixture.Tenant,
+            IdempotencyKey = "shadow-empty",
+            PolicyId = policy.PolicyId,
+            PolicyVersion = policy.Version,
+            PinnedCanonicalOnly = true,
+            PinnedCanonicalSources = [],
+            PlanLifetime = TimeSpan.FromHours(1)
+        }, new EntitySyncActor("operator"), default);
+        Assert.Equal(0, emptyShadow.ItemCount);
+        Assert.Equal(EntitySyncDurablePlanStatus.Draft, repository.Manifest!.Plan.Status);
+        Assert.Empty(repository.Manifest.Items);
+        Assert.Equal(0, sourceAdapter.GetEntitiesCalls);
+        var emptyInspection = await service.GetPageAsync(
+            Fixture.Tenant,
+            emptyShadow.PlanId,
+            page: 1,
+            pageSize: 100,
+            new EntitySyncActor("operator"),
+            default);
+        Assert.Empty(emptyInspection.Items);
+        Assert.Equal(0, emptyInspection.CoveredItemCount);
+        Assert.True(emptyInspection.InspectionComplete);
+
+        await Assert.ThrowsAsync<DurablePlanIdempotencyConflictException>(() =>
+            service.CreatePlanAsync(new CreateDurablePlanRequest
+            {
+                TenantId = Fixture.Tenant,
+                IdempotencyKey = "shadow-empty",
+                PolicyId = policy.PolicyId,
+                PolicyVersion = policy.Version,
+                PlanLifetime = TimeSpan.FromHours(1)
+            }, new EntitySyncActor("operator"), default));
+        Assert.Equal(0, sourceAdapter.GetEntitiesCalls);
+
+        var normal = await service.CreatePlanAsync(new CreateDurablePlanRequest
+        {
+            TenantId = Fixture.Tenant,
+            IdempotencyKey = "normal-empty",
+            PolicyId = policy.PolicyId,
+            PolicyVersion = policy.Version,
+            PlanLifetime = TimeSpan.FromHours(1)
+        }, new EntitySyncActor("operator"), default);
+        Assert.Equal(0, normal.ItemCount);
+        Assert.Equal(1, sourceAdapter.GetEntitiesCalls);
     }
 
     [Fact]

@@ -78,7 +78,7 @@ public sealed class EntitySyncPlanner(
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
 
         IReadOnlyList<ExternalEntity> sources;
-        if (request.PinnedCanonicalSources.Count > 0)
+        if (request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
         {
             if (!sourceVendor.Equals("OrchestraMSP", StringComparison.Ordinal))
                 throw new InvalidOperationException(
@@ -449,7 +449,7 @@ public sealed class EntitySyncPlanner(
         if (request.PinnedCanonicalSources.Count > MaxEntitiesPerPlanSide)
             throw new ArgumentOutOfRangeException(
                 nameof(request), $"Pinned canonical sources are limited to {MaxEntitiesPerPlanSide}.");
-        if (request.PinnedCanonicalSources.Count > 0
+        if ((request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
             && (request.SourceSearch is not null || request.SourceCount is not null))
             throw new ArgumentException(
                 "Pinned canonical work cannot combine bounded search inputs.", nameof(request));

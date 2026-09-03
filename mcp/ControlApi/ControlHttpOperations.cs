@@ -1,5 +1,6 @@
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Mcp.ControlApi;
 
@@ -49,11 +50,16 @@ public static class ControlHttpOperations
             throw new ArgumentOutOfRangeException(
                 nameof(request.LifetimeMinutes),
                 "Lifetime must be between 1 and 1440 minutes.");
-        if (request.Sources is null || request.Sources.Count is < 1 or > 5000)
-            throw new ArgumentException("Canonical shadow sources must contain 1 to 5000 items.");
-        var sources = request.Sources.Select(source => source.ToDomain()).ToArray();
+        if (request.Sources is null || request.Sources.Count > 5000)
+            throw new ArgumentException("Canonical shadow sources are limited to 5000 items.");
+        if (request.Sources.Any(source => source is null))
+            throw new ArgumentException("Canonical shadow sources cannot contain null items.");
+        var remainingEntities = CanonicalShadowEntityRequest.MaximumGraphEntities;
+        var sources = new List<CanonicalEntityVersion>(request.Sources.Count);
+        foreach (var source in request.Sources)
+            sources.Add(source.ToDomain(ref remainingEntities));
         if (sources.Select(source => source.CanonicalEntityId).Distinct().Count()
-            != sources.Length)
+            != sources.Count)
             throw new ArgumentException("Canonical shadow source IDs must be unique.");
         return commands.CreatePlanAsync(new CreateDurablePlanRequest
         {
@@ -61,6 +67,7 @@ public static class ControlHttpOperations
             IdempotencyKey = idempotencyKey,
             PolicyId = request.PolicyId,
             PolicyVersion = request.PolicyVersion,
+            PinnedCanonicalOnly = true,
             PinnedCanonicalSources = sources,
             PlanLifetime = TimeSpan.FromMinutes(request.LifetimeMinutes)
         }, control.Actor, cancellationToken);

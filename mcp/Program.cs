@@ -165,6 +165,7 @@ static async Task RunHttpAsync(string[] args)
             Title = "LISSTech EntitySync Control API",
             Version = "v1"
         });
+        options.SchemaFilter<CanonicalShadowEntitySchemaFilter>();
         options.CustomOperationIds(description =>
             description.ActionDescriptor.EndpointMetadata
                 .OfType<Microsoft.AspNetCore.Routing.EndpointNameMetadata>()

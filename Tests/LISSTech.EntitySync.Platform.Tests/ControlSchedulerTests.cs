@@ -154,6 +154,28 @@ public sealed class ControlSchedulerTests
     }
 
     [Fact]
+    public void Scheduled_work_passes_a_truly_empty_pinned_canonical_source_list()
+    {
+        Assert.Empty(EntitySyncControlWorker.PinnedCanonicalSourcesFor(null));
+
+        var id = Guid.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        var canonical = new CanonicalEntityVersion(
+            id,
+            7,
+            new ExternalEntity
+            {
+                Vendor = "OrchestraMSP",
+                EntityType = "Client",
+                Id = id.ToString("D"),
+                Version = 7,
+                Name = "Acme"
+            });
+        Assert.Equal(
+            [canonical],
+            EntitySyncControlWorker.PinnedCanonicalSourcesFor(canonical));
+    }
+
+    [Fact]
     public async Task Repeated_and_concurrent_due_ticks_share_one_durable_identity()
     {
         var scheduleId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
