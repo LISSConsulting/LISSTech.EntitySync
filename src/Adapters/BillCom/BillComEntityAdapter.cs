@@ -13,11 +13,15 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
     public const string ClientUuidExternalIdName = "BillSpendUuid";
     public const string HaloClientCustomFieldName = EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
     private const int MaximumPagesPerQuery = 100;
+    private static readonly TimeSpan MinimumRequestInterval = TimeSpan.FromSeconds(1);
 
     private readonly BillComOptions options;
     private readonly HttpClient httpClient;
     private readonly RateLimitedHttpRequester rateLimiter = new("Bill.com");
+    private readonly SemaphoreSlim clientValuesCacheLoadGate = new(1, 1);
+    private readonly object clientValuesCacheLock = new();
     private BillComCustomField? clientFieldCache;
+    private CachedClientValue[]? clientValuesCache;
 
     public BillComEntityAdapter(BillComOptions options)
     {
@@ -26,7 +30,9 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         if (string.IsNullOrWhiteSpace(options.BaseUrl)) throw new ArgumentException("Bill.com base URL is required.", nameof(options));
         if (string.IsNullOrWhiteSpace(options.ClientFieldName)) throw new ArgumentException("Bill.com client custom field name is required.", nameof(options));
 
-        httpClient = VendorHttpClientFactory.Create(new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)));
+        httpClient = VendorHttpClientFactory.Create(
+            new Uri(UrlHelpers.EnsureTrailingSlash(options.BaseUrl)),
+            MinimumRequestInterval);
         httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         httpClient.DefaultRequestHeaders.Add("ApiToken", options.ApiToken);
     }
@@ -42,6 +48,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         if (!query.EntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("Bill.com adapter currently supports EntityType Client.");
         var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
         var entities = new List<ExternalEntity>();
+        var allEntities = new List<ExternalEntity>();
         var nextPage = string.Empty;
         var requestedTotal = query.Count;
         var visitedPages = new HashSet<string>(StringComparer.Ordinal);
@@ -56,10 +63,11 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
             var pageSize = Math.Min(requestedTotal.GetValueOrDefault(100), 100);
             using var document = await GetValuesPageAsync(clientField.Id, pageSize, nextPage, cancellationToken).ConfigureAwait(false);
             var root = document.RootElement;
-            if (!root.TryGetPropertyIgnoreCase("results", out var results) || results.ValueKind != JsonValueKind.Array) break;
+            if (!root.TryGetPropertyIgnoreCase("results", out var results) || results.ValueKind != JsonValueKind.Array) return entities;
             foreach (var item in results.EnumerateArray())
             {
                 var entity = MapClientValue(item);
+                allEntities.Add(entity);
                 if (!query.IncludeInactive && entity.IsActive == false) continue;
                 if (!MatchesQuery(entity, query)) continue;
                 entities.Add(entity);
@@ -73,6 +81,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         }
         while (!string.IsNullOrWhiteSpace(nextPage));
 
+        CacheCompleteClientValues(allEntities);
         return entities;
     }
 
@@ -94,6 +103,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
         using var document = await PostClientValuesAsync(clientField.Id, new[] { request.Name }, cancellationToken).ConfigureAwait(false);
         var created = ReadFirstClient(document.RootElement) ?? new ExternalEntity { Vendor = Vendor, EntityType = "Client", Name = request.Name };
+        RememberClientValue(created);
         return new EntityWriteResult { Vendor = Vendor, EntityType = "Client", Id = created.Id, Action = "Create", Success = true, Message = $"Created Bill.com client '{request.Name}'.", Raw = document.RootElement.Clone() };
     }
 
@@ -103,7 +113,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         if (string.IsNullOrWhiteSpace(request.Id)) return await CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(request.Name)) throw new InvalidOperationException("Bill.com client name is required.");
 
-        var values = await GetEntitiesAsync(new EntityQuery { EntityType = "Client", IncludeInactive = true }, cancellationToken).ConfigureAwait(false);
+        var values = await GetClientValuesForWriteAsync(cancellationToken).ConfigureAwait(false);
         var current = values.FirstOrDefault(entity => entity.Id.Equals(request.Id, StringComparison.OrdinalIgnoreCase));
         if (current is { IsActive: not false } && current.Name.Equals(request.Name, StringComparison.Ordinal))
         {
@@ -115,19 +125,20 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
                 Action = "Update",
                 Success = true,
                 Message = $"Bill.com client '{request.Name}' already has the desired value.",
-                Raw = current
+                Raw = current.Entity
             };
         }
 
         var replacement = values.FirstOrDefault(entity =>
             entity.IsActive != false
-            && entity.Name.Equals(request.Name, StringComparison.Ordinal));
+            && entity.Name.Equals(request.Name, StringComparison.Ordinal))?.Entity;
         if (replacement is null)
         {
             var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
             using var document = await PostClientValuesAsync(clientField.Id, [request.Name], cancellationToken).ConfigureAwait(false);
             replacement = ReadFirstClient(document.RootElement)
                 ?? throw new InvalidOperationException("Bill.com created the replacement client value but did not return its ID.");
+            RememberClientValue(replacement);
         }
 
         return new EntityWriteResult
@@ -151,6 +162,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
 
         var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
         await DeleteClientValuesAsync(clientField.Id, [request.Id], cancellationToken).ConfigureAwait(false);
+        ForgetClientValue(request.Id);
         return new EntityWriteResult
         {
             Vendor = Vendor,
@@ -170,6 +182,7 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
 
     public void Dispose()
     {
+        clientValuesCacheLoadGate.Dispose();
         rateLimiter.Dispose();
         httpClient.Dispose();
     }
@@ -233,10 +246,97 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
         throw new InvalidOperationException($"Bill.com delete client value request failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
     }
 
+    private async Task<IReadOnlyList<CachedClientValue>> GetClientValuesForWriteAsync(CancellationToken cancellationToken)
+    {
+        var cached = GetCachedClientValues();
+        if (cached is not null) return cached;
+
+        await clientValuesCacheLoadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cached = GetCachedClientValues();
+            if (cached is not null) return cached;
+
+            var loaded = await GetEntitiesAsync(
+                new EntityQuery { EntityType = "Client", IncludeInactive = true },
+                cancellationToken).ConfigureAwait(false);
+            return GetCachedClientValues() ?? loaded.Select(CacheValue).ToArray();
+        }
+        finally
+        {
+            clientValuesCacheLoadGate.Release();
+        }
+    }
+
+    private CachedClientValue[]? GetCachedClientValues()
+    {
+        lock (clientValuesCacheLock)
+        {
+            return clientValuesCache;
+        }
+    }
+
+    private void CacheCompleteClientValues(IEnumerable<ExternalEntity> entities)
+    {
+        var snapshot = entities.Select(CacheValue).ToArray();
+        lock (clientValuesCacheLock)
+        {
+            clientValuesCache = snapshot;
+        }
+    }
+
+    private void RememberClientValue(ExternalEntity entity)
+    {
+        if (string.IsNullOrWhiteSpace(entity.Id)) return;
+        var value = CacheValue(entity);
+        lock (clientValuesCacheLock)
+        {
+            if (clientValuesCache is null) return;
+            var index = Array.FindIndex(
+                clientValuesCache,
+                candidate => candidate.Id.Equals(entity.Id, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+            {
+                var updated = (CachedClientValue[])clientValuesCache.Clone();
+                updated[index] = value;
+                clientValuesCache = updated;
+                return;
+            }
+
+            var expanded = new CachedClientValue[clientValuesCache.Length + 1];
+            Array.Copy(clientValuesCache, expanded, clientValuesCache.Length);
+            expanded[^1] = value;
+            clientValuesCache = expanded;
+        }
+    }
+
+    private void ForgetClientValue(string id)
+    {
+        lock (clientValuesCacheLock)
+        {
+            if (clientValuesCache is null) return;
+            var index = Array.FindIndex(
+                clientValuesCache,
+                candidate => candidate.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+            if (index < 0) return;
+
+            var reduced = new CachedClientValue[clientValuesCache.Length - 1];
+            if (index > 0) Array.Copy(clientValuesCache, 0, reduced, 0, index);
+            if (index < clientValuesCache.Length - 1)
+                Array.Copy(clientValuesCache, index + 1, reduced, index, clientValuesCache.Length - index - 1);
+            clientValuesCache = reduced;
+        }
+    }
+
+    private static CachedClientValue CacheValue(ExternalEntity entity) =>
+        new(entity.Id, entity.Name, entity.IsActive, entity);
+
     private async Task<ExternalEntity?> FindClientByNameAsync(string name, CancellationToken cancellationToken)
     {
-        var entities = await GetEntitiesAsync(new EntityQuery { EntityType = "Client", IncludeInactive = true }, cancellationToken).ConfigureAwait(false);
-        return entities.FirstOrDefault(entity => entity.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var entities = await GetClientValuesForWriteAsync(cancellationToken).ConfigureAwait(false);
+        return entities
+            .FirstOrDefault(entity => entity.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            ?.Entity;
     }
 
     private static bool MatchesQuery(ExternalEntity entity, EntityQuery query)
@@ -323,6 +423,8 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter,
 
         return null;
     }
+
+    private sealed record CachedClientValue(string Id, string Name, bool? IsActive, ExternalEntity Entity);
 
     private sealed record BillComCustomField(string Id, string Name);
 }
