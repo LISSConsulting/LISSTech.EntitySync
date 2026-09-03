@@ -65,6 +65,79 @@ public sealed class ControlSchedulerTests
     }
 
     [Fact]
+    public async Task Run_now_queues_the_exact_enabled_safe_schedule()
+    {
+        var policies = new SchedulePolicyRepository(Policy(safe: true));
+        var schedules = new MemoryScheduleRepository();
+        var scheduleService = new SyncScheduleService(
+            schedules, policies, new ManualTimeProvider(Noon));
+        var schedule = await scheduleService.CreateAsync(
+            "tenant",
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            new SyncScheduleRequest(
+                "nightly", policies.Policy.PolicyId, 1, "0 * * * *", "UTC", true),
+            new EntitySyncActor("scheduler-admin"),
+            default);
+        var queue = new MemoryScheduleRunQueue();
+        var service = new SyncScheduleRunService(schedules, policies, queue);
+        var workId = Guid.Parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        var requestedBy = new EntitySyncActor("dashboard-operator");
+
+        var receipt = await service.QueueNowAsync(
+            "tenant", schedule.ScheduleId, schedule.Version, workId, requestedBy, default);
+
+        Assert.Equal(workId, receipt.WorkId);
+        Assert.Equal(schedule.ScheduleId, receipt.ScheduleId);
+        Assert.Equal(schedule.Version, receipt.ScheduleVersion);
+        Assert.Equal(Noon, receipt.QueuedAt);
+        Assert.Equal(requestedBy, queue.Requests.Single().RequestedBy);
+        Assert.Equal(schedule.NextRunAt, schedules.Versions.Single().NextRunAt);
+        Assert.Null(schedules.Versions.Single().LastRunAt);
+    }
+
+    [Fact]
+    public async Task Run_now_rejects_stale_disabled_or_unsafe_authority_before_queueing()
+    {
+        var safePolicy = new SchedulePolicyRepository(Policy(safe: true));
+        var schedules = new MemoryScheduleRepository();
+        var scheduleService = new SyncScheduleService(
+            schedules, safePolicy, new ManualTimeProvider(Noon));
+        var schedule = await scheduleService.CreateAsync(
+            "tenant",
+            Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            new SyncScheduleRequest(
+                "nightly", safePolicy.Policy.PolicyId, 1, "0 * * * *", "UTC", true),
+            new EntitySyncActor("scheduler-admin"),
+            default);
+        var queue = new MemoryScheduleRunQueue();
+        var service = new SyncScheduleRunService(schedules, safePolicy, queue);
+
+        await Assert.ThrowsAsync<SyncScheduleVersionConflictException>(() =>
+            service.QueueNowAsync(
+                "tenant", schedule.ScheduleId, 2, Guid.NewGuid(),
+                new EntitySyncActor("dashboard-operator"), default));
+        await scheduleService.DisableAsync(
+            "tenant", schedule.ScheduleId, 1, new EntitySyncActor("scheduler-admin"), default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.QueueNowAsync(
+                "tenant", schedule.ScheduleId, 2, Guid.NewGuid(),
+                new EntitySyncActor("dashboard-operator"), default));
+
+        var unsafePolicy = new SchedulePolicyRepository(Policy(safe: false));
+        var unsafeSchedule = new EntitySyncSchedule(
+            "tenant", Guid.NewGuid(), 1, "unsafe", unsafePolicy.Policy.PolicyId,
+            unsafePolicy.Policy.Version, "0 * * * *", "UTC", true, Noon.AddHours(1),
+            null, Noon, new EntitySyncActor("scheduler-admin"));
+        var unsafeSchedules = new MemoryScheduleRepository();
+        await unsafeSchedules.InsertVersionAsync("tenant", unsafeSchedule, default);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SyncScheduleRunService(unsafeSchedules, unsafePolicy, queue).QueueNowAsync(
+                "tenant", unsafeSchedule.ScheduleId, 1, Guid.NewGuid(),
+                new EntitySyncActor("dashboard-operator"), default));
+        Assert.Empty(queue.Requests);
+    }
+
+    [Fact]
     public void Cron_next_run_is_DST_deterministic()
     {
         var zone = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
@@ -357,6 +430,29 @@ public sealed class ControlSchedulerTests
         public Task InsertChangeEventAsync(string tenantId, EntitySyncCanonicalChangeEvent changeEvent, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<EntitySyncCanonicalChangeEvent>> ListPendingChangeEventsAsync(string tenantId, int maximumRows, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<bool> TrySetChangeEventStatusAsync(string tenantId, Guid eventId, EntitySyncCanonicalChangeStatus expectedStatus, EntitySyncCanonicalChangeStatus status, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
+    private sealed class MemoryScheduleRunQueue : ISyncScheduleRunQueue
+    {
+        public List<(
+            string TenantId,
+            Guid ScheduleId,
+            int Version,
+            Guid WorkId,
+            EntitySyncActor RequestedBy)> Requests { get; } = [];
+
+        public Task<SyncScheduleRunReceipt?> TryEnqueueAsync(
+            string tenantId,
+            Guid scheduleId,
+            int expectedVersion,
+            Guid workId,
+            EntitySyncActor requestedBy,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add((tenantId, scheduleId, expectedVersion, workId, requestedBy));
+            return Task.FromResult<SyncScheduleRunReceipt?>(
+                new SyncScheduleRunReceipt(workId, scheduleId, expectedVersion, Noon));
+        }
     }
 
     private sealed class SchedulePolicyRepository(EntitySyncPolicy policy) : ISyncPolicyRepository

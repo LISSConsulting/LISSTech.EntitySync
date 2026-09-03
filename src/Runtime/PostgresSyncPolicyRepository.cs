@@ -313,7 +313,7 @@ public sealed class PostgresSyncPolicyRepository(NpgsqlDataSource dataSource) : 
         PostgresControlPersistence.Add(command, "created_by", NpgsqlDbType.Text, policy.CreatedBy.ActorId);
     }
 
-    private static async Task LockPolicyIdentityAsync(
+    internal static async Task LockPolicyIdentityAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         string tenantId,

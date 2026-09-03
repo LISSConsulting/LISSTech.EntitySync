@@ -252,7 +252,7 @@ public sealed class EntitySyncControlWorker : BackgroundService
         var renewal = MaintainOwnershipAsync(work, route, ownership);
         try
         {
-            var actor = new EntitySyncActor("entitysync-control-worker");
+            var actor = new EntitySyncActor(work.RequestedBy);
             EntitySyncDurablePlan? persistedPlan = null;
             if (work.PlanId is not null)
             {

@@ -120,6 +120,10 @@ public static class ControlEndpoints
             "CreateControlScheduleVersion", ControlPolicies.Manage,
             IdempotencyExecutionMode.AtomicDatabase)
             .Produces<ScheduleResponse>(StatusCodes.Status201Created);
+        Mutate(group.MapPost("/schedules/{scheduleId:guid}/runs", QueueScheduleRunAsync),
+            "QueueControlScheduleRun", ControlPolicies.Operate,
+            IdempotencyExecutionMode.AtomicDatabase)
+            .Produces<QueuedScheduleRunResponse>(StatusCodes.Status202Accepted);
 
         Read(group.MapGet("/audit", ListAuditAsync),
             "ListControlAudit").Produces<ControlPage<AuditEventResponse>>();
@@ -708,6 +712,26 @@ public static class ControlEndpoints
             control.Actor,
             cancellationToken).ConfigureAwait(false);
         return Results.Json(ScheduleResponse.From(value), statusCode: StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> QueueScheduleRunAsync(
+        HttpContext http,
+        Guid scheduleId,
+        QueueScheduleRunRequest request,
+        SyncScheduleRunService service,
+        ControlRequestContext control,
+        CancellationToken cancellationToken)
+    {
+        var value = await service.QueueNowAsync(
+            control.TenantId,
+            scheduleId,
+            request.ExpectedVersion,
+            StableGuid(IdempotencyEndpointFilter.GetExecutionToken(http)),
+            control.Actor,
+            cancellationToken).ConfigureAwait(false);
+        return Results.Json(
+            QueuedScheduleRunResponse.From(value),
+            statusCode: StatusCodes.Status202Accepted);
     }
 
     private static async Task<IResult> CreateScheduleVersionAsync(

@@ -18,7 +18,7 @@ public sealed record SyncControlWork(
     EntitySyncSha256? PayloadSha256, string? LeaseOwner,
     DateTimeOffset? LeaseExpiresAt, int Attempt, Guid? PlanId,
     EntitySyncSha256? PlanDigestSha256, Guid? ApprovalId, Guid? OperationId,
-    string? HoldReason);
+    string? HoldReason, string RequestedBy);
 
 public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
     : ICanonicalChangeRepository, IEntitySyncWorkSignal
@@ -302,7 +302,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
                    canonical_event_id, canonical_entity_type, canonical_entity_id,
                    canonical_version, changed_fields::text, payload_sha256,
                    lease_owner, lease_expires_at, attempt, plan_id,
-                   plan_digest_sha256, approval_id, operation_id, hold_reason
+                   plan_digest_sha256, approval_id, operation_id, hold_reason,
+                   requested_by
             FROM leased
             """;
         await using var command = dataSource.CreateCommand(sql);
@@ -596,7 +597,8 @@ public sealed class PostgresSyncWorkQueue(NpgsqlDataSource dataSource)
             reader.IsDBNull(20) ? null : new EntitySyncSha256(reader.GetString(20)),
             reader.IsDBNull(21) ? null : reader.GetGuid(21),
             reader.IsDBNull(22) ? null : reader.GetGuid(22),
-            reader.IsDBNull(23) ? null : reader.GetString(23));
+            reader.IsDBNull(23) ? null : reader.GetString(23),
+            reader.GetString(24));
     }
 
     private static void AddFence(NpgsqlCommand command, SyncControlWork work)

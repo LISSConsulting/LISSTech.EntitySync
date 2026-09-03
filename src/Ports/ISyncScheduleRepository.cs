@@ -50,3 +50,20 @@ public interface ISyncScheduleRepository
         EntitySyncCanonicalChangeStatus status,
         CancellationToken cancellationToken);
 }
+
+public sealed record SyncScheduleRunReceipt(
+    Guid WorkId,
+    Guid ScheduleId,
+    int ScheduleVersion,
+    DateTimeOffset QueuedAt);
+
+public interface ISyncScheduleRunQueue
+{
+    Task<SyncScheduleRunReceipt?> TryEnqueueAsync(
+        string tenantId,
+        Guid scheduleId,
+        int expectedVersion,
+        Guid workId,
+        EntitySyncActor requestedBy,
+        CancellationToken cancellationToken);
+}

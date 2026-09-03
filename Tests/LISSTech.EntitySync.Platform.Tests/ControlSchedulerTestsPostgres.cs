@@ -16,6 +16,52 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     private NpgsqlDataSource? database;
 
     [Fact]
+    public async Task Run_now_persists_distinct_durable_work_without_advancing_cadence()
+    {
+        const string tenant = "manual-run";
+        var policy = Policy(tenant);
+        var policies = new PostgresSyncPolicyRepository(Database);
+        await policies.InsertAsync(tenant, policy, default);
+        var now = DateTimeOffset.UtcNow;
+        var nextRun = now.AddDays(1);
+        var schedule = new EntitySyncSchedule(
+            tenant, Guid.NewGuid(), 1, "manual", policy.PolicyId, policy.Version,
+            "0 2 * * *", "UTC", true, nextRun, null, now,
+            new EntitySyncActor("admin"));
+        var schedules = new PostgresSyncScheduleRepository(Database);
+        await schedules.InsertVersionAsync(tenant, schedule, default);
+        var persistedBefore = await schedules.GetLatestAsync(
+            tenant, schedule.ScheduleId, default);
+        Assert.NotNull(persistedBefore);
+        var service = new SyncScheduleRunService(
+            schedules, policies, new PostgresSyncScheduleRunQueue(Database));
+
+        var requestedBy = new EntitySyncActor("dashboard-operator");
+        var first = await service.QueueNowAsync(
+            tenant, schedule.ScheduleId, schedule.Version, Guid.NewGuid(), requestedBy, default);
+        var second = await service.QueueNowAsync(
+            tenant, schedule.ScheduleId, schedule.Version, Guid.NewGuid(), requestedBy, default);
+
+        Assert.NotEqual(first.WorkId, second.WorkId);
+        Assert.True(second.QueuedAt > first.QueuedAt);
+        var queued = await new PostgresSyncWorkQueue(Database).TryLeaseNextAsync(
+            tenant, "manual-test", TimeSpan.FromMinutes(1), default);
+        Assert.NotNull(queued);
+        Assert.Equal(SyncControlWorkKind.Schedule, queued.Kind);
+        Assert.Equal(schedule.ScheduleId, queued.ScheduleId);
+        Assert.Equal(schedule.Version, queued.ScheduleVersion);
+        Assert.Equal(policy.PolicyId, queued.PolicyId);
+        Assert.Equal(requestedBy.ActorId, queued.RequestedBy);
+        Assert.Equal(first.QueuedAt, queued.ScheduledFor);
+        var unchanged = await schedules.GetLatestAsync(
+            tenant, schedule.ScheduleId, default);
+        Assert.NotNull(unchanged);
+        Assert.Equal(persistedBefore.NextRunAt, unchanged.NextRunAt);
+        Assert.Null(unchanged.LastRunAt);
+        Assert.Equal(2, await CountAsync("entitysync.sync_control_work", tenant));
+    }
+
+    [Fact]
     public async Task Canonical_replay_keeps_original_policy_work_links()
     {
         const string tenant = "canonical-replay";

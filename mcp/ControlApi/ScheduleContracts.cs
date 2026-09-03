@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Mcp.ControlApi;
 
@@ -30,6 +31,23 @@ public sealed record CreateScheduleVersionRequest(
     string CronExpression,
     string TimeZone,
     bool Enabled);
+
+public sealed record QueueScheduleRunRequest(int ExpectedVersion);
+
+public sealed record QueuedScheduleRunResponse(
+    Guid WorkId,
+    Guid ScheduleId,
+    int ScheduleVersion,
+    DateTimeOffset QueuedAt,
+    string Status)
+{
+    public static QueuedScheduleRunResponse From(SyncScheduleRunReceipt value) => new(
+        value.WorkId,
+        value.ScheduleId,
+        value.ScheduleVersion,
+        value.QueuedAt,
+        "Queued");
+}
 
 public sealed record ScheduleResponse(
     Guid ScheduleId,

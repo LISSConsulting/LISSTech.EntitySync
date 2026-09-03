@@ -63,6 +63,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         (HttpMethod.Post, "/api/v1/control/schedules/preview", ControlPolicies.Manage),
         (HttpMethod.Post, "/api/v1/control/schedules", ControlPolicies.Manage),
         (HttpMethod.Post, "/api/v1/control/schedules/{scheduleId:guid}/versions", ControlPolicies.Manage),
+        (HttpMethod.Post, "/api/v1/control/schedules/{scheduleId:guid}/runs", ControlPolicies.Operate),
         (HttpMethod.Get, "/api/v1/control/audit", ControlPolicies.Read),
         (HttpMethod.Get, "/api/v1/control/audit/{eventId:guid}/values", ControlPolicies.Audit),
         (HttpMethod.Get, "/api/v1/control/exclusions", ControlPolicies.Read),
@@ -156,6 +157,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
             "/api/v1/control/connections/{connectionId}",
             "/api/v1/control/schedules",
             "/api/v1/control/schedules/{scheduleId:guid}/versions",
+            "/api/v1/control/schedules/{scheduleId:guid}/runs",
             "/api/v1/control/exclusions"
         };
         var endpoints = factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
@@ -206,6 +208,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     [InlineData("roles", ControlRoles.Operate, "/api/v1/control/plans", 400)]
     [InlineData("scp", ControlRoles.Approve, "/api/v1/control/plans/00000000-0000-0000-0000-000000000001/apply", 400)]
     [InlineData("roles", ControlRoles.Manage, "/api/v1/control/policies", 400)]
+    [InlineData("scp", ControlRoles.Operate, "/api/v1/control/schedules/00000000-0000-0000-0000-000000000001/runs", 400)]
     [InlineData("scp", ControlRoles.Expert, "/api/v1/control/expert/suiteql", 400)]
     [InlineData("roles", ControlRoles.Expert, "/api/v1/control/expert/custom-properties", 400)]
     public async Task Mutation_permissions_are_exact_and_idempotency_is_mandatory(
@@ -872,6 +875,32 @@ public sealed class ControlApiTests(ControlApiFactory factory)
             "#/components/schemas/PreviewScheduleResponse",
             preview.GetProperty("responses")
                 .GetProperty("200")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        var queueSchedule = openApi.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/control/schedules/{scheduleId}/runs")
+            .GetProperty("post");
+        Assert.Equal(
+            "QueueControlScheduleRun",
+            queueSchedule.GetProperty("operationId").GetString());
+        Assert.Equal(
+            "#/components/schemas/QueueScheduleRunRequest",
+            queueSchedule
+                .GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema")
+                .GetProperty("$ref")
+                .GetString());
+        Assert.Equal(
+            "#/components/schemas/QueuedScheduleRunResponse",
+            queueSchedule
+                .GetProperty("responses")
+                .GetProperty("202")
                 .GetProperty("content")
                 .GetProperty("application/json")
                 .GetProperty("schema")

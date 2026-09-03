@@ -60,6 +60,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IDurableSyncPlanRepository, PostgresDurableSyncPlanRepository>();
         services.AddSingleton<ISyncOperationRepository, PostgresSyncOperationRepository>();
         services.AddSingleton<ISyncScheduleRepository, PostgresSyncScheduleRepository>();
+        services.AddSingleton<ISyncScheduleRunQueue, PostgresSyncScheduleRunQueue>();
         services.AddSingleton<ISyncAuditRepository, PostgresSyncAuditRepository>();
         services.AddSingleton<PostgresIdempotencyRepository>();
         services.AddSingleton<IIdempotencyRepository>(
@@ -87,6 +88,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<VendorOutcomeReconciler>();
         services.AddSingleton<EntitySyncOperationWorker>();
         services.AddSingleton<SyncScheduleService>();
+        services.AddSingleton<SyncScheduleRunService>();
         services.AddSingleton<EntityExclusionService>();
         services.AddSingleton<ExpertOperationService>();
         services.AddScoped<ConnectionDefinitionService>();

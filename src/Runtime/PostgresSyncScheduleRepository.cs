@@ -21,6 +21,9 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
             """;
         await using var lease = await PostgresControlTransaction
             .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        await LockScheduleIdentityAsync(
+            lease.Connection, lease.Transaction, tenantId, schedule.ScheduleId, cancellationToken)
+            .ConfigureAwait(false);
         await using var command = new NpgsqlCommand(sql, lease.Connection, lease.Transaction);
         AddSchedule(command, schedule);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -230,6 +233,25 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
         PostgresControlPersistence.Add(command, "status", NpgsqlDbType.Text, changeEvent.Status.ToString());
     }
 
+    internal static async Task LockScheduleIdentityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string tenantId,
+        Guid scheduleId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT pg_advisory_xact_lock(hashtextextended(@schedule_identity, 2))
+            """;
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
+        PostgresControlPersistence.Add(
+            command,
+            "schedule_identity",
+            NpgsqlDbType.Text,
+            $"{tenantId}:{scheduleId:N}");
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static EntitySyncSchedule ReadSchedule(NpgsqlDataReader reader) => new(
         reader.GetString(0), reader.GetGuid(1), reader.GetInt32(2), reader.GetString(3),
         reader.GetGuid(4), reader.GetInt32(5), reader.GetString(6), reader.GetString(7),
@@ -242,4 +264,162 @@ public sealed class PostgresSyncScheduleRepository(NpgsqlDataSource dataSource) 
         reader.GetInt64(4), new EntitySyncJsonValue(reader.GetString(5)),
         reader.GetFieldValue<DateTimeOffset>(6), reader.GetFieldValue<DateTimeOffset>(7),
         PostgresControlPersistence.ParseEnum<EntitySyncCanonicalChangeStatus>(reader.GetString(8)));
+}
+
+public sealed class PostgresSyncScheduleRunQueue(NpgsqlDataSource dataSource)
+    : ISyncScheduleRunQueue
+{
+    public async Task<SyncScheduleRunReceipt?> TryEnqueueAsync(
+        string tenantId,
+        Guid scheduleId,
+        int expectedVersion,
+        Guid workId,
+        EntitySyncActor requestedBy,
+        CancellationToken cancellationToken)
+    {
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        await PostgresSyncScheduleRepository.LockScheduleIdentityAsync(
+                lease.Connection,
+                lease.Transaction,
+                tenantId,
+                scheduleId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        Guid policyId;
+        const string policySql = """
+            SELECT schedule.policy_id
+            FROM entitysync.sync_schedules schedule
+            WHERE schedule.tenant_id = @tenant_id
+              AND schedule.schedule_id = @schedule_id
+              AND schedule.version = @expected_version
+              AND schedule.enabled
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM entitysync.sync_schedules newer
+                  WHERE newer.tenant_id = schedule.tenant_id
+                    AND newer.schedule_id = schedule.schedule_id
+                    AND newer.version > schedule.version)
+            """;
+        await using (var policy = new NpgsqlCommand(
+                         policySql, lease.Connection, lease.Transaction))
+        {
+            AddIdentity(policy, tenantId, scheduleId, expectedVersion);
+            var value = await policy.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (value is not Guid id)
+            {
+                await lease.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return null;
+            }
+            policyId = id;
+        }
+        await PostgresSyncPolicyRepository.LockPolicyIdentityAsync(
+                lease.Connection,
+                lease.Transaction,
+                tenantId,
+                policyId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        const string sql = """
+            WITH authority AS (
+                SELECT schedule.schedule_id, schedule.version, policy.policy_id,
+                       policy.version AS policy_version, policy.route_scope
+                FROM entitysync.sync_schedules schedule
+                JOIN entitysync.sync_policies policy
+                  ON policy.tenant_id = schedule.tenant_id
+                 AND policy.policy_id = schedule.policy_id
+                 AND policy.version = schedule.policy_version
+                WHERE schedule.tenant_id = @tenant_id
+                  AND schedule.schedule_id = @schedule_id
+                  AND schedule.version = @expected_version
+                  AND schedule.enabled
+                  AND policy.enabled
+                  AND (policy.definition->>'ScheduledApplySafeSubset')::boolean
+                  AND (policy.definition->>'UpdatePolicy')::integer = @update_policy
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entitysync.sync_schedules newer
+                      WHERE newer.tenant_id = schedule.tenant_id
+                        AND newer.schedule_id = schedule.schedule_id
+                        AND newer.version > schedule.version)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM entitysync.sync_policies newer
+                      WHERE newer.tenant_id = policy.tenant_id
+                        AND newer.policy_id = policy.policy_id
+                        AND newer.version > policy.version)
+            ), queued AS (
+                SELECT GREATEST(
+                    clock_timestamp() + interval '1 microsecond',
+                    COALESCE(
+                        (
+                            SELECT max(work.scheduled_for) + interval '1 microsecond'
+                            FROM entitysync.sync_control_work work
+                            WHERE work.tenant_id = @tenant_id
+                              AND work.schedule_id = @schedule_id
+                              AND work.schedule_version = @expected_version
+                        ),
+                        '-infinity'::timestamptz)) AS queued_at
+            )
+            INSERT INTO entitysync.sync_control_work (
+                tenant_id, work_id, work_kind, state, policy_id, policy_version,
+                route_scope, schedule_id, schedule_version, scheduled_for,
+                requested_by, created_at, updated_at)
+            SELECT @tenant_id, @work_id, 'Schedule', 'Queued', authority.policy_id,
+                   authority.policy_version, authority.route_scope, authority.schedule_id,
+                   authority.version, queued.queued_at, @requested_by,
+                   queued.queued_at, queued.queued_at
+            FROM authority CROSS JOIN queued
+            RETURNING work_id, schedule_id, schedule_version, created_at
+            """;
+        SyncScheduleRunReceipt? receipt;
+        await using (var command = new NpgsqlCommand(sql, lease.Connection, lease.Transaction))
+        {
+            AddIdentity(command, tenantId, scheduleId, expectedVersion);
+            PostgresControlPersistence.Add(command, "work_id", NpgsqlDbType.Uuid, workId);
+            PostgresControlPersistence.Add(
+                command, "requested_by", NpgsqlDbType.Text, requestedBy.ActorId);
+            PostgresControlPersistence.Add(
+                command,
+                "update_policy",
+                NpgsqlDbType.Integer,
+                (int)EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            receipt = await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                ? new SyncScheduleRunReceipt(
+                    reader.GetGuid(0),
+                    reader.GetGuid(1),
+                    reader.GetInt32(2),
+                    reader.GetFieldValue<DateTimeOffset>(3))
+                : null;
+        }
+        if (receipt is null)
+        {
+            await lease.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
+        await using (var notify = new NpgsqlCommand(
+                         "SELECT pg_notify('entitysync_work', '')",
+                         lease.Connection,
+                         lease.Transaction))
+            await notify.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return receipt;
+    }
+
+    private static void AddIdentity(
+        NpgsqlCommand command,
+        string tenantId,
+        Guid scheduleId,
+        int expectedVersion)
+    {
+        PostgresControlPersistence.Add(command, "tenant_id", NpgsqlDbType.Text, tenantId);
+        PostgresControlPersistence.Add(command, "schedule_id", NpgsqlDbType.Uuid, scheduleId);
+        PostgresControlPersistence.Add(
+            command, "expected_version", NpgsqlDbType.Integer, expectedVersion);
+    }
 }

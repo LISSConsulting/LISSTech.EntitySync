@@ -38,7 +38,8 @@ public sealed class SyncScheduleService(
             throw new SyncScheduleVersionConflictException(scheduleId, 0);
 
         var now = timeProvider.GetUtcNow();
-        var policy = await RequireSafePolicyAsync(tenantId, request, cancellationToken)
+        var policy = await RequireSafePolicyAsync(
+            policies, tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
         var zone = ResolveTimeZone(request.TimeZone);
         var expression = Parse(request.CronExpression);
@@ -85,7 +86,8 @@ public sealed class SyncScheduleService(
                 "A schedule name is immutable across versions.", nameof(request));
 
         var now = timeProvider.GetUtcNow();
-        var policy = await RequireSafePolicyAsync(tenantId, request, cancellationToken)
+        var policy = await RequireSafePolicyAsync(
+            policies, tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
             .ConfigureAwait(false);
         var zone = ResolveTimeZone(request.TimeZone);
         var expression = Parse(request.CronExpression);
@@ -171,27 +173,30 @@ public sealed class SyncScheduleService(
             DateTime.SpecifyKind(occurrence.Value, DateTimeKind.Utc));
     }
 
-    private async Task<EntitySyncPolicy> RequireSafePolicyAsync(
+    internal static async Task<EntitySyncPolicy> RequireSafePolicyAsync(
+        ISyncPolicyRepository policies,
         string tenantId,
-        SyncScheduleRequest request,
+        Guid policyId,
+        int policyVersion,
         CancellationToken cancellationToken)
     {
-        if (request.PolicyId == Guid.Empty)
-            throw new ArgumentException("Policy ID is required.", nameof(request));
-        if (request.PolicyVersion <= 0)
-            throw new ArgumentOutOfRangeException(nameof(request));
+        if (policyId == Guid.Empty)
+            throw new ArgumentException("Policy ID is required.", nameof(policyId));
+        if (policyVersion <= 0)
+            throw new ArgumentOutOfRangeException(nameof(policyVersion));
         var exact = await policies.GetAsync(
-            tenantId, request.PolicyId, request.PolicyVersion, cancellationToken)
-            .ConfigureAwait(false);
+            tenantId, policyId, policyVersion, cancellationToken).ConfigureAwait(false);
         var latest = await policies.GetLatestAsync(
-            tenantId, request.PolicyId, cancellationToken).ConfigureAwait(false);
+            tenantId, policyId, cancellationToken).ConfigureAwait(false);
         if (exact is null
             || latest is null
             || latest.Version != exact.Version
             || !exact.Enabled)
             throw new InvalidOperationException(
                 "The exact latest enabled policy version is required for a schedule.");
-        if (!exact.Definition.ScheduledApplySafeSubset)
+        if (!exact.Definition.ScheduledApplySafeSubset
+            || exact.Definition.UpdatePolicy
+                != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly)
             throw new InvalidOperationException(
                 "Scheduled execution requires a policy marked ScheduledApplySafeSubset.");
         return exact;
@@ -212,4 +217,56 @@ public sealed class SyncScheduleService(
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException($"{parameterName} is required.", parameterName)
             : value.Trim();
+}
+
+public sealed class SyncScheduleRunService(
+    ISyncScheduleRepository schedules,
+    ISyncPolicyRepository policies,
+    ISyncScheduleRunQueue queue)
+{
+    public async Task<SyncScheduleRunReceipt> QueueNowAsync(
+        string tenantId,
+        Guid scheduleId,
+        int expectedVersion,
+        Guid workId,
+        EntitySyncActor requestedBy,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("Tenant ID is required.", nameof(tenantId));
+        if (scheduleId == Guid.Empty)
+            throw new ArgumentException("Schedule ID is required.", nameof(scheduleId));
+        if (expectedVersion <= 0)
+            throw new ArgumentOutOfRangeException(nameof(expectedVersion));
+        if (workId == Guid.Empty)
+            throw new ArgumentException("Work ID is required.", nameof(workId));
+        ArgumentNullException.ThrowIfNull(requestedBy);
+
+        var latest = await schedules.GetLatestAsync(
+            tenantId.Trim(), scheduleId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException(
+                $"Schedule '{scheduleId}' was not found for tenant '{tenantId.Trim()}'.");
+        if (latest.Version != expectedVersion)
+            throw new SyncScheduleVersionConflictException(scheduleId, expectedVersion);
+        if (!latest.Enabled)
+            throw new InvalidOperationException(
+                "The exact latest enabled schedule version is required.");
+        await SyncScheduleService.RequireSafePolicyAsync(
+            policies,
+            tenantId.Trim(),
+            latest.PolicyId,
+            latest.PolicyVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        return await queue.TryEnqueueAsync(
+                tenantId.Trim(),
+                scheduleId,
+                expectedVersion,
+                workId,
+                requestedBy,
+                cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "The schedule or policy changed before the run could be queued.");
+    }
 }
