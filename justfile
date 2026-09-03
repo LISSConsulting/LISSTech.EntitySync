@@ -17,7 +17,6 @@ mcp_project       := project_root / "mcp" / "LISSTech.EntitySync.Mcp.csproj"
 mcp_publish_dir   := project_root / "Build" / "Mcp"
 scheduler_project       := project_root / "scheduler" / "LISSTech.EntitySync.Scheduler.csproj"
 scheduler_publish_dir   := project_root / "Build" / "Scheduler"
-dashboard_dir           := project_root / "scheduler-ui"
 nswag_config      := project_root / "nswag.json"
 generated_client  := project_root / "src" / "Adapters" / "LTAC" / "Generated" / "AgentControllerClient.g.cs"
 platform_tests     := project_root / "Tests" / "LISSTech.EntitySync.Platform.Tests" / "LISSTech.EntitySync.Platform.Tests.csproj"
@@ -195,19 +194,22 @@ test-load: build
 [group('quality')]
 [script('pwsh', '-NoProfile')]
 [extension('.ps1')]
-test: build dashboard-build
+test: build
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🧪' -Fallback '[test]' -Text 'Running Pester suite against Build\Module' -Script {
         if (-not (Get-Command Invoke-Pester -ErrorAction SilentlyContinue)) { throw 'Pester is not installed. Install-Module Pester -Scope CurrentUser.' }
         $old = $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH
+        $oldDatabaseUrl = $env:DATABASE_URL
         try {
+            $env:DATABASE_URL = $null
             $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH = '{{ build_manifest }}'
             $result = Invoke-Pester -Path '{{ project_root }}\Tests' -Output Detailed -PassThru
             if ($result.FailedCount -gt 0) { throw "$($result.FailedCount) test(s) failed." }
             Write-JustStep -Icon '🧾' -Fallback '[tests]' -Text "$($result.PassedCount) test(s) passed" -ForegroundColor Green
         } finally {
             $env:LISSTECH_ENTITYSYNC_TEST_MODULE_PATH = $old
+            $env:DATABASE_URL = $oldDatabaseUrl
         }
         dotnet test '{{ platform_tests }}' --configuration '{{ configuration }}' --no-restore --verbosity minimal
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -347,35 +349,12 @@ mcp-run: mcp-build
     $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
     & $binary.FullName
 
-# Build the React scheduler dashboard into scheduler/wwwroot
-[group('scheduler')]
-[script('pwsh', '-NoProfile')]
-[extension('.ps1')]
-dashboard-build:
-    . '{{ style_script }}'
-    $ErrorActionPreference = 'Stop'
-    Invoke-JustTimed -Fallback '[dashboard-build]' -Text 'Building React scheduler dashboard' -Script {
-        Push-Location '{{ dashboard_dir }}'
-        try {
-            npm ci
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            npm run build
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        } finally {
-            Pop-Location
-        }
-    }
-
-# Run the React dashboard development server with scheduler API proxying
-[group('scheduler')]
-dashboard-dev:
-    npm --prefix '{{ dashboard_dir }}' run dev
 
 # Build the EntitySync scheduler as a self-contained single-file binary
 [group('scheduler')]
 [script('pwsh', '-NoProfile')]
 [extension('.ps1')]
-scheduler-build: dashboard-build
+scheduler-build:
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     $rid = if ($IsWindows) { 'win-x64' } elseif ($IsMacOS) { 'osx-arm64' } else { 'linux-x64' }

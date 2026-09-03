@@ -18,6 +18,9 @@ Export-EntitySyncPlan -Plan <EntitySyncPlan> [-Path] <String> [-PassThru]
 
 ## DESCRIPTION
 Writes the supplied `EntitySyncPlan` so reviewers can examine and decide on every planned action before any vendor write happens.
+With `-PlanId`, export reads every persisted manifest page and therefore produces
+the same artifact after host restart without process-local plan state.
+
 
 `-Path` accepts either a full file path or an existing directory. When `-Path` resolves to a directory, the cmdlet generates a timestamped workbook name shaped like `EntitySync-NetSuite-Customer-to-HaloPSA-Client-20260625-115250.xlsx` (the timestamp reflects `DateTimeOffset.Now` at export time, not the plan's `CreatedAt`). When `-Path` has no extension, the workbook variant is used. When `-Path` ends in `.xlsx`, the cmdlet writes a reviewer workbook with a `Review` sheet, a hidden sheet pair preserving the full plan, a target sheet, and a legend sheet. When `-Path` ends in `.json`, the cmdlet writes a sanitized JSON copy of the plan as UTF-8 without a byte-order mark.
 

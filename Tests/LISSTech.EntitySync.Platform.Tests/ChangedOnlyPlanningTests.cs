@@ -245,7 +245,7 @@ public sealed class ChangedOnlyPlanningTests
     private sealed class PlanningFixture : IDisposable
     {
         private readonly InMemoryEntityConnectionRepository connections = new();
-        private readonly InMemoryEntitySyncPlanRepository plans = new();
+        private readonly TestEntitySyncPlanRepository plans = new();
         private readonly InMemoryEntityExclusionRepository exclusions = new();
 
         public PlanningFixture(IReadOnlyList<ExternalEntity> sources, IReadOnlyList<ExternalEntity> targets)

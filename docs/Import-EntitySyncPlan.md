@@ -18,6 +18,10 @@ Import-EntitySyncPlan [-Path] <String>
 
 ## DESCRIPTION
 Reads a plan that was previously exported with `Export-EntitySyncPlan`, applies reviewer decisions, and emits a single `EntitySyncPlan` object ready for `Invoke-EntitySyncPlan` or `Invoke-EntitySyncChain`.
+With durable control configured, import validates the complete artifact payload
+and SHA-256 before inserting its immutable manifest. Modified or incomplete
+artifacts are rejected before any database write.
+
 
 When `-Path` ends in `.xlsx`, the cmdlet reads the reviewer workbook, restores the full plan from the hidden sheets, then applies each reviewer decision to the corresponding `EntitySyncPlanItem`. When `-Path` ends in `.json`, the cmdlet deserializes the JSON file directly; the JSON shape is the same sanitized structure written by `Export-EntitySyncPlan -Path *.json`, so any tools that read or write that JSON can interoperate.
 

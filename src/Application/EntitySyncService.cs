@@ -5,15 +5,39 @@ namespace LISSTech.EntitySync.Application;
 
 public sealed class EntitySyncService(
     EntitySyncPlanner planner,
-    IEntityConnectionRepository connections,
+    IConnectionRuntimeFactory connections,
     IEntitySyncPlanRepository plans,
     IEntityExclusionRepository exclusions,
     IEntityMapper mapper,
     IEntitySyncChangeStateRepository changeStates,
     IEntityGraphRepository graph,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    SyncOperationService? operationService = null)
 {
     public Task<EntitySyncPlan> CreatePlanAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken) => planner.CreateAsync(request, cancellationToken);
+    public Task<EntitySyncOperation> QueueDryRunAsync(
+        string tenantId,
+        Guid planId,
+        string idempotencyKey,
+        Guid correlationId,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        RequireOperationService().QueueDryRunAsync(
+            tenantId, planId, idempotencyKey, correlationId, actor,
+            cancellationToken);
+
+    public Task<EntitySyncOperation> QueueApplyAsync(
+        string tenantId,
+        Guid planId,
+        Guid approvalId,
+        string idempotencyKey,
+        Guid correlationId,
+        EntitySyncActor actor,
+        CancellationToken cancellationToken) =>
+        RequireOperationService().QueueApplyAsync(
+            tenantId, planId, approvalId, idempotencyKey, correlationId, actor,
+            cancellationToken);
+
 
     public EntitySyncPlanPage GetPlan(string tenantId, string planId, int page = 1, int pageSize = 25)
     {
@@ -59,8 +83,16 @@ public sealed class EntitySyncService(
         var plan = plans.Get(tenantId, planId);
         if (apply) BillComPlanReconciliation.EnsureReadyToApply(plan);
         var changeStateRoute = PrepareChangeStateRoute(plan);
-        using var sourceLease = connections.Acquire(tenantId, plan.SourceVendor, plan.Execution.SourceConnectionId, plan.Execution.SourceConnectionGeneration);
-        using var targetLease = connections.Acquire(tenantId, plan.TargetVendor, plan.Execution.TargetConnectionId, plan.Execution.TargetConnectionGeneration);
+        await using var sourceLease = await connections.AcquireAsync(
+            tenantId,
+            plan.Execution.SourceConnectionId,
+            plan.Execution.SourceConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
+        await using var targetLease = await connections.AcquireAsync(
+            tenantId,
+            plan.Execution.TargetConnectionId,
+            plan.Execution.TargetConnectionGeneration,
+            cancellationToken).ConfigureAwait(false);
         if (plan.Items.Any(item => item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)))
         {
             var route = EntityExclusionRoute.Create(
@@ -105,8 +137,8 @@ public sealed class EntitySyncService(
             if (!plans.TryTransition(tenantId, planId, EntitySyncPlanStatuses.Approved, EntitySyncPlanStatuses.Applying)) throw new InvalidOperationException("Plan is already being applied or has been consumed.");
         }
 
-        var source = sourceLease.Connection;
-        var target = targetLease.Connection;
+        var source = sourceLease.Adapter;
+        var target = targetLease.Adapter;
         var results = new List<EntitySyncApplyItemResult>();
         var completed = false;
         var succeeded = 0;
@@ -127,7 +159,7 @@ public sealed class EntitySyncService(
         {
             if (apply && EntitySyncVendors.IsAgentController(plan.TargetVendor))
             {
-                if (target.Adapter is not IEntityBatchAdapter batchAdapter)
+                if (target is not IEntityBatchAdapter batchAdapter)
                     throw new InvalidOperationException("AgentController target connection does not support authoritative batch apply.");
 
                 var batchItems = plan.Items
@@ -224,26 +256,46 @@ public sealed class EntitySyncService(
                     {
                         if (failed > 0)
                         {
-                            results.Add(new EntitySyncApplyItemResult(item.Action, item.Target?.Name ?? string.Empty, item.Target?.Name, false, true, item.Target?.Id, "Delete skipped because an earlier exact-list operation failed."));
+                            results.Add(new EntitySyncApplyItemResult(
+                                item.Action,
+                                item.Target?.Name ?? string.Empty,
+                                item.Target?.Name,
+                                false,
+                                true,
+                                item.Target?.Id,
+                                "Delete skipped because an earlier exact-list operation failed."));
                             skipped++;
                             ReportProgress();
                             continue;
                         }
-                        if (item.Target is null) throw new InvalidOperationException("Target is required for delete actions.");
-                        if (target.Adapter is not IEntityDeleteAdapter deleteAdapter) throw new InvalidOperationException($"{plan.TargetVendor} does not support entity deletion.");
+                        if (item.Target is null)
+                            throw new InvalidOperationException("Target is required for delete actions.");
+                        if (target is not IEntityDeleteAdapter deleteAdapter)
+                            throw new InvalidOperationException(
+                                $"{plan.TargetVendor} does not support entity deletion.");
                         request = DeleteRequest(plan, item.Target);
-                        write = await deleteAdapter.DeleteEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                        write = await deleteAdapter.DeleteEntityAsync(
+                            request, cancellationToken).ConfigureAwait(false);
                     }
                     else if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                     {
-                        request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, plan.Execution.MatchOptions);
-                        write = await target.Adapter.CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                        request = mapper.MapCreate(
+                            item.Source,
+                            plan.TargetVendor,
+                            plan.TargetEntityType,
+                            plan.Execution.MatchOptions);
+                        write = await target.CreateEntityAsync(
+                            request, cancellationToken).ConfigureAwait(false);
                     }
                     else
                     {
                         if (item.Target == null) throw new InvalidOperationException("Target is required for link and update actions.");
-                        request = mapper.MapUpdate(item.Source, item.Target, plan.Execution.MatchOptions);
-                        write = await target.Adapter.UpdateEntityAsync(request, cancellationToken).ConfigureAwait(false);
+                        request = mapper.MapUpdate(
+                            item.Source,
+                            item.Target,
+                            plan.Execution.MatchOptions);
+                        write = await target.UpdateEntityAsync(
+                            request, cancellationToken).ConfigureAwait(false);
                     }
                     if (write.Success)
                     {
@@ -257,7 +309,7 @@ public sealed class EntitySyncService(
                                     item,
                                     request,
                                     write,
-                                    source.Adapter,
+                                    source,
                                     cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException)
@@ -296,7 +348,7 @@ public sealed class EntitySyncService(
                         EntityWriteResult? replacementDelete = null;
                         if (BillComPlanReconciliation.IsReplacement(plan, item, write))
                         {
-                            if (target.Adapter is not IEntityDeleteAdapter deleteAdapter)
+                            if (target is not IEntityDeleteAdapter deleteAdapter)
                                 throw new InvalidOperationException("BILL.com target connection does not support replacement cleanup.");
                             replacementDelete = await deleteAdapter
                                 .DeleteEntityAsync(DeleteRequest(plan, item.Target!), cancellationToken)
@@ -689,6 +741,9 @@ public sealed class EntitySyncService(
         return route;
     }
 
+    private SyncOperationService RequireOperationService() =>
+        operationService ?? throw new InvalidOperationException(
+            "The durable operation control plane is not configured.");
     private static bool IsSafeExactNameBootstrap(EntitySyncPlan plan, EntitySyncPlanItem item)
     {
         if (!plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)

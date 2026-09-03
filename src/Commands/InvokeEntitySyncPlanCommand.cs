@@ -12,15 +12,33 @@ using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
 
-[Cmdlet(VerbsLifecycle.Invoke, "EntitySyncPlan", SupportsShouldProcess = true, ConfirmImpact = ConfirmImpact.High)]
-[OutputType(typeof(EntityWriteResult))]
+[Cmdlet(
+    VerbsLifecycle.Invoke,
+    "EntitySyncPlan",
+    DefaultParameterSetName = "Local",
+    SupportsShouldProcess = true,
+    ConfirmImpact = ConfirmImpact.High)]
+[OutputType(typeof(EntityWriteResult), typeof(EntitySyncOperation))]
 public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
 {
     private IEntityAdapter? targetAdapter;
     private HaloEntityAdapter? haloAdapter;
 
-    [Parameter(Mandatory = true, ValueFromPipeline = true, Position = 0)]
-    public EntitySyncPlan Plan { get; set; } = default!;
+    [Parameter(
+        Mandatory = true,
+        ValueFromPipeline = true,
+        Position = 0,
+        ParameterSetName = "Local")]
+    public EntitySyncPlan? Plan { get; set; }
+
+    [Parameter(Mandatory = true, Position = 0, ParameterSetName = "Durable")]
+    public Guid PlanId { get; set; }
+
+    [Parameter(ParameterSetName = "Durable")]
+    public Guid? ApprovalId { get; set; }
+
+    [Parameter(Mandatory = true, ParameterSetName = "Durable")]
+    public string IdempotencyKey { get; set; } = string.Empty;
 
     [Parameter]
     public SwitchParameter Apply { get; set; }
@@ -39,13 +57,60 @@ public sealed class InvokeEntitySyncPlanCommand : PSCmdlet
     {
         try
         {
+            if (ParameterSetName.Equals("Durable", StringComparison.Ordinal)
+                || PowerShellControlRuntime.IsDurableConfigured)
+            {
+                if (!ParameterSetName.Equals("Durable", StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        "Durable PowerShell control configuration requires -PlanId and -IdempotencyKey.");
+                using var control = PowerShellControlRuntime.Open();
+                EntitySyncOperation operation;
+                if (Apply)
+                {
+                    if (!ApprovalId.HasValue || ApprovalId == Guid.Empty)
+                        throw new InvalidOperationException(
+                            "-ApprovalId is required once for durable apply.");
+                    if (!ShouldProcess(PlanId.ToString(), "Queue durable EntitySync apply"))
+                        return;
+                    operation = control.Commands.QueueApplyAsync(
+                            control.TenantId,
+                            PlanId,
+                            ApprovalId.Value,
+                            IdempotencyKey,
+                            Guid.NewGuid(),
+                            control.Actor,
+                            CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                else
+                {
+                    operation = control.Commands.QueueDryRunAsync(
+                            control.TenantId,
+                            PlanId,
+                            IdempotencyKey,
+                            Guid.NewGuid(),
+                            control.Actor,
+                            CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                WriteObject(operation);
+                return;
+            }
+
+            var localPlan = Plan
+                ?? throw new InvalidOperationException("-Plan is required for local execution.");
+            Plan = localPlan;
             Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
             Plan.SourceVendor = EntitySyncVendors.Normalize(Plan.SourceVendor);
+            Plan.TargetVendor = EntitySyncVendors.Normalize(Plan.TargetVendor);
             if (Apply)
             {
                 ReviewedPlanPolicy.EnsureApproved(Plan);
                 BillComPlanReconciliation.EnsureReadyToApply(Plan);
             }
+            PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
+                Apply,
+                Plan.TargetVendor);
             if (!Apply) WriteWarning("No changes will be made unless -Apply is specified. -WhatIf is still supported when applying.");
             var mapper = new DefaultEntityMapper();
             var options = new MatchOptions

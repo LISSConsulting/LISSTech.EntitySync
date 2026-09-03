@@ -71,16 +71,32 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
             DO UPDATE SET source_name = EXCLUDED.source_name, reason = EXCLUDED.reason
             RETURNING id, created_by, created_at
             """;
-        await using var command = dataSource.CreateCommand(sql);
-        AddRoute(command, route);
-        command.Parameters.AddWithValue("id", id);
-        command.Parameters.AddWithValue("source_entity_id", sourceEntityId);
-        command.Parameters.AddWithValue("source_name", sourceName);
-        command.Parameters.AddWithValue("reason", reason);
-        command.Parameters.AddWithValue("actor", actor);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) throw new InvalidOperationException("The exclusion was not stored.");
-        return new EntityExclusion(reader.GetGuid(0), route, sourceEntityId, sourceName, reason, reader.GetString(1), reader.GetFieldValue<DateTimeOffset>(2));
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        EntityExclusion result;
+        await using (var command = new NpgsqlCommand(sql, lease.Connection, lease.Transaction))
+        {
+            AddRoute(command, route);
+            command.Parameters.AddWithValue("id", id);
+            command.Parameters.AddWithValue("source_entity_id", sourceEntityId);
+            command.Parameters.AddWithValue("source_name", sourceName);
+            command.Parameters.AddWithValue("reason", reason);
+            command.Parameters.AddWithValue("actor", actor);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("The exclusion was not stored.");
+            result = new EntityExclusion(
+                reader.GetGuid(0),
+                route,
+                sourceEntityId,
+                sourceName,
+                reason,
+                reader.GetString(1),
+                reader.GetFieldValue<DateTimeOffset>(2));
+        }
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async Task<bool> RevokeAsync(
@@ -96,11 +112,15 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
             SET revoked_by = @actor, revoked_at = now()
             WHERE revoked_at IS NULL AND source_entity_key = lower(@source_entity_id) AND
             """ + "\n" + RoutePredicate;
-        await using var command = dataSource.CreateCommand(sql);
+        await using var lease = await PostgresControlTransaction
+            .AcquireAsync(dataSource, cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(sql, lease.Connection, lease.Transaction);
         AddRoute(command, route);
         command.Parameters.AddWithValue("source_entity_id", sourceEntityId);
         command.Parameters.AddWithValue("actor", actor);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        var revoked = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        await lease.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revoked;
     }
 
     private static void AddRoute(NpgsqlCommand command, EntityExclusionRoute route)
@@ -125,6 +145,25 @@ public sealed class PostgresEntityExclusionRepository(NpgsqlDataSource dataSourc
 
 public static class EntitySyncDatabaseMigrator
 {
+    private sealed record EmbeddedMigration(string ResourceName, string Version);
+
+    private static readonly EmbeddedMigration[] Migrations =
+        typeof(EntitySyncDatabaseMigrator).Assembly.GetManifestResourceNames()
+            .Where(name =>
+                name.Contains(".Migrations.", StringComparison.Ordinal)
+                && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .Select(name => new EmbeddedMigration(
+                name,
+                Path.GetFileNameWithoutExtension(
+                    name[(name.LastIndexOf(
+                        ".Migrations.",
+                        StringComparison.Ordinal) + 12)..])))
+            .ToArray();
+
+    public static IReadOnlyList<string> ExpectedVersions { get; } =
+        Array.AsReadOnly(Migrations.Select(migration => migration.Version).ToArray());
+
     public static async Task ApplyAsync(NpgsqlDataSource dataSource, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
@@ -138,11 +177,10 @@ public static class EntitySyncDatabaseMigrator
             bootstrap.CommandText = "CREATE SCHEMA IF NOT EXISTS entitysync; CREATE TABLE IF NOT EXISTS entitysync.schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())";
             await bootstrap.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var resourceName in typeof(EntitySyncDatabaseMigrator).Assembly.GetManifestResourceNames()
-                         .Where(name => name.Contains(".Database.Migrations.", StringComparison.Ordinal) && name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
-                         .OrderBy(name => name, StringComparer.Ordinal))
+            foreach (var embeddedMigration in Migrations)
             {
-                var version = Path.GetFileNameWithoutExtension(resourceName[(resourceName.LastIndexOf(".Migrations.", StringComparison.Ordinal) + 12)..]);
+                var resourceName = embeddedMigration.ResourceName;
+                var version = embeddedMigration.Version;
                 await using var exists = advisoryConnection.CreateCommand();
                 exists.CommandText = "SELECT EXISTS (SELECT 1 FROM entitysync.schema_migrations WHERE version = @version)";
                 exists.Parameters.AddWithValue("version", version);

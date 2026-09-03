@@ -318,7 +318,7 @@ public sealed class SophosCentralEntityAdapter : IEntityAdapter, IDisposable
         if (products != null)
         {
             payload["products"] = products
-                .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Select(code => new Dictionary<string, object?> { ["code"] = code })
                 .ToArray();

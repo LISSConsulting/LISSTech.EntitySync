@@ -3,6 +3,7 @@ using System.Management.Automation;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters;
 using LISSTech.EntitySync.Adapters.Halo;
@@ -11,12 +12,13 @@ using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
 using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
 
 [Cmdlet(VerbsCommunications.Connect, "EntitySyncVendor", DefaultParameterSetName = "HaloPSA")]
-[OutputType(typeof(EntitySyncConnection))]
+[OutputType(typeof(EntitySyncConnection), typeof(EntitySyncControlConnectionInfo))]
 public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameters
 {
     [Parameter(Mandatory = true, ParameterSetName = "HaloPSA")]
@@ -30,6 +32,9 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     [Parameter(Mandatory = true, ParameterSetName = "AgentControllerDeviceAssetOpsProfile")]
     [ArgumentCompleter(typeof(EntitySyncVendorCompleter))]
     public string Vendor { get; set; } = string.Empty;
+    [Parameter]
+    public string? ConnectionId { get; set; }
+
 
     [Parameter(Mandatory = true, Position = 0, ParameterSetName = "Profile")]
     [Parameter(ParameterSetName = "HaloPSA")]
@@ -153,6 +158,19 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
     {
         try
         {
+            if (!string.IsNullOrWhiteSpace(ConnectionId))
+            {
+                if (!PowerShellControlRuntime.IsDurableConfigured)
+                    throw new InvalidOperationException(
+                        "-ConnectionId requires durable PowerShell control configuration.");
+                if (ParameterSetName.Equals("Profile", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(Profile)
+                    || SaveProfile
+                    || DefaultProfile)
+                    throw new InvalidOperationException(
+                        "-ConnectionId cannot be combined with Profile, SaveProfile, or DefaultProfile.");
+            }
+
             if (ParameterSetName.Equals("Profile", StringComparison.OrdinalIgnoreCase))
             {
                 foreach (var output in ConnectEntitySyncProfileCommand.ConnectProfile(Profile)) WriteObject(output);
@@ -160,6 +178,14 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
             }
 
             Vendor = NormalizeVendorAlias(Vendor);
+            if (PowerShellControlRuntime.IsDurableConfigured
+                && !SaveProfile
+                && string.IsNullOrWhiteSpace(Profile))
+            {
+                WriteObject(ConnectDurable());
+                return;
+            }
+
 
             if (EntitySyncVendors.IsAgentController(Vendor))
             {
@@ -630,6 +656,58 @@ public sealed class ConnectEntitySyncVendorCommand : PSCmdlet, IDynamicParameter
         }
 
         return ReadHaloAccessToken(body);
+    }
+
+    private EntitySyncControlConnectionInfo ConnectDurable()
+    {
+        using var control = PowerShellControlRuntime.Open();
+        IReadOnlyDictionary<string, string>? secrets = null;
+        try
+        {
+            var configuration = control.AdapterFactory.GetConnectionConfiguration(
+                Vendor, profileSettings: null);
+            secrets = configuration.SecretConfiguration;
+            var connectionId = string.IsNullOrWhiteSpace(ConnectionId)
+                ? Vendor.ToLowerInvariant()
+                : ConnectionId.Trim();
+            var request = new ConnectionDefinitionRequest(
+                Vendor,
+                connectionId,
+                Vendor,
+                configuration.PublicConfiguration,
+                configuration.SecretConfiguration,
+                configuration.PlatformInstanceId);
+            EntitySyncConnectionDefinition definition;
+            try
+            {
+                var current = control.Connections.GetAsync(
+                        control.TenantId, connectionId, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                definition = control.Connections.UpdateAsync(
+                        control.TenantId,
+                        connectionId,
+                        current.Generation,
+                        request,
+                        control.Actor,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch (ConnectionNotFoundException)
+            {
+                definition = control.Connections.CreateAsync(
+                        control.TenantId,
+                        request,
+                        control.Actor,
+                        CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            return EntitySyncControlConnectionInfo.From(definition);
+        }
+        finally
+        {
+            if (secrets is IDictionary<string, string> mutable)
+                mutable.Clear();
+        }
     }
 
     private static string GetHaloAccessToken(string baseUrl, string clientId, string clientSecret, string scope, string tokenPath)

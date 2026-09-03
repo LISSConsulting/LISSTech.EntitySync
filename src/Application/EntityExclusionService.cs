@@ -4,14 +4,14 @@ using LISSTech.EntitySync.Ports;
 namespace LISSTech.EntitySync.Application;
 
 public sealed class EntityExclusionService(
-    IEntityConnectionRepository connections,
+    IConnectionRuntimeFactory connections,
     IEntityExclusionRepository exclusions)
 {
     public async Task<IReadOnlyList<EntityExclusion>> ListAsync(
         EntityExclusionRouteRequest request,
         CancellationToken cancellationToken)
     {
-        var route = ResolveRoute(request);
+        var route = await ResolveRouteAsync(request, cancellationToken).ConfigureAwait(false);
         return await exclusions.ListActiveAsync(route, cancellationToken).ConfigureAwait(false);
     }
 
@@ -23,7 +23,7 @@ public sealed class EntityExclusionService(
         string actor,
         CancellationToken cancellationToken)
     {
-        var route = ResolveRoute(request);
+        var route = await ResolveRouteAsync(request, cancellationToken).ConfigureAwait(false);
         EnsureExclusionsSupported(route);
         return await exclusions.AddAsync(route, sourceEntityId, sourceName, reason, actor, cancellationToken).ConfigureAwait(false);
     }
@@ -34,27 +34,38 @@ public sealed class EntityExclusionService(
         string actor,
         CancellationToken cancellationToken)
     {
-        var route = ResolveRoute(request);
+        var route = await ResolveRouteAsync(request, cancellationToken).ConfigureAwait(false);
         EnsureExclusionsSupported(route);
         return await exclusions.RevokeAsync(route, sourceEntityId, actor, cancellationToken).ConfigureAwait(false);
     }
 
-    private EntityExclusionRoute ResolveRoute(EntityExclusionRouteRequest request)
+    private async Task<EntityExclusionRoute> ResolveRouteAsync(
+        EntityExclusionRouteRequest request,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
         var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
-        var source = connections.Resolve(request.TenantId, sourceVendor, request.SourceConnectionId);
-        var target = connections.Resolve(request.TenantId, targetVendor, request.TargetConnectionId);
+        var source = await connections.ResolveCurrentDefinitionAsync(
+            request.TenantId,
+            sourceVendor,
+            request.SourceConnectionId,
+            cancellationToken).ConfigureAwait(false);
+        var target = await connections.ResolveCurrentDefinitionAsync(
+            request.TenantId,
+            targetVendor,
+            request.TargetConnectionId,
+            cancellationToken).ConfigureAwait(false);
         return EntityExclusionRoute.Create(
             request.TenantId,
             source.Vendor,
-            source.Id,
+            source.ConnectionId,
             request.SourceEntityType ?? DefaultEntityType(source.Vendor),
             target.Vendor,
-            target.Id,
+            target.ConnectionId,
             request.TargetEntityType ?? DefaultEntityType(target.Vendor));
     }
+
 
     private static void EnsureExclusionsSupported(EntityExclusionRoute route)
     {

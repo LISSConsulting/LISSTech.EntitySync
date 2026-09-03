@@ -20,7 +20,29 @@ public static class EntityWriteRequestDigest
             ["entityType"] = request.EntityType,
             ["id"] = request.Id,
             ["primarySiteId"] = request.PrimarySiteId,
+            ["parentId"] = request.ParentId,
+            ["parentEntityType"] = request.ParentEntityType,
+            ["parentClientId"] = request.ParentClientId,
             ["name"] = request.Name,
+            ["address"] = CanonicalizeAddress(request.Address),
+            ["resolvedParent"] = request.ResolvedParent is null
+                ? null
+                : new SortedDictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["clientId"] = request.ResolvedParent.ClientId,
+                    ["siteId"] = request.ResolvedParent.SiteId,
+                    ["parentEntityType"] = request.ResolvedParent.ParentEntityType,
+                    ["sourcePlatformInstanceId"] =
+                        request.ResolvedParent.SourcePlatformInstanceId,
+                    ["matchedLinkExternalId"] =
+                        request.ResolvedParent.MatchedLinkExternalId,
+                    ["matchedLinkStatus"] =
+                        request.ResolvedParent.MatchedLinkStatus,
+                    ["matchedLinkToken"] =
+                        request.ResolvedParent.MatchedLinkToken,
+                    ["observedOwnerVersion"] =
+                        request.ResolvedParent.ObservedOwnerVersion
+                },
             ["customFieldOnly"] = request.CustomFieldOnly,
             ["fields"] = Canonicalize(request.Fields),
             ["customFields"] = Canonicalize(request.CustomFields)
@@ -28,6 +50,22 @@ public static class EntityWriteRequestDigest
         var json = JsonSerializer.Serialize(canonical);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
     }
+
+    private static object? CanonicalizeAddress(EntityAddress? address) =>
+        address is null
+            ? null
+            : new SortedDictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["addressType"] = address.AddressType,
+                ["attention"] = address.Attention,
+                ["line1"] = address.Line1,
+                ["line2"] = address.Line2,
+                ["line3"] = address.Line3,
+                ["city"] = address.City,
+                ["state"] = address.State,
+                ["postalCode"] = address.PostalCode,
+                ["country"] = address.Country
+            };
 
     private static object? Canonicalize(object? value)
     {

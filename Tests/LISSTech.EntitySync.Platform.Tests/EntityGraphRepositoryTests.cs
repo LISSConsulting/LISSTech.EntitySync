@@ -71,7 +71,7 @@ public sealed class EntityGraphRepositoryTests
     public async Task PlanningRetainsVendorRecordsAndApplyConfirmsRelationship()
     {
         using var connections = new InMemoryEntityConnectionRepository();
-        var plans = new InMemoryEntitySyncPlanRepository();
+        var plans = new TestEntitySyncPlanRepository();
         var exclusions = new InMemoryEntityExclusionRepository();
         var changeStates = new InMemoryEntitySyncChangeStateRepository();
         var graph = new InMemoryEntityGraphRepository();
@@ -133,7 +133,7 @@ public sealed class EntityGraphRepositoryTests
     public async Task TargetOnlyDeleteTombstonesRecordWithoutInventingRelationship()
     {
         using var connections = new InMemoryEntityConnectionRepository();
-        var plans = new InMemoryEntitySyncPlanRepository();
+        var plans = new TestEntitySyncPlanRepository();
         var exclusions = new InMemoryEntityExclusionRepository();
         var changeStates = new InMemoryEntitySyncChangeStateRepository();
         var graph = new InMemoryEntityGraphRepository();

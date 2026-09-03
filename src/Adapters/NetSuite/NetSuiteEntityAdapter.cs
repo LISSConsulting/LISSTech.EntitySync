@@ -8,7 +8,7 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.NetSuite;
 
-public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
+public sealed class NetSuiteEntityAdapter : IEntityAdapter, ISuiteQlExpertAdapter, IDisposable
 {
     private const int SuiteQlPageSize = 1000;
     private readonly NetSuiteOptions options;
@@ -68,19 +68,38 @@ public sealed class NetSuiteEntityAdapter : IEntityAdapter, IDisposable
         return response.IsSuccessStatusCode;
     }
 
-    public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> InvokeSuiteQlAsync(string suiteQl, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> InvokeSuiteQlAsync(
+        string suiteQl,
+        CancellationToken cancellationToken) =>
+        InvokeSuiteQlCoreAsync(suiteQl, null, cancellationToken);
+
+    Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ISuiteQlExpertAdapter.InvokeSuiteQlAsync(
+        string suiteQl,
+        int maximumRows,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(suiteQl)) throw new ArgumentException("SuiteQL query is required.", nameof(suiteQl));
+        if (maximumRows <= 0) throw new ArgumentOutOfRangeException(nameof(maximumRows));
+        return InvokeSuiteQlCoreAsync(suiteQl, maximumRows, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> InvokeSuiteQlCoreAsync(
+        string suiteQl,
+        int? maximumRows,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(suiteQl))
+            throw new ArgumentException("SuiteQL query is required.", nameof(suiteQl));
         Trace?.Invoke($"NetSuite SuiteQL: {suiteQl}");
         var rows = new List<IReadOnlyDictionary<string, object?>>();
         await ReadSuiteQlPagesAsync(
             suiteQl,
-            null,
+            maximumRows,
             item =>
             {
                 if (item.ValueKind != JsonValueKind.Object) return;
                 var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                foreach (var property in item.EnumerateObject()) row[property.Name] = ToNetSuiteValue(property.Value);
+                foreach (var property in item.EnumerateObject())
+                    row[property.Name] = ToNetSuiteValue(property.Value);
                 rows.Add(row);
             },
             cancellationToken).ConfigureAwait(false);

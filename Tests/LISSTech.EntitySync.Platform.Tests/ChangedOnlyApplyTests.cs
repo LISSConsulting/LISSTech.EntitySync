@@ -309,7 +309,7 @@ public sealed class ChangedOnlyApplyTests
 
     private sealed class MutatingPlanRepository(Action<EntitySyncPlan>? mutatePlan) : IEntitySyncPlanRepository
     {
-        private readonly InMemoryEntitySyncPlanRepository inner = new();
+        private readonly TestEntitySyncPlanRepository inner = new();
 
         public void Add(EntitySyncPlan plan)
         {

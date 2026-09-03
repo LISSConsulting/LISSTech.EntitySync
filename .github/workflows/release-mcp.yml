@@ -7,10 +7,194 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  verify-control-plane:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-trixie@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ${{ secrets.ENTITYSYNC_TEST_POSTGRES_PASSWORD }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: Host=127.0.0.1;Port=5432;Database=postgres;Username=postgres;Password=${{ secrets.ENTITYSYNC_TEST_POSTGRES_PASSWORD }};Pooling=false
+      ENTITYSYNC_DATA_PROTECTION_KEY_PATH: /tmp/entitysync-release-keys
+      ENTITYSYNC_TENANT_IDS: release-verification
+      ENTITYSYNC_WORKER_LEASE_SECONDS: '60'
+      ENTITYSYNC_WORKER_HEARTBEAT_SECONDS: '10'
+      ENTITYSYNC_WORKER_RETRY_SECONDS: '5'
+      MCP_TRANSPORT: http
+      MCP_OAUTH_AUTHORITY: https://auth.example.com
+      MCP_OAUTH_RESOURCE: https://entitysync.example.com/mcp
+      MCP_OAUTH_AUDIENCE: api://entitysync
+      MCP_OAUTH_SCOPES: EntitySync.Read EntitySync.Operate EntitySync.Approve EntitySync.Manage EntitySync.Audit EntitySync.Expert
+      MCP_OAUTH_REQUIRED_SCOPE: EntitySync.Read
+      ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST: release-verification
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: https://logfire-us.pydantic.dev/v1/logs
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.ENTITYSYNC_TEST_OTEL_HEADERS }}
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build production API and scheduler images
+        run: |
+          docker build --file mcp/Dockerfile --tag entitysync-mcp:release-check .
+          docker build --file scheduler/Dockerfile --tag entitysync-scheduler:release-check .
+          api_image_id="$(docker image inspect --format '{{.Id}}' entitysync-mcp:release-check)"
+          scheduler_image_id="$(docker image inspect --format '{{.Id}}' entitysync-scheduler:release-check)"
+          test "${api_image_id#sha256:}" != "$api_image_id"
+          test "${scheduler_image_id#sha256:}" != "$scheduler_image_id"
+          test "$(docker run --rm --entrypoint id entitysync-mcp:release-check -u)" = '1654'
+          test "$(docker run --rm --entrypoint id entitysync-scheduler:release-check -u)" = '1654'
+          printf 'API image: %s\nScheduler image: %s\n' "$api_image_id" "$scheduler_image_id"
+
+      - name: Run migration, control, and end-to-end tests
+        run: >-
+          dotnet test
+          Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj
+          --configuration Release
+          --verbosity minimal
+
+      - name: Import the exact 16-command PowerShell module
+        shell: pwsh
+        run: |
+          dotnet build src/LISSTech.EntitySync.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module ./Build/Module/LISSTech.EntitySync.psd1 -Force
+          $expected = @(
+            'Connect-EntitySyncProfile',
+            'Connect-EntitySyncVendor',
+            'Export-EntitySyncPlan',
+            'Get-EntitySyncConnection',
+            'Get-EntitySyncEntity',
+            'Get-EntitySyncLookup',
+            'Get-EntitySyncProfile',
+            'Import-EntitySyncPlan',
+            'Invoke-EntitySyncChain',
+            'Invoke-EntitySyncNetSuiteSuiteQL',
+            'Invoke-EntitySyncPlan',
+            'New-EntitySyncPlan',
+            'Remove-EntitySyncProfile',
+            'Set-EntitySyncCustomProperty',
+            'Set-EntitySyncDefaultProfile',
+            'Test-EntitySyncConnection'
+          )
+          $expected = @($expected | Sort-Object)
+          $actual = @(Get-Command -Module LISSTech.EntitySync |
+            Select-Object -ExpandProperty Name | Sort-Object -Unique)
+          if ($actual.Count -ne 16) {
+            throw "Expected 16 imported commands, got $($actual.Count)."
+          }
+          if (Compare-Object $expected $actual) {
+            throw 'Imported command set differs from the exact release contract.'
+          }
+          $actual
+
+      - name: Run built images and require PostgreSQL readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_container=entitysync-mcp-release-check
+          scheduler_container=entitysync-scheduler-release-check
+          key_volume=entitysync-release-check-keys
+          cleanup() {
+            docker rm --force "$api_container" "$scheduler_container" >/dev/null 2>&1 || true
+            docker volume rm "$key_volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
+          docker volume create "$key_volume" >/dev/null
+
+          docker run --detach --name "$scheduler_container" \
+            --network host \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync/keys" \
+            --env ASPNETCORE_URLS=http://127.0.0.1:18081 \
+            --env DATABASE_URL \
+            --env ENTITYSYNC_TENANT_IDS \
+            --env ENTITYSYNC_WORKER_LEASE_SECONDS \
+            --env ENTITYSYNC_WORKER_HEARTBEAT_SECONDS \
+            --env ENTITYSYNC_WORKER_RETRY_SECONDS \
+            --env OTEL_EXPORTER_OTLP_LOGS_ENDPOINT \
+            --env OTEL_EXPORTER_OTLP_HEADERS \
+            --env OTEL_EXPORTER_OTLP_PROTOCOL \
+            --env OTEL_SERVICE_NAME=lisstech-entitysync-scheduler-release-check \
+            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync/keys \
+            entitysync-scheduler:release-check >/dev/null
+
+          docker run --detach --name "$api_container" \
+            --network host \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --mount "type=volume,source=$key_volume,target=/var/lib/entitysync/keys" \
+            --env ASPNETCORE_URLS=http://127.0.0.1:18080 \
+            --env DATABASE_URL \
+            --env ENTITYSYNC_TENANT_IDS \
+            --env ENTITYSYNC_WORKER_LEASE_SECONDS \
+            --env ENTITYSYNC_WORKER_HEARTBEAT_SECONDS \
+            --env ENTITYSYNC_WORKER_RETRY_SECONDS \
+            --env MCP_TRANSPORT \
+            --env MCP_OAUTH_AUTHORITY \
+            --env MCP_OAUTH_RESOURCE \
+            --env MCP_OAUTH_AUDIENCE \
+            --env MCP_OAUTH_SCOPES \
+            --env MCP_OAUTH_REQUIRED_SCOPE \
+            --env ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST \
+            --env OTEL_EXPORTER_OTLP_LOGS_ENDPOINT \
+            --env OTEL_EXPORTER_OTLP_HEADERS \
+            --env OTEL_EXPORTER_OTLP_PROTOCOL \
+            --env OTEL_SERVICE_NAME=lisstech-entitysync-mcp-release-check \
+            --env ENTITYSYNC_DATA_PROTECTION_KEY_PATH=/var/lib/entitysync/keys \
+            entitysync-mcp:release-check >/dev/null
+
+          test "$(docker inspect --format '{{.Config.User}}' "$api_container")" = '1654:1654'
+          test "$(docker inspect --format '{{.Config.User}}' "$scheduler_container")" = '1654:1654'
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$api_container")" = 'true'
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$scheduler_container")" = 'true'
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$api_container")" = '["ALL"]'
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$scheduler_container")" = '["ALL"]'
+          test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$api_container")" = '["no-new-privileges"]'
+          test "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$scheduler_container")" = '["no-new-privileges"]'
+          docker exec --user 1654:1654 "$api_container" \
+            sh -c 'test -w /var/lib/entitysync/keys && touch /var/lib/entitysync/keys/api-write-check'
+          docker exec --user 1654:1654 "$scheduler_container" \
+            sh -c 'test -w /var/lib/entitysync/keys && touch /var/lib/entitysync/keys/scheduler-write-check'
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:18081/health >/dev/null \
+                && curl --fail --silent --show-error http://127.0.0.1:18080/health/ready \
+                  | tee /tmp/entitysync-ready.json \
+                  | grep -q '"status":"ready"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$scheduler_container"
+          docker logs "$api_container"
+          exit 1
+
   publish:
+    needs: verify-control-plane
     strategy:
       matrix:
         include:
@@ -59,7 +243,6 @@ jobs:
           }
           $hash = (Get-FileHash "dist/$name.${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
           "$hash" | Out-File -NoNewline "dist/$name.${{ matrix.archive }}.sha256"
-          echo "HASH=$hash" >> $env:GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
@@ -71,6 +254,8 @@ jobs:
   release:
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -104,10 +289,9 @@ jobs:
           $version = $tag -replace '^mcp-v', ''
           $hash = '${{ steps.hash.outputs.win_hash }}'
           $url = "https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/$tag/lisstech-entitysync-mcp-win-x64.zip"
-
           $manifest = [ordered]@{
             version = $version
-            description = 'LISSTech EntitySync MCP server for natural-language vendor entity synchronization (HaloPSA, NetSuite, N-central, Bill.com, AgentController).'
+            description = 'LISSTech EntitySync MCP server for guarded vendor entity synchronization.'
             homepage = 'https://github.com/LISSConsulting/LISSTech.EntitySync'
             license = 'Proprietary'
             architecture = [ordered]@{
@@ -117,40 +301,16 @@ jobs:
                 bin = @(@('lisstech-entitysync-mcp.exe', 'lisstech-entitysync-mcp'))
               }
             }
-            checkver = [ordered]@{
-              url = 'https://api.github.com/repos/LISSConsulting/LISSTech.EntitySync/releases'
-              jsonpath = '$[?(@.tag_name =~ /^mcp-v/])].tag_name'
-              regex = 'mcp-v([\d.]+)'
-            }
-            autoupdate = [ordered]@{
-              architecture = [ordered]@{
-                '64bit' = [ordered]@{
-                  url = 'https://github.com/LISSConsulting/LISSTech.EntitySync/releases/download/mcp-v$version/lisstech-entitysync-mcp-win-x64.zip'
-                }
-              }
-            }
           }
-
           $json = $manifest | ConvertTo-Json -Depth 10
-          $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-          $b64 = [Convert]::ToBase64String($bytes)
-
-          $bucketRepo = 'LISSConsulting/scoop-bucket'
-          $manifestPath = 'bucket/lisstech-entitysync-mcp.json'
-          $branch = 'main'
-
-          $existing = gh api "repos/$bucketRepo/contents/$manifestPath?ref=$branch" --jq '.sha' 2>$null
           $payload = @{
             message = "Update lisstech-entitysync-mcp for $tag"
-            content = $b64
-            branch  = $branch
+            content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+            branch = 'main'
           }
+          $path = 'bucket/lisstech-entitysync-mcp.json'
+          $existing = gh api "repos/LISSConsulting/scoop-bucket/contents/$path?ref=main" --jq '.sha' 2>$null
           if ($existing) { $payload.sha = $existing }
           $payloadJson = $payload | ConvertTo-Json
-
-          $result = gh api "repos/$bucketRepo/contents/$manifestPath" -X PUT -f data=$payloadJson 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to publish manifest to $bucketRepo`: $result"
-            exit 1
-          }
-          Write-Host "Published $manifestPath to $bucketRepo@$branch (version $version, hash $($hash.Substring(0,12))...)"
+          gh api "repos/LISSConsulting/scoop-bucket/contents/$path" -X PUT -f data=$payloadJson
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

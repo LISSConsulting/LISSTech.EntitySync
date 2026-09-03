@@ -12,6 +12,9 @@ public sealed class SetEntitySyncCustomPropertyCommand : PSCmdlet
     [Parameter(Mandatory = true, Position = 0)]
     [ValidateSet("NCentral")]
     public string Vendor { get; set; } = string.Empty;
+    [Parameter]
+    public string? ConnectionId { get; set; }
+
 
     [Parameter(Position = 1)]
     [ValidateSet("Customer")]
@@ -36,8 +39,11 @@ public sealed class SetEntitySyncCustomPropertyCommand : PSCmdlet
     {
         try
         {
-            using var lease = ConnectionRegistry.Acquire(Vendor);
-            var adapter = lease.Connection.Adapter as NCentralEntityAdapter ?? throw new InvalidOperationException("Set-EntitySyncCustomProperty currently supports only N-central connections.");
+            using var lease = PowerShellConnectionLease.Acquire(
+                Vendor, ConnectionId);
+            var adapter = lease.Adapter as NCentralEntityAdapter
+                ?? throw new InvalidOperationException(
+                    "Set-EntitySyncCustomProperty currently supports only N-central connections.");
             if (!EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("N-central custom property updates currently support EntityType Customer.");
 
             if (!Apply)

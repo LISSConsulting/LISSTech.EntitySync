@@ -4,13 +4,15 @@ public static class EntitySyncVendors
 {
     public const string AgentController = "AgentController";
     public const string BillCom = "Bill.com";
+    public const string OrchestraMSP = "OrchestraMSP";
     public const string SophosCentral = "Sophos Central";
 
     public static string Normalize(string vendor)
     {
         if (IsBillCom(vendor)) return BillCom;
         if (IsSophosCentral(vendor)) return SophosCentral;
-        return IsAgentController(vendor) ? AgentController : vendor;
+        if (IsAgentController(vendor)) return AgentController;
+        return IsOrchestraMSP(vendor) ? OrchestraMSP : vendor;
     }
 
     public static bool IsBillCom(string? vendor)
@@ -36,4 +38,8 @@ public static class EntitySyncVendors
             && (vendor.Equals(AgentController, StringComparison.OrdinalIgnoreCase)
                 || vendor.Equals("LTAC", StringComparison.OrdinalIgnoreCase));
     }
+
+    public static bool IsOrchestraMSP(string? vendor) =>
+        vendor != null
+        && vendor.Equals(OrchestraMSP, StringComparison.OrdinalIgnoreCase);
 }

@@ -1,0 +1,43 @@
+using LISSTech.EntitySync.Core;
+
+namespace LISSTech.EntitySync.Ports;
+public enum ConnectionDefinitionDeleteResult
+{
+    Deleted,
+    Referenced,
+    NotFound,
+    GenerationMismatch
+}
+
+
+public interface IConnectionDefinitionRepository
+{
+    Task<EntitySyncConnectionDefinition> InsertAsync(
+        string tenantId,
+        EntitySyncConnectionDefinition definition,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncConnectionDefinition?> GetAsync(
+        string tenantId,
+        string connectionId,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<EntitySyncConnectionDefinition>> ListAsync(
+        string tenantId,
+        string? vendor,
+        bool? enabled,
+        CancellationToken cancellationToken);
+
+    Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        EntitySyncConnectionDefinition nextGeneration,
+        CancellationToken cancellationToken);
+
+    Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        CancellationToken cancellationToken);
+}

@@ -1,4 +1,9 @@
+using System.Net;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization.Policy;
+using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi.Writers;
+using Swashbuckle.AspNetCore.Swagger;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,8 +14,11 @@ using ModelContextProtocol.AspNetCore.Authentication;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
+using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp;
+using LISSTech.EntitySync.Mcp.ControlApi;
 
 var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio").Trim().ToLowerInvariant();
 
@@ -38,8 +46,8 @@ static async Task RunStdioAsync(string[] args)
     });
 
     builder.Services.AddEntitySyncPlatform(
-        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
-    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
+        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
+        EntitySyncHostMode.LocalStdio);
 
     builder.Services
         .AddMcpServer(EntitySyncMcpMetadata.Configure)
@@ -53,7 +61,12 @@ static async Task RunStdioAsync(string[] args)
 
 static async Task RunHttpAsync(string[] args)
 {
-    var authority = RequireHttpsUri("MCP_OAUTH_AUTHORITY");
+    var builder = WebApplication.CreateBuilder(args);
+    var authorityConfiguration = McpAuthorityConfiguration.Resolve(
+        Environment.GetEnvironmentVariable("MCP_OAUTH_AUTHORITY"),
+        builder.Environment.EnvironmentName,
+        Environment.GetEnvironmentVariable("ENTITYSYNC_TEST_ALLOW_HTTP_OAUTH_AUTHORITY"));
+    var authority = authorityConfiguration.Value;
     var resource = RequireHttpsUri("MCP_OAUTH_RESOURCE");
     var audience = (Environment.GetEnvironmentVariable("MCP_OAUTH_AUDIENCE") ?? resource).Trim();
     if (string.IsNullOrWhiteSpace(audience))
@@ -77,7 +90,9 @@ static async Task RunHttpAsync(string[] args)
     if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
         throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
-    var builder = WebApplication.CreateBuilder(args);
+    var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
+
+
     var serviceVersion = typeof(McpRequestContext).Assembly.GetName().Version?.ToString(3)
         ?? throw new InvalidOperationException("EntitySync MCP assembly version is unavailable.");
     var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
@@ -106,6 +121,7 @@ static async Task RunHttpAsync(string[] args)
                 NameClaimType = "name",
                 RoleClaimType = "roles"
             };
+            options.RequireHttpsMetadata = authorityConfiguration.RequireHttpsMetadata;
         })
         .AddMcp(options =>
         {
@@ -119,13 +135,52 @@ static async Task RunHttpAsync(string[] args)
             };
         });
 
-    builder.Services.AddAuthorization(options => McpAuthorization.AddPolicy(options, requiredScope));
+    builder.Services.AddAuthorization(options =>
+    {
+        McpAuthorization.AddPolicy(options, requiredScope);
+        ControlAuthorization.AddPolicies(
+            options, ControlAuthorization.ReadWorkloadAllowlist());
+    });
     builder.Services.AddHttpContextAccessor();
     builder.Services.AddScoped<McpRequestContext>();
+    builder.Services.AddScoped(provider => ControlRequestContext.Create(
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext?.User
+        ?? throw new InvalidOperationException("The current HTTP context is unavailable.")));
+    builder.Services.AddScoped<IControlApiQueries, ControlApiQueries>();
+    builder.Services.AddScoped<IdempotencyEndpointFilter>();
+    builder.Services.AddSingleton<ControlCursorProtector>();
+    builder.Services.AddSingleton<IControlReadinessProbe, ControlReadinessProbe>();
+    builder.Services.AddSingleton<
+        Microsoft.AspNetCore.Authorization.IAuthorizationMiddlewareResultHandler,
+        ControlAuthorizationResultHandler>();
+    builder.Services.AddProblemDetails();
+    builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(
+        options => options.ThrowOnBadRequest = true);
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new OpenApiInfo
+        {
+            Title = "LISSTech EntitySync Control API",
+            Version = "v1"
+        });
+        options.SchemaFilter<CanonicalShadowEntitySchemaFilter>();
+        options.CustomOperationIds(description =>
+            description.ActionDescriptor.EndpointMetadata
+                .OfType<Microsoft.AspNetCore.Routing.EndpointNameMetadata>()
+                .SingleOrDefault()?.EndpointName);
+    });
 
     builder.Services.AddEntitySyncPlatform(
-        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
-    builder.Services.AddSingleton<EntitySyncApplyCoordinator>();
+        Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
+        EntitySyncHostMode.Http,
+        workerSettings);
+    builder.Services.AddSingleton<ControlCanonicalChangeRepository>();
+    builder.Services.AddSingleton<ICanonicalChangeRepository>(provider =>
+        provider.GetRequiredService<ControlCanonicalChangeRepository>());
+    builder.Services.AddSingleton<IEntitySyncWorkSignal>(provider =>
+        provider.GetRequiredService<ControlCanonicalChangeRepository>());
+    builder.Services.AddSingleton<CanonicalChangeService>();
 
     builder.Services
         .AddMcpServer(EntitySyncMcpMetadata.Configure)
@@ -133,6 +188,7 @@ static async Task RunHttpAsync(string[] args)
         .WithToolsFromAssembly();
 
     var app = builder.Build();
+    app.UseControlApiErrors();
     app.Logger.LogInformation("Logfire logging configured: {LogfireConfiguration}", logfireSettings);
     if (oauthChallengeHints is not null)
     {
@@ -159,8 +215,36 @@ static async Task RunHttpAsync(string[] args)
     app.UseAuthentication();
     app.UseAuthorization();
 
-    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
-    app.MapMcp("/mcp").RequireAuthorization("mcp");
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+        .ExcludeFromDescription();
+    app.MapGet("/health/ready", async (
+        IControlReadinessProbe readiness,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await readiness.CheckAsync(cancellationToken).ConfigureAwait(false);
+        return Results.Json(
+            new
+            {
+                status = result.Ready ? "ready" : "unready",
+                result.DatabaseMigrations,
+                result.KeyRing,
+                result.WorkerHeartbeat
+            },
+            statusCode: result.Ready
+                ? StatusCodes.Status200OK
+                : StatusCodes.Status503ServiceUnavailable);
+    }).ExcludeFromDescription();
+    app.MapGet("/openapi/v1.json", (ISwaggerProvider swagger) =>
+    {
+        var document = swagger.GetSwagger("v1");
+        using var text = new StringWriter();
+        var writer = new OpenApiJsonWriter(text);
+        document.SerializeAsV3(writer);
+        writer.Flush();
+        return Results.Text(text.ToString(), "application/json");
+    }).RequireAuthorization(ControlPolicies.Read).ExcludeFromDescription();
+    app.MapControlApi();
+    app.MapMcp("/mcp").RequireAuthorization("mcp").ExcludeFromDescription();
 
     await app.RunAsync();
 }
@@ -177,6 +261,50 @@ static string RequireHttpsUri(string variableName)
         throw new InvalidOperationException($"{variableName} must be an absolute HTTPS URI without user info, a query, or a fragment when MCP_TRANSPORT=http.");
 
     return uri.AbsoluteUri;
+}
+
+internal sealed record McpAuthority(string Value, bool RequireHttpsMetadata);
+
+internal static class McpAuthorityConfiguration
+{
+    internal static McpAuthority Resolve(
+        string? configuredValue,
+        string environmentName,
+        string? allowInsecureTestAuthority)
+    {
+        var value = configuredValue?.Trim();
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw InvalidAuthority();
+        }
+
+        if (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return new McpAuthority(uri.AbsoluteUri, true);
+
+        var explicitlyAllowedForTests =
+            (environmentName.Equals(Environments.Development, StringComparison.OrdinalIgnoreCase)
+             || environmentName.Equals("Testing", StringComparison.OrdinalIgnoreCase))
+            && bool.TryParse(allowInsecureTestAuthority, out var allow)
+            && allow;
+        if (!explicitlyAllowedForTests
+            || !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            || !IPAddress.TryParse(uri.Host, out var address)
+            || !IPAddress.IsLoopback(address))
+        {
+            throw InvalidAuthority();
+        }
+
+        return new McpAuthority(uri.AbsoluteUri, false);
+    }
+
+    private static InvalidOperationException InvalidAuthority() =>
+        new(
+            "MCP_OAUTH_AUTHORITY must be an absolute HTTPS authority without user info, " +
+            "a query, or a fragment when MCP_TRANSPORT=http. Loopback HTTP is available " +
+            "only to explicitly enabled Development and Testing hosts.");
 }
 
 
@@ -213,6 +341,7 @@ internal sealed class OAuthChallengeHints
         string? scopes)
     {
         ResourceMetadataEndpoint = resourceMetadataEndpoint;
+
         AuthorizationEndpoint = authorizationEndpoint;
         TokenEndpoint = tokenEndpoint;
         ClientId = clientId;
@@ -317,3 +446,5 @@ internal sealed class OAuthChallengeHints
         return trimmed;
     }
 }
+
+public partial class Program;

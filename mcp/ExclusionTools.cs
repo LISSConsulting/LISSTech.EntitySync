@@ -13,7 +13,7 @@ public static class ExclusionTools
     [McpServerTool]
     [Description("List active permanent source-entity exclusions for one exact synchronization route. An empty result is a successfully loaded empty policy.")]
     public static async Task<string> ListEntityExclusions(
-        EntityExclusionService service,
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
         ILoggerFactory loggerFactory,
         [Description("Source vendor")] string sourceVendor,
@@ -26,7 +26,7 @@ public static class ExclusionTools
     {
         try
         {
-            var exclusions = await service.ListAsync(Route(context, sourceVendor, targetVendor, sourceConnectionId, sourceEntityType, targetConnectionId, targetEntityType), cancellationToken).ConfigureAwait(false);
+            var exclusions = await commands.ListExclusionsAsync(Route(context, sourceVendor, targetVendor, sourceConnectionId, sourceEntityType, targetConnectionId, targetEntityType), cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Serialize(new
             {
                 success = true,

@@ -5,8 +5,7 @@ using LISSTech.EntitySync.Ports;
 namespace LISSTech.EntitySync.Application;
 
 public sealed class EntitySyncPlanner(
-    IEntityConnectionRepository connections,
-    IEntitySyncPlanRepository plans,
+    IConnectionRuntimeFactory connections,
     IEntityExclusionRepository exclusions,
     IEntityMatcher matcher,
     IEntityMapper mapper,
@@ -14,21 +13,73 @@ public sealed class EntitySyncPlanner(
     IEntityGraphRepository graph)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
+    private IEntitySyncPlanRepository? legacyPlans;
 
-    public async Task<EntitySyncPlan> CreateAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken)
+    public EntitySyncPlanner(
+        IConnectionRuntimeFactory connections,
+        IEntitySyncPlanRepository plans,
+        IEntityExclusionRepository exclusions,
+        IEntityMatcher matcher,
+        IEntityMapper mapper,
+        IEntitySyncChangeStateRepository changeStates,
+        IEntityGraphRepository graph)
+        : this(connections, exclusions, matcher, mapper, changeStates, graph)
     {
+        legacyPlans = plans;
+    }
+
+    public async Task<EntitySyncPlan> CreateAsync(
+        CreateEntitySyncPlanRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
         Validate(request);
         var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
         var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
         ValidateWorkflow(sourceVendor, targetVendor);
-        using var sourceLease = connections.Acquire(request.TenantId, sourceVendor, request.SourceConnectionId);
-        using var targetLease = connections.Acquire(request.TenantId, targetVendor, request.TargetConnectionId);
-        var sourceConnection = sourceLease.Connection;
-        var targetConnection = targetLease.Connection;
+        await using var sourceLease = await connections.AcquireCurrentAsync(
+            request.TenantId,
+            sourceVendor,
+            request.SourceConnectionId,
+            cancellationToken).ConfigureAwait(false);
+        await using var targetLease = await connections.AcquireCurrentAsync(
+            request.TenantId,
+            targetVendor,
+            request.TargetConnectionId,
+            cancellationToken).ConfigureAwait(false);
+        var plan = await CreateSnapshotAsync(
+            request,
+            sourceLease,
+            targetLease,
+            cancellationToken).ConfigureAwait(false);
+        legacyPlans?.Add(plan);
+        return plan;
+    }
+
+    public async Task<EntitySyncPlan> CreateSnapshotAsync(
+        CreateEntitySyncPlanRequest request,
+        IConnectionRuntimeLease sourceLease,
+        IConnectionRuntimeLease targetLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(sourceLease);
+        ArgumentNullException.ThrowIfNull(targetLease);
+        Validate(request);
+        var sourceVendor = EntitySyncVendors.Normalize(request.SourceVendor);
+        var targetVendor = EntitySyncVendors.Normalize(request.TargetVendor);
+        ValidateWorkflow(sourceVendor, targetVendor);
+        var sourceConnection = sourceLease.Definition;
+        var targetConnection = targetLease.Definition;
+        ValidatePinnedLease(
+            request, sourceVendor, request.SourceConnectionId, sourceConnection, nameof(sourceLease));
+        ValidatePinnedLease(
+            request, targetVendor, request.TargetConnectionId, targetConnection, nameof(targetLease));
         var sourceType = request.SourceEntityType
-            ?? (sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) && EntitySyncVendors.IsAgentController(targetVendor)
-                ? "CustomerScope"
-                : DefaultEntityType(sourceVendor));
+            ?? (sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+                && EntitySyncVendors.IsAgentController(targetVendor)
+                    ? "CustomerScope"
+                    : DefaultEntityType(sourceVendor));
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
         var authoritativeBillSnapshot = BillComPlanReconciliation.IsAuthoritativeRoute(sourceVendor, sourceType, targetVendor, targetType);
@@ -64,55 +115,95 @@ public sealed class EntitySyncPlanner(
 
 
 
-        var sourceQuery = new EntityQuery
-        {
-            EntityType = sourceType,
-            Search = request.SourceSearch?.Trim(),
-            IncludeInactive = request.IncludeInactive,
-            Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1,
-            FullObjects = authoritativeBillSnapshot,
-            RequiredCustomFieldName = RequiredSourceCustomFieldName(sourceVendor, targetVendor, authoritativeBillSnapshot)
-        };
-        var targetQuery = new EntityQuery { EntityType = targetType, IncludeInactive = true, Count = MaxEntitiesPerPlanSide + 1 };
-        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)) targetQuery.RequiredCustomFieldName = customFieldName;
-
         IReadOnlyList<ExternalEntity> sources;
-        if (authoritativeAgentControllerSnapshot)
+        if (request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
         {
-            var customers = await sourceConnection.Adapter.GetEntitiesAsync(
-                new EntityQuery
-                {
-                    EntityType = "Customer",
-                    IncludeInactive = request.IncludeInactive,
-                    Count = MaxEntitiesPerPlanSide + 1
-                },
-                cancellationToken).ConfigureAwait(false);
-            var sites = await sourceConnection.Adapter.GetEntitiesAsync(
-                new EntityQuery
-                {
-                    EntityType = "Site",
-                    IncludeInactive = request.IncludeInactive,
-                    Count = MaxEntitiesPerPlanSide + 1
-                },
-                cancellationToken).ConfigureAwait(false);
-            sources = customers.Concat(sites).ToArray();
+            if (!sourceVendor.Equals("OrchestraMSP", StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Pinned canonical sources are restricted to OrchestraMSP control work.");
+            var expectedSourceId = request.SourceEntityId?.Trim();
+            var pinnedIds = new HashSet<Guid>();
+            foreach (var pinned in request.PinnedCanonicalSources)
+            {
+                if (!pinnedIds.Add(pinned.CanonicalEntityId)
+                    || pinned.CanonicalVersion <= 0
+                    || !pinned.Entity.Vendor.Equals("OrchestraMSP", StringComparison.Ordinal)
+                    || pinned.Entity.Id != pinned.CanonicalEntityId.ToString("D")
+                    || !pinned.Entity.EntityType.Equals(sourceType, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Pinned canonical source identity or version is invalid.");
+            }
+            if (expectedSourceId is not null
+                && (request.PinnedCanonicalSources.Count != 1
+                    || request.PinnedCanonicalSources[0].CanonicalEntityId.ToString("D")
+                        != expectedSourceId))
+                throw new InvalidOperationException(
+                    "Pinned canonical source identity does not match the durable selection.");
+            sources = request.PinnedCanonicalSources.Select(value => value.Entity).ToArray();
         }
         else
         {
-            sources = await sourceConnection.Adapter.GetEntitiesAsync(sourceQuery, cancellationToken).ConfigureAwait(false);
+            var sourceQuery = new EntityQuery
+            {
+                EntityType = sourceType,
+                Search = request.SourceSearch?.Trim(),
+                IncludeInactive = request.IncludeInactive,
+                Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1,
+                FullObjects = authoritativeBillSnapshot,
+                RequiredCustomFieldName = RequiredSourceCustomFieldName(
+                    sourceVendor,
+                    targetVendor,
+                    authoritativeBillSnapshot)
+            };
+            if (authoritativeAgentControllerSnapshot)
+            {
+                var customers = await ReadEntitiesAsync(
+                    sourceLease.Adapter,
+                    new EntityQuery
+                    {
+                        EntityType = "Customer",
+                        IncludeInactive = request.IncludeInactive,
+                        Count = MaxEntitiesPerPlanSide + 1
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                var sites = await ReadEntitiesAsync(
+                    sourceLease.Adapter,
+                    new EntityQuery
+                    {
+                        EntityType = "Site",
+                        IncludeInactive = request.IncludeInactive,
+                        Count = MaxEntitiesPerPlanSide + 1
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                sources = customers.Concat(sites).ToArray();
+            }
+            else
+            {
+                sources = await ReadEntitiesAsync(
+                    sourceLease.Adapter, sourceQuery, cancellationToken).ConfigureAwait(false);
+            }
+            if (request.SourceEntityId is not null)
+            {
+                var expectedSourceId = request.SourceEntityId.Trim();
+                sources = sources
+                    .Where(source => source.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (sources.Count != 1)
+                    throw new ArgumentException(
+                        $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
+                        nameof(request));
+            }
         }
-        if (request.SourceEntityId is not null)
+        var targetQuery = new EntityQuery
         {
-            var expectedSourceId = request.SourceEntityId.Trim();
-            sources = sources
-                .Where(source => source.Id.Equals(expectedSourceId, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (sources.Count != 1)
-                throw new ArgumentException(
-                    $"Source entity ID '{expectedSourceId}' was not returned exactly once by the bounded source query. Adjust sourceSearch/sourceCount and retry.",
-                    nameof(request));
-        }
-        var targets = await targetConnection.Adapter.GetEntitiesAsync(targetQuery, cancellationToken).ConfigureAwait(false);
+            EntityType = targetType,
+            IncludeInactive = true,
+            Count = MaxEntitiesPerPlanSide + 1
+        };
+        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+            targetQuery.RequiredCustomFieldName = customFieldName;
+        var targets = await ReadEntitiesAsync(
+            targetLease.Adapter, targetQuery, cancellationToken).ConfigureAwait(false);
 
         IReadOnlyDictionary<string, EntityExclusion> exclusionsBySourceId;
         if (request.CreateMissing)
@@ -120,10 +211,10 @@ public sealed class EntitySyncPlanner(
             var exclusionRoute = EntityExclusionRoute.Create(
                 request.TenantId,
                 sourceVendor,
-                sourceConnection.Id,
+                sourceConnection.ConnectionId,
                 sourceType,
                 targetVendor,
-                targetConnection.Id,
+                targetConnection.ConnectionId,
                 targetType);
             try
             {
@@ -150,11 +241,11 @@ public sealed class EntitySyncPlanner(
         if (sources.Count > MaxEntitiesPerPlanSide || targets.Count > MaxEntitiesPerPlanSide)
             throw new InvalidOperationException($"A plan is limited to {MaxEntitiesPerPlanSide} source and target entities. Narrow the synchronization scope.");
 
-        var customerLinks = HaloNCentralPlanLinks.IsCustomerPlan(sourceVendor, sourceType, targetVendor, targetType, sourceConnection.Adapter);
-        var siteLinks = HaloNCentralPlanLinks.IsSitePlan(sourceVendor, sourceType, targetVendor, targetType, sourceConnection.Adapter);
+        var customerLinks = HaloNCentralPlanLinks.IsCustomerPlan(sourceVendor, sourceType, targetVendor, targetType, sourceLease.Adapter);
+        var siteLinks = HaloNCentralPlanLinks.IsSitePlan(sourceVendor, sourceType, targetVendor, targetType, sourceLease.Adapter);
         if (customerLinks || siteLinks)
         {
-            await HaloNCentralPlanLinks.ApplyAsync(sources, targets, sourceConnection.Adapter, siteLinks, cancellationToken).ConfigureAwait(false);
+            await HaloNCentralPlanLinks.ApplyAsync(sources, targets, sourceLease.Adapter, siteLinks, cancellationToken).ConfigureAwait(false);
         }
 
         var externalIdName = request.SourceExternalIdName
@@ -183,10 +274,10 @@ public sealed class EntitySyncPlanner(
                 request.TenantId,
                 request.ChangeStateScope!,
                 sourceVendor,
-                sourceConnection.Id,
+                sourceConnection.ConnectionId,
                 sourceType,
                 targetVendor,
-                targetConnection.Id,
+                targetConnection.ConnectionId,
                 targetType);
             storedChangeStates = await changeStates
                 .GetBySourceIdsAsync(route, sources.Select(source => source.Id).ToArray(), cancellationToken)
@@ -203,9 +294,9 @@ public sealed class EntitySyncPlanner(
             TargetCandidates = targets.ToList(),
             Execution = new EntitySyncPlanExecution
             {
-                SourceConnectionId = sourceConnection.Id,
+                SourceConnectionId = sourceConnection.ConnectionId,
                 SourceConnectionGeneration = sourceConnection.Generation,
-                TargetConnectionId = targetConnection.Id,
+                TargetConnectionId = targetConnection.ConnectionId,
                 TargetConnectionGeneration = targetConnection.Generation,
                 MatchOptions = options,
                 UpdatePolicy = request.UpdatePolicy,
@@ -215,7 +306,7 @@ public sealed class EntitySyncPlanner(
         await ObserveEntitiesAsync(
             plan.TenantId,
             sourceVendor,
-            sourceConnection.Id,
+            sourceConnection.ConnectionId,
             sourceType,
             sources,
             plan.CreatedAt,
@@ -224,7 +315,7 @@ public sealed class EntitySyncPlanner(
         await ObserveEntitiesAsync(
             plan.TenantId,
             targetVendor,
-            targetConnection.Id,
+            targetConnection.ConnectionId,
             targetType,
             targets,
             plan.CreatedAt,
@@ -248,14 +339,28 @@ public sealed class EntitySyncPlanner(
             }
 
             var item = CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks);
-            if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!, request.BootstrapExactNameLinks);
+            if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+                && EntitySyncVendors.IsOrchestraMSP(targetVendor)
+                && (targetType.Equals("Site", StringComparison.OrdinalIgnoreCase)
+                    || targetType.Equals(
+                        "Address", StringComparison.OrdinalIgnoreCase)))
+                await ResolveCreateParentAsync(
+                    item,
+                    targetLease.Adapter,
+                    sourceConnection.PlatformInstanceId,
+                    cancellationToken).ConfigureAwait(false);
+            if (changedOnly)
+                ApplyChangedOnlyPolicy(
+                    item,
+                    options,
+                    storedChangeStates!,
+                    request.BootstrapExactNameLinks);
             plan.Items.Add(item);
         }
         BillComPlanReconciliation.AddApprovedTargetOperations(plan);
         await graph.ObserveRelationshipsAsync(
             CreateRelationshipObservations(plan),
             cancellationToken).ConfigureAwait(false);
-        plans.Add(plan);
         return plan;
     }
 
@@ -382,6 +487,57 @@ public sealed class EntitySyncPlanner(
         return item;
     }
 
+    private static async Task ResolveCreateParentAsync(
+        EntitySyncPlanItem item,
+        IEntityAdapter targetAdapter,
+        Guid? sourcePlatformInstanceId,
+        CancellationToken cancellationToken)
+    {
+        if (sourcePlatformInstanceId is null)
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_SOURCE_PLATFORM_INSTANCE_UNCONFIGURED");
+            return;
+        }
+        if (targetAdapter is not IEntityWriteParentResolver resolver)
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_PARENT_RESOLVER_UNAVAILABLE");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(item.Source.ParentEntityType)
+            || string.IsNullOrWhiteSpace(item.Source.ParentId))
+        {
+            HoldForParentReview(
+                item, "ORCHESTRA_PARENT_LINK_MISSING");
+            return;
+        }
+        var resolution = await resolver.ResolveWriteParentAsync(
+            new EntityWriteParentResolutionRequest(
+                item.Source.Vendor,
+                sourcePlatformInstanceId.Value.ToString("D"),
+                item.Source.ParentEntityType,
+                item.Source.ParentId),
+            cancellationToken).ConfigureAwait(false);
+        if (resolution.Status == EntityWriteParentResolutionStatus.Resolved
+            && resolution.Parent is not null)
+        {
+            item.ResolvedTargetParent = resolution.Parent;
+            return;
+        }
+        HoldForParentReview(item, resolution.SafeCode);
+    }
+
+    private static void HoldForParentReview(
+        EntitySyncPlanItem item,
+        string safeCode)
+    {
+        item.Action = "Review";
+        item.MatchType = "ParentLinkReview";
+        item.Reasons.Add(
+            $"Canonical parent resolution requires review ({safeCode}).");
+    }
+
     private void ApplyChangedOnlyPolicy(
         EntitySyncPlanItem item,
         MatchOptions options,
@@ -418,6 +574,26 @@ public sealed class EntitySyncPlanner(
         }
     }
 
+    private static void ValidatePinnedLease(
+        CreateEntitySyncPlanRequest request,
+        string expectedVendor,
+        string? requestedConnectionId,
+        EntitySyncConnectionDefinition definition,
+        string parameterName)
+    {
+        if (!definition.Enabled
+            || !definition.TenantId.Equals(request.TenantId.Trim(), StringComparison.Ordinal)
+            || !definition.Vendor.Equals(expectedVendor, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException(
+                "The pinned connection lease does not match the requested tenant and vendor.",
+                parameterName);
+
+        if (requestedConnectionId is not null
+            && !definition.ConnectionId.Equals(requestedConnectionId.Trim(), StringComparison.Ordinal))
+            throw new ArgumentException(
+                "The pinned connection lease does not match the requested connection ID.",
+                parameterName);
+    }
     private static bool IsSafeExactNameBootstrap(EntitySyncPlanItem item, MatchOptions options)
     {
         if (item.Target is null
@@ -458,6 +634,13 @@ public sealed class EntitySyncPlanner(
             if (string.IsNullOrWhiteSpace(request.SourceEntityId)) throw new ArgumentException("Source entity ID cannot be blank when supplied.", nameof(request));
             if (request.SourceEntityId.Trim().Length > 512) throw new ArgumentException("Source entity ID cannot exceed 512 characters.", nameof(request));
         }
+        if (request.PinnedCanonicalSources.Count > MaxEntitiesPerPlanSide)
+            throw new ArgumentOutOfRangeException(
+                nameof(request), $"Pinned canonical sources are limited to {MaxEntitiesPerPlanSide}.");
+        if ((request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
+            && (request.SourceSearch is not null || request.SourceCount is not null))
+            throw new ArgumentException(
+                "Pinned canonical work cannot combine bounded search inputs.", nameof(request));
         if (request.UpdatePolicy == EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly
             && !IsValidChangeStateScope(request.ChangeStateScope))
             throw new ArgumentException(
@@ -485,7 +668,8 @@ public sealed class EntitySyncPlanner(
     private static string DefaultEntityType(string vendor) => vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(vendor) ? "Client" : "Customer";
     private static string DefaultExternalIdName(string vendor)
     {
-        if (EntitySyncVendors.IsBillCom(vendor)) return EntitySyncIntegrationContracts.BillComClientExternalIdName;
+        if (EntitySyncVendors.IsBillCom(vendor))
+            return EntitySyncIntegrationContracts.BillComClientExternalIdName;
         return EntitySyncVendors.IsSophosCentral(vendor)
             ? EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName
             : "NetSuiteInternalId";
@@ -496,7 +680,8 @@ public sealed class EntitySyncPlanner(
         string targetVendor,
         bool authoritativeBillSnapshot)
     {
-        if (authoritativeBillSnapshot) return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+        if (authoritativeBillSnapshot)
+            return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
         return sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && EntitySyncVendors.IsSophosCentral(targetVendor)
                 ? EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName
@@ -507,10 +692,36 @@ public sealed class EntitySyncPlanner(
     {
         if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
         {
-            if (EntitySyncVendors.IsBillCom(sourceVendor)) return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
-            if (EntitySyncVendors.IsSophosCentral(sourceVendor)) return EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName;
+            if (EntitySyncVendors.IsBillCom(sourceVendor))
+                return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+            if (EntitySyncVendors.IsSophosCentral(sourceVendor))
+                return EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName;
         }
 
         return "CFNetSuiteCustomerID";
+    }
+
+    private static async Task<IReadOnlyList<ExternalEntity>> ReadEntitiesAsync(
+        IEntityAdapter adapter,
+        EntityQuery query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await adapter.GetEntitiesAsync(query, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (EntitySyncDependencyUnavailableException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new EntitySyncDependencyUnavailableException(
+                "The entity adapter is unavailable.", exception);
+        }
     }
 }

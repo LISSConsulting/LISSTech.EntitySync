@@ -400,28 +400,39 @@ The intended workflow is **inspect → plan → review → dry run → apply**. 
 
 ---
 
-## 🌐 MCP Server & Full-Chain Changed-Only Scheduler
+## 🌐 MCP Server & Durable Control Plane
 
-`mcp/` is a first-class MCP host for the same adapters, canonical model, matcher, plans, and guarded apply path used by the PowerShell module. Local clients use stdio by default. Container deployments use authenticated Streamable HTTP at `/mcp` and expose `/health` for orchestration.
+`mcp/` is the authenticated control-plane API and MCP host for tenant-scoped connections,
+immutable policies, plans, complete inspection, digest-bound approvals, runs, schedules,
+exclusions, retained entity records, relationships, and audit evidence. Local clients use
+stdio; container deployments use OAuth-protected Streamable HTTP at `/mcp` and the typed
+`/api/v1/control/*` surface.
 
-Every vendor read and sync plan observed by the MCP host or scheduler is retained in PostgreSQL as a canonical current record plus payload-hash version history. EntitySync owns typed cross-vendor relationship edges and their proposed, confirmed, or removed lifecycle; vendor IDs written into HaloPSA remain operational projections rather than the system of record. MCP clients can query the retained graph with `get_entity_records` and `get_entity_relationships`.
+Every vendor read and plan observation is retained in PostgreSQL as a canonical current
+record plus payload-hash history. EntitySync owns typed cross-vendor relationship edges
+and their proposed, confirmed, or removed lifecycle. MCP clients can query the retained
+graph with `get_entity_records` and `get_entity_relationships`.
 
-`scheduler/` is an internal-only sidecar for the ordered NetSuite Customer → HaloPSA Client → N-central Customer, BILL.com Client, and Sophos Central Customer chain. It reconciles immediately at startup and then 12 hours after each completion. Every edge includes active and inactive sources and ordinarily updates only persistently linked targets. The BILL.com leaf may bootstrap a missing HaloPSA ID only when exactly one active BILL.com value has the same normalized client name; fuzzy, ambiguous, and inactive matches remain unwritable. It does not create unmatched records or delete orphan BILL.com values. A linked BILL.com rename still uses BILL.com's required replacement flow—create the renamed value, write its ID back to HaloPSA, then delete the old value. PostgreSQL holds successful desired-state hashes for each edge and one advisory lock for the complete chain. The first run establishes each edge's baseline; later runs skip identical mapped writes. Edges execute in order, but a connection, planning, validation, approval, or apply failure is isolated to the affected edge so remaining routes still run; the aggregate run remains failed. Failures do not trigger immediate retries or make `/health` unhealthy.
-
-The scheduler root serves an Entra-authenticated, read-only React 19 and Vite 8 operations dashboard showing the active stage, configured route chain, aggregate results, bounded recent plan and run summaries, and a scheduler-authored payload-free event log. An adapted Aceternity Background Lines animation, bundled Archivo and Nunito Sans fonts, and the LISSTech blue/red palette are compiled locally from `scheduler-ui/`; the JSON feed and history remain process-local and exclude vendor payloads and entity names.
+`scheduler/` leases durable policy, canonical-change, and operation work from PostgreSQL.
+It uses tenant and route fencing, renews leases with database time, consumes each approval
+once, and reconciles unknown vendor outcomes before retry. No fixed vendor chain,
+process-local scheduler history, browser dashboard, or independently authenticated
+`POST /run` control remains after cutover.
 
 ```powershell
-just dashboard-build # compile React assets into scheduler/wwwroot
-just dashboard-dev   # Vite development server with scheduler API proxying
 just mcp-build       # self-contained local MCP binary
 just mcp-run         # stdio transport
-just scheduler-build # dashboard plus self-contained scheduler binary
-just scheduler-run   # internal HTTP scheduler
+just scheduler-build # self-contained durable scheduler binary
+just scheduler-run   # internal scheduler host
 ```
 
-The root `docker-compose.yaml` builds digest-pinned, non-root, read-only MCP and scheduler images for Coolify. Configure OAuth for MCP and a single-tenant Entra web application for the scheduler dashboard. Set the shared PostgreSQL, Logfire, NetSuite, HaloPSA, N-central, BILL.com, and Sophos Central variables, a high-entropy `SCHEDULER_RUN_TOKEN`, and `DASHBOARD_PUBLIC_ORIGIN`. The dashboard, its assets, `/dashboard/data`, and `/status` require an authenticated Entra session; `/health` remains anonymous for orchestration, and `POST /run` retains its independent bearer-token authorization.
+The root `docker-compose.yaml` builds digest-pinned, non-root, read-only API and scheduler
+images for Coolify. Configure OAuth, PostgreSQL, the shared Data Protection key ring,
+bounded worker intervals, tenant IDs, and OTLP logging. Apply migrations before starting
+workers; expose only the authenticated API and keep the scheduler internal.
 
-See [`mcp/README.md`](mcp/README.md) for the exact Coolify procedure, scheduler status allowlist, security controls, variables, transports, and operational constraints.
+See [`mcp/README.md`](mcp/README.md) for the exact deployment, readiness, recovery, and
+security contract.
 
 ---
 

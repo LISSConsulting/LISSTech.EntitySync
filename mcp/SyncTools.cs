@@ -2,6 +2,8 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LISSTech.EntitySync.Application;
+using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Ports;
 using ModelContextProtocol.Server;
 
 namespace LISSTech.EntitySync.Mcp;
@@ -10,22 +12,13 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Plan an EntitySync, Entity Sync, ES, client sync, customer sync, or account/company reconciliation between supported vendors. Planning performs no vendor writes and retains observations in EntitySync's durable graph. Use sourceSearch/sourceCount for focused work and sourceEntityId to assert the immutable source ID. Inspect every page and approve its digest before apply.")]
+    [Description("Create an immutable tenant-scoped EntitySync/ES plan for client sync, customer sync, account sync, company sync, or cross-vendor reconciliation from an explicit persisted policy. Planning is read-only. Inspect every page and approve its digest before apply.")]
     public static async Task<string> CreateSyncPlan(
-        EntitySyncService service,
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
-        [Description("Source vendor: HaloPSA, NetSuite, NCentral, Bill.com, or Sophos Central")] string sourceVendor,
-        [Description("Target vendor: HaloPSA, NCentral, Bill.com, Sophos Central, or AgentController. NetSuite is read-only.")] string targetVendor,
-        [Description("Source connection ID. Required when multiple connections exist for this vendor.")] string? sourceConnectionId = null,
-        [Description("Target connection ID. Required when multiple connections exist for this vendor.")] string? targetConnectionId = null,
-        [Description("Source entity type. Defaults to the vendor primary type.")] string? sourceEntityType = null,
-        [Description("Target entity type. Defaults to the vendor primary type.")] string? targetEntityType = null,
-        [Description("Create missing target entities during apply")] bool createMissing = false,
-        [Description("Include inactive source entities")] bool includeInactive = false,
-        [Description("Auto-link score threshold from 0 through 100")] int autoLinkScore = 90,
-        [Description("Review score threshold from 0 through 100")] int reviewScore = 70,
-        [Description("Source external ID used for matching and apply")] string? sourceExternalIdName = null,
-        [Description("Target custom field used for matching and apply")] string? targetCustomFieldName = null,
+        [Description("Explicit persisted sync policy ID")] string policyId,
+        [Description("Stable caller-generated idempotency key for this exact planning request")] string idempotencyKey,
+        [Description("Optional exact policy version; omitted means the latest enabled version")] int? policyVersion = null,
         [Description("Optional vendor-side source name search used to bound focused plans")] string? sourceSearch = null,
         [Description("Optional maximum source entities from 1 through 5000")] int? sourceCount = null,
         [Description("Optional immutable source entity ID; the bounded source query must return exactly this entity")] string? sourceEntityId = null,
@@ -33,43 +26,27 @@ public static class SyncTools
     {
         try
         {
-            var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
-            {
-                TenantId = context.TenantId,
-                SourceVendor = sourceVendor,
-                SourceConnectionId = sourceConnectionId,
-                TargetVendor = targetVendor,
-                TargetConnectionId = targetConnectionId,
-                SourceEntityType = sourceEntityType,
-                SourceSearch = sourceSearch,
-                SourceCount = sourceCount,
-                SourceEntityId = sourceEntityId,
-                TargetEntityType = targetEntityType,
-                CreateMissing = createMissing,
-                IncludeInactive = includeInactive,
-                AutoLinkScore = autoLinkScore,
-                ReviewScore = reviewScore,
-                SourceExternalIdName = sourceExternalIdName,
-                TargetCustomFieldName = targetCustomFieldName
-            }, cancellationToken).ConfigureAwait(false);
-            var page = service.GetPlan(context.TenantId, plan.Id);
+            var command = await commands.CreatePlanAsync(
+                new CreateDurablePlanRequest
+                {
+                    TenantId = context.TenantId,
+                    IdempotencyKey = idempotencyKey,
+                    PolicyId = Guid.Parse(policyId),
+                    PolicyVersion = policyVersion,
+                    SourceSearch = sourceSearch,
+                    SourceCount = sourceCount,
+                    SourceEntityId = sourceEntityId
+                },
+                new EntitySyncActor(context.Actor),
+                cancellationToken).ConfigureAwait(false);
+            var plan = command.Result;
             return JsonSerializer.Serialize(new
             {
                 success = true,
-                planId = plan.Id,
-                plan.Status,
-                page.Digest,
-                plan.SourceVendor,
-                plan.SourceEntityType,
-                plan.TargetVendor,
-                plan.TargetEntityType,
-                sourceSelection = new { search = sourceSearch, count = sourceCount, entityId = sourceEntityId },
-                actions = plan.Items.GroupBy(item => item.Action).ToDictionary(group => group.Key, group => group.Count()),
-                page.TotalItems,
-                page.Page,
-                page.PageSize,
-                page.Items,
-                nextPage = page.TotalItems > page.Page * page.PageSize ? page.Page + 1 : (int?)null
+                planId = plan.PlanId,
+                status = command.Plan.Status.ToString(),
+                digest = plan.Digest,
+                plan = command.Plan
             }, JsonOptions);
         }
         catch (OperationCanceledException)
@@ -90,19 +67,35 @@ public static class SyncTools
         }
     }
 
+
     [McpServerTool]
-    [Description("Review one page of an EntitySync/ES plan. Inspect every page and its exact source/target records before approval.")]
-    public static string GetSyncPlan(
-        EntitySyncService service,
+    [Description("Inspect a page of a durable plan. Every page must be reviewed before approving the returned digest.")]
+    public static async Task<string> GetSyncPlan(
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
-        [Description("Plan ID returned from create_sync_plan")] string planId,
+        [Description("Durable plan ID returned from create_sync_plan")] string planId,
         [Description("One-based page number")] int page = 1,
-        [Description("Items per page, from 1 through 100")] int pageSize = 25)
+        [Description("Items per page, from 1 through 100")] int pageSize = 25,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var result = service.GetPlan(context.TenantId, planId, page, pageSize);
-            return JsonSerializer.Serialize(new { success = true, result, nextPage = result.TotalItems > result.Page * result.PageSize ? result.Page + 1 : (int?)null }, JsonOptions);
+            var result = await commands.InspectPlanAsync(
+                context.TenantId, Guid.Parse(planId), page, pageSize,
+                new EntitySyncActor(context.Actor), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                result,
+                nextPage = result.Plan.ItemCount > result.Page * result.PageSize
+                    ? result.Page + 1
+                    : (int?)null
+            }, JsonOptions);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (ArgumentException ex)
         {
@@ -115,17 +108,34 @@ public static class SyncTools
     }
 
     [McpServerTool]
-    [Description("Approve the exact digest of a fully inspected EntitySync/ES client, customer, account, or company sync plan. Approval is consumed by apply.")]
-    public static string ApproveSyncPlan(
-        EntitySyncService service,
+    [Description("Approve the exact fully inspected durable-plan digest. The returned approval ID is consumed once by apply.")]
+    public static async Task<string> ApproveSyncPlan(
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
-        [Description("Plan ID returned from create_sync_plan")] string planId,
-        [Description("Digest returned by get_sync_plan after reviewing every page")] string expectedDigest)
+        [Description("Durable plan ID returned from create_sync_plan")] string planId,
+        [Description("Digest returned by get_sync_plan after reviewing every page")] string expectedDigest,
+        [Description("Stable caller-generated idempotency key for this exact approval request")] string idempotencyKey,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var digest = service.ApprovePlan(context.TenantId, planId, expectedDigest);
-            return JsonSerializer.Serialize(new { success = true, planId, status = "Approved", digest });
+            var approval = await commands.ApprovePlanAsync(
+                context.TenantId, Guid.Parse(planId), expectedDigest, idempotencyKey,
+                new EntitySyncActor(context.Actor), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                planId = approval.PlanId,
+                status = "Approved",
+                digest = approval.Digest,
+                approvalId = approval.ApprovalId,
+                approval
+            }, JsonOptions);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -133,35 +143,52 @@ public static class SyncTools
         }
     }
 
+
+
     [McpServerTool]
-    [Description("Dry-run or execute an approved EntitySync/ES client, customer, account, or company sync plan. apply=false previews synchronously; apply=true starts writes in the background. Poll get_sync_plan_apply until Applied or Failed; repeated starts never retry writes.")]
+    [Description("Queue a durable read-only dry-run or an approved apply. Returns the durable operation ID; poll get_sync_plan_apply by operation ID.")]
     public static async Task<string> ApplySyncPlan(
-        EntitySyncService service,
-        EntitySyncApplyCoordinator coordinator,
+        IEntitySyncControlCommands commands,
         McpRequestContext context,
         [Description("Plan ID returned from create_sync_plan")] string planId,
-        [Description("False performs a synchronous read-only dry run. True starts background writes and returns immediately.")] bool apply = false,
+        [Description("Stable caller-generated idempotency key for this exact request")] string idempotencyKey,
+        [Description("False queues a read-only dry-run. True queues the approved vendor writes.")] bool apply = false,
+        [Description("Exact approval ID; required once when apply=true")] string? approvalId = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            if (apply)
+            var parsedPlanId = Guid.Parse(planId);
+            var actor = new EntitySyncActor(context.Actor);
+            var correlationId = Guid.NewGuid();
+            var operation = apply
+                ? await commands.QueueApplyAsync(
+                    context.TenantId,
+                    parsedPlanId,
+                    Guid.Parse(approvalId ?? throw new ArgumentException(
+                        "Approval ID is required for apply.", nameof(approvalId))),
+                    idempotencyKey,
+                    correlationId,
+                    actor,
+                    cancellationToken).ConfigureAwait(false)
+                : await commands.QueueDryRunAsync(
+                    context.TenantId,
+                    parsedPlanId,
+                    idempotencyKey,
+                    correlationId,
+                    actor,
+                    cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
             {
-                var snapshot = coordinator.Start(context.TenantId, planId);
-                return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
-            }
-
-            var result = await service.ApplyAsync(context.TenantId, planId, false, cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.Serialize(new { success = result.Success, result }, JsonOptions);
+                success = true,
+                operationId = operation.OperationId,
+                status = operation.Status.ToString()
+            }, JsonOptions);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (EntityExclusionUnavailableException)
-        {
-            return Error("Permanent exclusions could not be obtained; create actions are blocked.");
-        }
         catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
         {
             return Error(ex.Message);
@@ -172,25 +199,30 @@ public static class SyncTools
         }
         catch
         {
-            return Error("Plan apply failed unexpectedly. Check the server logs for the correlated operation.");
+            return Error("Plan apply queueing failed unexpectedly. Check the server logs for the correlated operation.");
         }
     }
 
     [McpServerTool]
-    [Description("Read-only: check progress and terminal status for an EntitySync/ES sync started by apply_sync_plan with apply=true.")]
-    public static string GetSyncPlanApply(
-        EntitySyncApplyCoordinator coordinator,
+    [Description("Read-only: get aggregate progress and terminal status for a durable operation returned by apply_sync_plan.")]
+    public static async Task<string> GetSyncPlanApply(
+        ISyncOperationRepository operations,
         McpRequestContext context,
-        [Description("Plan ID returned from create_sync_plan and started with apply_sync_plan")] string planId)
+        [Description("Durable operation ID returned from apply_sync_plan")] string operationId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var snapshot = coordinator.Get(context.TenantId, planId);
-            return JsonSerializer.Serialize(new { success = true, snapshot }, JsonOptions);
+            var operation = await operations.GetAsync(
+                context.TenantId, Guid.Parse(operationId), cancellationToken)
+                .ConfigureAwait(false);
+            if (operation is null)
+                return Error("Durable sync operation was not found.");
+            return JsonSerializer.Serialize(new { success = true, operation }, JsonOptions);
         }
-        catch (InvalidOperationException ex) when (IsSafeApplyStateError(ex.Message))
+        catch (OperationCanceledException)
         {
-            return Error(ex.Message);
+            throw;
         }
         catch (ArgumentException ex)
         {
@@ -198,9 +230,10 @@ public static class SyncTools
         }
         catch
         {
-            return Error("Plan apply status lookup failed.");
+            return Error("Durable sync operation status lookup failed.");
         }
     }
+
 
     private static bool IsSafeApplyStateError(string message)
     {

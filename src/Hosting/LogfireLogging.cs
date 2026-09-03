@@ -124,6 +124,9 @@ public static class LogfireLogging
         ArgumentNullException.ThrowIfNull(settings);
 
         logging.ClearProviders();
+        logging.AddFilter(
+            "Microsoft.AspNetCore.Hosting.Diagnostics",
+            LogLevel.Warning);
         logging.AddJsonConsole(options =>
         {
             options.IncludeScopes = true;

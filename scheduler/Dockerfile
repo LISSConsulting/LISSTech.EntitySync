@@ -1,12 +1,3 @@
-FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS dashboard-build
-
-WORKDIR /src/scheduler-ui
-
-COPY scheduler-ui/package.json scheduler-ui/package-lock.json ./
-RUN npm ci
-
-COPY scheduler-ui/ ./
-RUN npm run build
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine@sha256:8a80a27ddac789b4cb6d09d244f9c8d840da599c5ad22f7233c04be470e55261 AS build
 
@@ -27,7 +18,6 @@ RUN dotnet restore scheduler/LISSTech.EntitySync.Scheduler.csproj
 
 COPY src/ src/
 COPY scheduler/ scheduler/
-COPY --from=dashboard-build /src/scheduler/wwwroot/ scheduler/wwwroot/
 RUN dotnet publish scheduler/LISSTech.EntitySync.Scheduler.csproj \
     --configuration Release \
     --no-restore \
@@ -39,12 +29,15 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine@sha256:b288317d8ed45bb763fa95dbc
 
 WORKDIR /app
 COPY --from=build /app/publish .
+RUN mkdir -p /var/lib/entitysync/keys \
+    && chown 1654:1654 /var/lib/entitysync/keys \
+    && chmod 0700 /var/lib/entitysync/keys
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     DOTNET_EnableDiagnostics=0
 
 EXPOSE 8080
 
-USER $APP_UID
+USER 1654:1654
 
 ENTRYPOINT ["dotnet", "lisstech-entitysync-scheduler.dll"]

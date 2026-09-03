@@ -1,13 +1,10 @@
+using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Scheduler;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Authentication.OpenIdConnect;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Identity.Web;
 
 var app = EntitySyncSchedulerHost.Build(args);
 await app.RunAsync();
@@ -32,96 +29,59 @@ namespace LISSTech.EntitySync.Scheduler
                 options.ValidateScopes = true;
             });
 
-            var serviceVersion = typeof(EntitySyncSchedulerWorker).Assembly.GetName().Version?.ToString(3)
-                ?? throw new InvalidOperationException("EntitySync scheduler assembly version is unavailable.");
+            var serviceVersion = typeof(EntitySyncControlWorker).Assembly
+                .GetName().Version?.ToString(3)
+                ?? throw new InvalidOperationException(
+                    "EntitySync scheduler assembly version is unavailable.");
             var logfireSettings = LogfireLoggingSettings.FromCurrentEnvironment(
                 builder.Environment.EnvironmentName,
                 serviceVersion);
             LogfireLogging.Configure(builder.Services, builder.Logging, logfireSettings);
-            var dashboardAuthentication =
-                EntitySyncSchedulerDashboardAuthentication.FromCurrentEnvironment();
-            builder.Services
-                .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
-                .AddMicrosoftIdentityWebApp(dashboardAuthentication.Configure);
-            builder.Services.Configure<CookieAuthenticationOptions>(
-                CookieAuthenticationDefaults.AuthenticationScheme,
-                EntitySyncSchedulerDashboardAuthentication.ConfigureCookie);
-            builder.Services.AddAuthorization(options =>
-                options.AddPolicy(
-                    EntitySyncSchedulerDashboardAuthentication.PolicyName,
-                    policy => policy.RequireAuthenticatedUser()));
-            builder.Services.Configure<ForwardedHeadersOptions>(options =>
-            {
-                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
-                    | ForwardedHeaders.XForwardedProto
-                    | ForwardedHeaders.XForwardedHost;
-                options.ForwardLimit = 1;
-                options.KnownNetworks.Clear();
-                options.KnownProxies.Clear();
-            });
 
-
+            var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
             builder.Services.AddEntitySyncPlatform(
-                Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
-            builder.Services.AddSingleton<EntitySyncSchedulerOptions>();
-            builder.Services.AddSingleton<EntitySyncSchedulerStatus>();
-            builder.Services.AddSingleton<EntitySyncSchedulerDashboardStore>();
+                Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty,
+                EntitySyncHostMode.Scheduler,
+                workerSettings);
             builder.Services.AddSingleton(
-                EntitySyncSchedulerRunAuthorization.FromCurrentEnvironment());
-            builder.Services.AddSingleton<IEntitySyncSchedulerRunLock, PostgresEntitySyncSchedulerRunLock>();
-            builder.Services.AddSingleton<IEntitySyncScheduledRun, EntitySyncScheduledRun>();
-            builder.Services.AddSingleton<EntitySyncSchedulerWorker>();
+                EntitySyncControlOptions.FromEnvironment(workerSettings));
+            builder.Services.AddSingleton<PostgresSyncWorkQueue>();
+            builder.Services.AddSingleton<ICanonicalChangeRepository>(
+                services => services.GetRequiredService<PostgresSyncWorkQueue>());
+            builder.Services.AddSingleton<IEntitySyncWorkSignal>(
+                services => services.GetRequiredService<PostgresSyncWorkQueue>());
+            builder.Services.AddSingleton<PostgresRouteLock>();
+            builder.Services.AddSingleton<IEntitySyncRouteLock>(
+                services => services.GetRequiredService<PostgresRouteLock>());
+            builder.Services.AddSingleton<IEntitySyncOperationRouteLock>(
+                services => services.GetRequiredService<PostgresRouteLock>());
+            builder.Services.AddSingleton<CanonicalChangeService>();
+            builder.Services.AddSingleton<EntitySyncControlWorker>();
             builder.Services.AddHostedService(
-                services => services.GetRequiredService<EntitySyncSchedulerWorker>());
+                services => services.GetRequiredService<EntitySyncControlWorker>());
+            builder.Services.AddSingleton<AuditRetentionWorker>(services =>
+                new AuditRetentionWorker(
+                    services.GetRequiredService<LISSTech.EntitySync.Ports.ISyncAuditRepository>(),
+                    services.GetRequiredService<LISSTech.EntitySync.Ports.ISyncOperationRepository>(),
+                    services.GetRequiredService<EntitySyncControlOptions>().TenantIds,
+                    services.GetRequiredService<TimeProvider>(),
+                    services.GetRequiredService<
+                        Microsoft.Extensions.Logging.ILogger<AuditRetentionWorker>>()));
+            builder.Services.AddHostedService(
+                services => services.GetRequiredService<AuditRetentionWorker>());
 
             var app = builder.Build();
-            var schedulerOptions = app.Services.GetRequiredService<EntitySyncSchedulerOptions>();
-            var adapterFactory = app.Services.GetRequiredService<IServerManagedEntityAdapterFactory>();
-            if (schedulerOptions.AutomaticRunsEnabled)
-            {
-                adapterFactory.ValidateConfiguration(
-                    schedulerOptions.Routes.SelectMany(route => new[] { route.SourceVendor, route.TargetVendor }));
-                foreach (var route in schedulerOptions.Routes)
-                {
-                    _ = adapterFactory.GetChangeStateScope(
-                        route.SourceVendor,
-                        route.SourceConnectionId,
-                        route.SourceEntityType,
-                        route.TargetVendor,
-                        route.TargetConnectionId,
-                        route.TargetEntityType);
-                }
-            }
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);
-            app.UseForwardedHeaders();
-            app.UseAuthentication();
-            app.UseAuthorization();
-            app.RequireDashboardAuthenticationForAssets();
-            app.MapDashboard();
-            app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
-                .AllowAnonymous();
+            app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
             app.MapGet(
-                    "/status",
-                    (EntitySyncSchedulerStatus status) => Results.Ok(status.Snapshot))
-                .RequireAuthorization(EntitySyncSchedulerDashboardAuthentication.PolicyName);
-            app.MapPost(
-                "/run",
-                (HttpContext context,
-                    EntitySyncSchedulerRunAuthorization authorization,
-                    EntitySyncSchedulerWorker worker) =>
+                "/status",
+                (EntitySyncControlOptions options) => Results.Ok(new
                 {
-                    if (!authorization.IsAuthorized(context.Request))
-                    {
-                        context.Response.Headers.WWWAuthenticate = "Bearer";
-                        return Results.Unauthorized();
-                    }
-
-                    return worker.TryRequestRun()
-                        ? Results.Accepted("/status", new { accepted = true, status = "Queued" })
-                        : Results.Conflict(new { accepted = false, status = "Busy" });
-                });
+                    state = "running",
+                    tenantCount = options.TenantIds.Count
+                }));
             return app;
         }
     }

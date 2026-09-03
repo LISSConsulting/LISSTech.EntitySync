@@ -15,6 +15,9 @@ Creates review workbooks for a chained sync and applies only reviewed workbooks.
 
 Creates one review workbook per sync edge during planning, then applies only reviewed workbooks when
 `-ReviewedPlanPath` and `-Apply` are supplied. The default chain is `NetSuite -> HaloPSA -> NCentral`.
+The durable parameter set queues one operation per persisted `PlanId`; apply
+requires the corresponding one-time `ApprovalId` values and returns immediately.
+
 
 `-RootVendor` defaults to `NetSuite`, `-HubVendor` defaults to `HaloPSA`, and `-LeafVendors` defaults to `@('NCentral')`. `-Path` accepts a directory; one workbook is written per edge.
 

@@ -407,8 +407,98 @@ namespace EntitySyncTests
     $commands | Should -Contain 'Export-EntitySyncPlan'
     $commands | Should -Contain 'Import-EntitySyncPlan'
   }
+  It 'keeps exactly 16 exports for the durable control service' {
+    $commands = @(Get-Command -Module LISSTech.EntitySync)
+    $commands.Count | Should -Be 16
+    @($commands | Where-Object CommandType -EQ Alias).Count | Should -Be 0
+  }
 
-  It 'Saves DPAPI-protected connection profiles and reconnects from them' {
+  It 'exposes generation-pinned connection IDs for the durable control service' {
+    foreach ($name in @(
+        'Connect-EntitySyncVendor',
+        'Test-EntitySyncConnection',
+        'Get-EntitySyncEntity',
+        'Get-EntitySyncLookup',
+        'Invoke-EntitySyncNetSuiteSuiteQL',
+        'Set-EntitySyncCustomProperty')) {
+      (Get-Command $name).Parameters.Keys | Should -Contain 'ConnectionId'
+    }
+    (Get-Command Invoke-EntitySyncPlan).ParameterSets.Name |
+      Should -Contain 'Durable'
+    (Get-Command Invoke-EntitySyncChain).ParameterSets.Name |
+      Should -Contain 'Durable'
+    (Get-Command Export-EntitySyncPlan).ParameterSets.Name |
+      Should -Contain 'Durable'
+  }
+
+  It 'keeps DPAPI profiles local from the durable control service' {
+    $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) (
+      'entitysync-local-profile-{0}.json' -f [guid]::NewGuid())
+    $oldProfilePath = [Environment]::GetEnvironmentVariable(
+      'LISSTECH_ENTITYSYNC_PROFILE_PATH')
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    try {
+      [Environment]::SetEnvironmentVariable(
+        'LISSTECH_ENTITYSYNC_PROFILE_PATH', $profilePath)
+      [Environment]::SetEnvironmentVariable(
+        'DATABASE_URL',
+        'Host=127.0.0.1;Port=1;Database=must-not-connect;Username=unused;Password=unused')
+      @(Get-EntitySyncProfile).Count | Should -Be 0
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable(
+        'LISSTECH_ENTITYSYNC_PROFILE_PATH', $oldProfilePath)
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+      Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'fails closed on durable workbook envelopes without the durable control service' {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) (
+      'entitysync-durable-envelope-{0}.xlsx' -f [guid]::NewGuid())
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    try {
+      $archive = [System.IO.Compression.ZipFile]::Open(
+        $path, [System.IO.Compression.ZipArchiveMode]::Create)
+      try {
+        $entry = $archive.CreateEntry('entitysync/durable-plan.json')
+        $writer = [System.IO.StreamWriter]::new($entry.Open())
+        try { $writer.Write('{}') } finally { $writer.Dispose() }
+      }
+      finally { $archive.Dispose() }
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $null)
+      { Import-EntitySyncPlan -Path $path } |
+        Should -Throw '*requires durable PowerShell control configuration*'
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  It 'rejects durable-only parameters without the durable control service' {
+    $oldDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL')
+    try {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $null)
+      { Test-EntitySyncConnection -Vendor NetSuite -ConnectionId durable-source } |
+        Should -Throw '*ConnectionId requires durable PowerShell control configuration*'
+      {
+        New-EntitySyncPlan `
+          -SourceVendor NetSuite `
+          -TargetVendor HaloPSA `
+          -PolicyId ([guid]::NewGuid()) `
+          -IdempotencyKey durable-key
+      } | Should -Throw '*PolicyId and -IdempotencyKey require durable*'
+    }
+    finally {
+      [Environment]::SetEnvironmentVariable('DATABASE_URL', $oldDatabaseUrl)
+    }
+  }
+
+
+
+  It 'Saves DPAPI-protected connection profiles and reconnects from them' -Skip:(-not $IsWindows) {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-profile-{0}.json" -f [guid]::NewGuid())
     $oldProfilePath = [Environment]::GetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH')
     try {
@@ -472,7 +562,7 @@ namespace EntitySyncTests
     }
   }
 
-  It 'Saves AgentController profiles through the DeviceAssetOps profile parameter' {
+  It 'Saves AgentController profiles through the DeviceAssetOps profile parameter' -Skip:(-not $IsWindows) {
     $profilePath = Join-Path ([System.IO.Path]::GetTempPath()) ("entitysync-agentcontroller-deviceassetops-profile-{0}.json" -f [guid]::NewGuid())
     $oldProfilePath = [Environment]::GetEnvironmentVariable('LISSTECH_ENTITYSYNC_PROFILE_PATH')
     try {
@@ -5103,7 +5193,7 @@ namespace EntitySyncTests
 
     $file = $plan | Export-EntitySyncPlan -Path ([System.IO.Path]::GetTempPath()) -PassThru
     try {
-      $file.Name | Should -Match '^EntitySync-NetSuite-Customer-to-HaloPSA-Client-\d{8}-\d{6}\.xlsx$'
+      $file.Name | Should -Match '^EntitySync-NetSuite-Customer-to-HaloPSA-Client-[0-9a-f]{32}-\d{8}-\d{6}\.xlsx$'
       $file.Exists | Should -BeTrue
     }
     finally {

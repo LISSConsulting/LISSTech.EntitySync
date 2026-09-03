@@ -1,4 +1,4 @@
 namespace LISSTech.EntitySync.Application;
 
 public sealed class EntityExclusionUnavailableException(string message, Exception innerException)
-    : InvalidOperationException(message, innerException);
+    : EntitySyncDependencyUnavailableException(message, innerException);

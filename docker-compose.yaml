@@ -1,163 +1,118 @@
 services:
   entitysync-db:
     image: postgres:18-trixie@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+    user: "999:999"
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-entitysync}"
       POSTGRES_USER: "${POSTGRES_USER:-entitysync}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
     volumes:
       - entitysync-db-data:/var/lib/postgresql
+    tmpfs:
+      - /tmp:size=32m,mode=1777,uid=999,gid=999
+      - /var/run/postgresql:size=16m,mode=0775,uid=999,gid=999
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    restart: unless-stopped
-
-  entitysync-mcp:
-    build:
-      context: .
-      dockerfile: mcp/Dockerfile
-    depends_on:
-      entitysync-db:
-        condition: service_healthy
-    environment:
-      MCP_OAUTH_AUTHORITY: "${MCP_OAUTH_AUTHORITY:?MCP_OAUTH_AUTHORITY must be set}"
-      MCP_OAUTH_RESOURCE: "${MCP_OAUTH_RESOURCE:?MCP_OAUTH_RESOURCE must be set}"
-      MCP_OAUTH_AUDIENCE: "${MCP_OAUTH_AUDIENCE:?MCP_OAUTH_AUDIENCE must be set}"
-      MCP_OAUTH_SCOPES: "${MCP_OAUTH_SCOPES:-mcp:tools}"
-      MCP_OAUTH_REQUIRED_SCOPE: "${MCP_OAUTH_REQUIRED_SCOPE:-mcp:tools}"
-      MCP_OAUTH_AUTHORIZATION_ENDPOINT: "${MCP_OAUTH_AUTHORIZATION_ENDPOINT:-}"
-      MCP_OAUTH_TOKEN_ENDPOINT: "${MCP_OAUTH_TOKEN_ENDPOINT:-}"
-      MCP_OAUTH_PUBLIC_CLIENT_ID: "${MCP_OAUTH_PUBLIC_CLIENT_ID:-}"
-      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable exclusions}"
-      MCP_TRANSPORT: http
-      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:?OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be set to the Logfire /v1/logs endpoint}"
-      OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL_EXPORTER_OTLP_HEADERS must contain the Logfire Authorization write token}"
-      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
-      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-lisstech-entitysync-mcp}"
-      HALO_BASE_URL: "${HALO_BASE_URL:-}"
-      HALO_CLIENT_ID: "${HALO_CLIENT_ID:-}"
-      HALO_CLIENT_SECRET: "${HALO_CLIENT_SECRET:-}"
-      HALO_ACCOUNT_MANAGER_EMAIL: "${HALO_ACCOUNT_MANAGER_EMAIL:-}"
-      HALO_NETSUITE_CUSTOMER_ID_FIELD_ID: "${HALO_NETSUITE_CUSTOMER_ID_FIELD_ID:-}"
-      HALO_NETSUITE_CUSTOMER_NAME_FIELD: "${HALO_NETSUITE_CUSTOMER_NAME_FIELD:-}"
-      HALO_NCENTRAL_INTEGRATION_ID: "${HALO_NCENTRAL_INTEGRATION_ID:-}"
-      NETSUITE_ACCOUNT_ID: "${NETSUITE_ACCOUNT_ID:-}"
-      NETSUITE_CONSUMER_KEY: "${NETSUITE_CONSUMER_KEY:-}"
-      NETSUITE_CONSUMER_SECRET: "${NETSUITE_CONSUMER_SECRET:-}"
-      NETSUITE_TOKEN_ID: "${NETSUITE_TOKEN_ID:-}"
-      NETSUITE_TOKEN_SECRET: "${NETSUITE_TOKEN_SECRET:-}"
-      NCENTRAL_BASE_URL: "${NCENTRAL_BASE_URL:-}"
-      NCENTRAL_USER_API_TOKEN: "${NCENTRAL_USER_API_TOKEN:-}"
-      NCENTRAL_SERVICE_ORG_ID: "${NCENTRAL_SERVICE_ORG_ID:-}"
-      AGENTCONTROLLER_AUTH_BASE_URL: "${AGENTCONTROLLER_AUTH_BASE_URL:-}"
-      AGENTCONTROLLER_ENTRA_TENANT_ID: "${AGENTCONTROLLER_ENTRA_TENANT_ID:-}"
-      AGENTCONTROLLER_ENTRA_CLIENT_ID: "${AGENTCONTROLLER_ENTRA_CLIENT_ID:-}"
-      AGENTCONTROLLER_ENTRA_CLIENT_SECRET: "${AGENTCONTROLLER_ENTRA_CLIENT_SECRET:-}"
-      AGENTCONTROLLER_ENTRA_SCOPE: "${AGENTCONTROLLER_ENTRA_SCOPE:-}"
-      NCENTRAL_SOAP_USERNAME: "${NCENTRAL_SOAP_USERNAME:-}"
-      NCENTRAL_SOAP_PASSWORD: "${NCENTRAL_SOAP_PASSWORD:-}"
-      NCENTRAL_SOAP_ENDPOINT_PATH: "${NCENTRAL_SOAP_ENDPOINT_PATH:-}"
-      NCENTRAL_SOAP_NAMESPACE: "${NCENTRAL_SOAP_NAMESPACE:-}"
-      NCENTRAL_HALOPSA_ID_PROPERTY_LABEL: "${NCENTRAL_HALOPSA_ID_PROPERTY_LABEL:-}"
-      NCENTRAL_NETSUITE_ID_PROPERTY_LABEL: "${NCENTRAL_NETSUITE_ID_PROPERTY_LABEL:-}"
-      NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL: "${NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL:-}"
-      BILLCOM_BASE_URL: "${BILLCOM_BASE_URL:-}"
-      BILLCOM_API_TOKEN: "${BILLCOM_API_TOKEN:-}"
-      BILLCOM_CLIENT_FIELD_NAME: "${BILLCOM_CLIENT_FIELD_NAME:-}"
-      SOPHOS_CENTRAL_CLIENT_ID: "${SOPHOS_CENTRAL_CLIENT_ID:-}"
-      SOPHOS_CENTRAL_CLIENT_SECRET: "${SOPHOS_CENTRAL_CLIENT_SECRET:-}"
-      SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY: "${SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY:-}"
-      SOPHOS_CENTRAL_DEFAULT_DATA_REGION: "${SOPHOS_CENTRAL_DEFAULT_DATA_REGION:-}"
-      SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE: "${SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE:-}"
-    expose:
-      - "8080"
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    init: true
+      start_interval: 2s
     read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    stop_grace_period: 30s
     restart: unless-stopped
 
   entitysync-scheduler:
     build:
       context: .
       dockerfile: scheduler/Dockerfile
+    user: "1654:1654"
     depends_on:
       entitysync-db:
         condition: service_healthy
-    environment:
-      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable state}"
-      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:?OTEL logs endpoint is required}"
-      OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL headers are required}"
-      OTEL_EXPORTER_OTLP_PROTOCOL: "${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
+    environment: &entitysync-host-environment
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set for durable control state}"
+      ENTITYSYNC_DATA_PROTECTION_KEY_PATH: /var/lib/entitysync/keys
+      ENTITYSYNC_TENANT_IDS: "${ENTITYSYNC_TENANT_IDS:?ENTITYSYNC_TENANT_IDS must be set}"
+      ENTITYSYNC_WORKER_LEASE_SECONDS: "${ENTITYSYNC_WORKER_LEASE_SECONDS:?ENTITYSYNC_WORKER_LEASE_SECONDS must be set}"
+      ENTITYSYNC_WORKER_HEARTBEAT_SECONDS: "${ENTITYSYNC_WORKER_HEARTBEAT_SECONDS:?ENTITYSYNC_WORKER_HEARTBEAT_SECONDS must be set}"
+      ENTITYSYNC_WORKER_RETRY_SECONDS: "${ENTITYSYNC_WORKER_RETRY_SECONDS:?ENTITYSYNC_WORKER_RETRY_SECONDS must be set}"
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:?OTEL Logfire logs endpoint is required}"
+      OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL Logfire authorization header is required}"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
       OTEL_SERVICE_NAME: "${SCHEDULER_OTEL_SERVICE_NAME:-lisstech-entitysync-scheduler}"
-      DASHBOARD_ENTRA_TENANT_ID: "${AGENTCONTROLLER_ENTRA_TENANT_ID:?AGENTCONTROLLER_ENTRA_TENANT_ID is required for dashboard authentication}"
-      DASHBOARD_ENTRA_CLIENT_ID: "${AGENTCONTROLLER_ENTRA_CLIENT_ID:?AGENTCONTROLLER_ENTRA_CLIENT_ID is required for dashboard authentication}"
-      DASHBOARD_ENTRA_CLIENT_SECRET: "${AGENTCONTROLLER_ENTRA_CLIENT_SECRET:?AGENTCONTROLLER_ENTRA_CLIENT_SECRET is required for dashboard authentication}"
-      DASHBOARD_PUBLIC_ORIGIN: "${DASHBOARD_PUBLIC_ORIGIN:?DASHBOARD_PUBLIC_ORIGIN is required for dashboard authentication}"
-      HALO_BASE_URL: "${HALO_BASE_URL:?HALO_BASE_URL is required by scheduler}"
-      HALO_CLIENT_ID: "${HALO_CLIENT_ID:?HALO_CLIENT_ID is required by scheduler}"
-      HALO_CLIENT_SECRET: "${HALO_CLIENT_SECRET:?HALO_CLIENT_SECRET is required by scheduler}"
-      HALO_ACCOUNT_MANAGER_EMAIL: "${HALO_ACCOUNT_MANAGER_EMAIL:-}"
-      HALO_NETSUITE_CUSTOMER_ID_FIELD_ID: "${HALO_NETSUITE_CUSTOMER_ID_FIELD_ID:-}"
-      HALO_NETSUITE_CUSTOMER_NAME_FIELD: "${HALO_NETSUITE_CUSTOMER_NAME_FIELD:-}"
-      HALO_NCENTRAL_INTEGRATION_ID: "${HALO_NCENTRAL_INTEGRATION_ID:?HALO_NCENTRAL_INTEGRATION_ID is required by scheduler}"
-      NETSUITE_ACCOUNT_ID: "${NETSUITE_ACCOUNT_ID:?NETSUITE_ACCOUNT_ID is required by scheduler}"
-      NETSUITE_CONSUMER_KEY: "${NETSUITE_CONSUMER_KEY:?NETSUITE_CONSUMER_KEY is required by scheduler}"
-      NETSUITE_CONSUMER_SECRET: "${NETSUITE_CONSUMER_SECRET:?NETSUITE_CONSUMER_SECRET is required by scheduler}"
-      NETSUITE_TOKEN_ID: "${NETSUITE_TOKEN_ID:?NETSUITE_TOKEN_ID is required by scheduler}"
-      NETSUITE_TOKEN_SECRET: "${NETSUITE_TOKEN_SECRET:?NETSUITE_TOKEN_SECRET is required by scheduler}"
-      NCENTRAL_BASE_URL: "${NCENTRAL_BASE_URL:?NCENTRAL_BASE_URL is required by scheduler}"
-      NCENTRAL_USER_API_TOKEN: "${NCENTRAL_USER_API_TOKEN:?NCENTRAL_USER_API_TOKEN is required by scheduler}"
-      NCENTRAL_SERVICE_ORG_ID: "${NCENTRAL_SERVICE_ORG_ID:?NCENTRAL_SERVICE_ORG_ID is required by scheduler}"
-      NCENTRAL_SOAP_USERNAME: "${NCENTRAL_SOAP_USERNAME:?NCENTRAL_SOAP_USERNAME is required by scheduler}"
-      NCENTRAL_SOAP_PASSWORD: "${NCENTRAL_SOAP_PASSWORD:?NCENTRAL_SOAP_PASSWORD is required by scheduler}"
-      NCENTRAL_SOAP_ENDPOINT_PATH: "${NCENTRAL_SOAP_ENDPOINT_PATH:-}"
-      NCENTRAL_SOAP_NAMESPACE: "${NCENTRAL_SOAP_NAMESPACE:-}"
-      NCENTRAL_HALOPSA_ID_PROPERTY_LABEL: "${NCENTRAL_HALOPSA_ID_PROPERTY_LABEL:-}"
-      NCENTRAL_NETSUITE_ID_PROPERTY_LABEL: "${NCENTRAL_NETSUITE_ID_PROPERTY_LABEL:-}"
-      NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL: "${NCENTRAL_NETSUITE_NAME_PROPERTY_LABEL:-}"
-      BILLCOM_BASE_URL: "${BILLCOM_BASE_URL:-}"
-      BILLCOM_API_TOKEN: "${BILLCOM_API_TOKEN:?BILLCOM_API_TOKEN is required by scheduler}"
-      BILLCOM_CLIENT_FIELD_NAME: "${BILLCOM_CLIENT_FIELD_NAME:-}"
-      SOPHOS_CENTRAL_CLIENT_ID: "${SOPHOS_CENTRAL_CLIENT_ID:?SOPHOS_CENTRAL_CLIENT_ID is required by scheduler}"
-      SOPHOS_CENTRAL_CLIENT_SECRET: "${SOPHOS_CENTRAL_CLIENT_SECRET:?SOPHOS_CENTRAL_CLIENT_SECRET is required by scheduler}"
-      SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY: "${SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY:-}"
-      SOPHOS_CENTRAL_DEFAULT_DATA_REGION: "${SOPHOS_CENTRAL_DEFAULT_DATA_REGION:-}"
-      SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE: "${SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE:-}"
-      SCHEDULER_AUTOMATIC_RUNS_ENABLED: "${SCHEDULER_AUTOMATIC_RUNS_ENABLED:-true}"
-      SCHEDULER_RUN_TOKEN: "${SCHEDULER_RUN_TOKEN:?SCHEDULER_RUN_TOKEN is required by scheduler}"
+
     expose:
       - "8080"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
-      interval: 30s
+      interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 6
+      start_period: 20s
+      start_interval: 2s
     init: true
     read_only: true
+    volumes:
+      - entitysync-keyring:/var/lib/entitysync/keys
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=64m,mode=1777,uid=1654,gid=1654
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  entitysync-mcp:
+    build:
+      context: .
+      dockerfile: mcp/Dockerfile
+    user: "1654:1654"
+    depends_on:
+      entitysync-db:
+        condition: service_healthy
+      entitysync-scheduler:
+        condition: service_healthy
+    environment:
+      <<: *entitysync-host-environment
+      MCP_OAUTH_AUTHORITY: "${MCP_OAUTH_AUTHORITY:?MCP_OAUTH_AUTHORITY must be set}"
+      MCP_OAUTH_RESOURCE: "${MCP_OAUTH_RESOURCE:?MCP_OAUTH_RESOURCE must be set}"
+      MCP_OAUTH_AUDIENCE: "${MCP_OAUTH_AUDIENCE:?MCP_OAUTH_AUDIENCE must be set}"
+      MCP_OAUTH_SCOPES: "${MCP_OAUTH_SCOPES:-EntitySync.Read EntitySync.Operate EntitySync.Approve EntitySync.Manage EntitySync.Audit EntitySync.Expert}"
+      MCP_OAUTH_REQUIRED_SCOPE: "${MCP_OAUTH_REQUIRED_SCOPE:-EntitySync.Read}"
+      MCP_OAUTH_AUTHORIZATION_ENDPOINT: "${MCP_OAUTH_AUTHORIZATION_ENDPOINT:-}"
+      MCP_OAUTH_TOKEN_ENDPOINT: "${MCP_OAUTH_TOKEN_ENDPOINT:-}"
+      MCP_OAUTH_PUBLIC_CLIENT_ID: "${MCP_OAUTH_PUBLIC_CLIENT_ID:-}"
+      ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST: "${ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST:?ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST must be set}"
+      MCP_TRANSPORT: http
+      OTEL_SERVICE_NAME: "${MCP_OTEL_SERVICE_NAME:-lisstech-entitysync-mcp}"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+      start_interval: 2s
+    init: true
+    read_only: true
+    volumes:
+      - entitysync-keyring:/var/lib/entitysync/keys
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1654,gid=1654
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:
   entitysync-db-data:
+  entitysync-keyring:
