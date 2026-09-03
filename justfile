@@ -17,6 +17,7 @@ mcp_project       := project_root / "mcp" / "LISSTech.EntitySync.Mcp.csproj"
 mcp_publish_dir   := project_root / "Build" / "Mcp"
 scheduler_project       := project_root / "scheduler" / "LISSTech.EntitySync.Scheduler.csproj"
 scheduler_publish_dir   := project_root / "Build" / "Scheduler"
+dashboard_dir           := project_root / "scheduler-ui"
 nswag_config      := project_root / "nswag.json"
 generated_client  := project_root / "src" / "Adapters" / "LTAC" / "Generated" / "AgentControllerClient.g.cs"
 platform_tests     := project_root / "Tests" / "LISSTech.EntitySync.Platform.Tests" / "LISSTech.EntitySync.Platform.Tests.csproj"
@@ -194,7 +195,7 @@ test-load: build
 [group('quality')]
 [script('pwsh', '-NoProfile')]
 [extension('.ps1')]
-test: build
+test: build dashboard-build
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     Invoke-JustTimed -Icon '🧪' -Fallback '[test]' -Text 'Running Pester suite against Build\Module' -Script {
@@ -346,11 +347,35 @@ mcp-run: mcp-build
     $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
     & $binary.FullName
 
+# Build the React scheduler dashboard into scheduler/wwwroot
+[group('scheduler')]
+[script('pwsh', '-NoProfile')]
+[extension('.ps1')]
+dashboard-build:
+    . '{{ style_script }}'
+    $ErrorActionPreference = 'Stop'
+    Invoke-JustTimed -Fallback '[dashboard-build]' -Text 'Building React scheduler dashboard' -Script {
+        Push-Location '{{ dashboard_dir }}'
+        try {
+            npm ci
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } finally {
+            Pop-Location
+        }
+    }
+
+# Run the React dashboard development server with scheduler API proxying
+[group('scheduler')]
+dashboard-dev:
+    npm --prefix '{{ dashboard_dir }}' run dev
+
 # Build the EntitySync scheduler as a self-contained single-file binary
 [group('scheduler')]
 [script('pwsh', '-NoProfile')]
 [extension('.ps1')]
-scheduler-build:
+scheduler-build: dashboard-build
     . '{{ style_script }}'
     $ErrorActionPreference = 'Stop'
     $rid = if ($IsWindows) { 'win-x64' } elseif ($IsMacOS) { 'osx-arm64' } else { 'linux-x64' }

@@ -63,6 +63,90 @@ public sealed class EntitySyncSchedulerTests
                 && call.Query.RequiredCustomFieldName == EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName);
     }
 
+    [Fact]
+    public async Task BillComRouteBootstrapsMissingHaloLinkFromUniqueExactName()
+    {
+        var haloSource = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "halo-1",
+            Name = "Custom Protective Services"
+        };
+        var billTarget = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "2378",
+            Name = "Custom Protective Services",
+            IsActive = true
+        };
+        billTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = billTarget.Id;
+        var entities = new Dictionary<string, IReadOnlyList<ExternalEntity>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["HaloPSA"] = [haloSource],
+            [EntitySyncVendors.BillCom] = [billTarget]
+        };
+        var factory = new RecordingAdapterFactory([haloSource], [billTarget], entities);
+        using var connections = new InMemoryEntityConnectionRepository();
+        var plans = new RecordingPlanRepository(new InMemoryEntitySyncPlanRepository());
+        var exclusions = new InMemoryEntityExclusionRepository();
+        var states = new InMemoryEntitySyncChangeStateRepository();
+        var graph = new InMemoryEntityGraphRepository();
+        var mapper = new DefaultEntityMapper();
+        var service = new EntitySyncService(
+            new EntitySyncPlanner(
+                connections,
+                plans,
+                exclusions,
+                new WeightedEntityMatcher(),
+                mapper,
+                states,
+                graph),
+            connections,
+            plans,
+            exclusions,
+            mapper,
+            states,
+            graph,
+            TimeProvider.System);
+        var schedulerOptions = new EntitySyncSchedulerOptions([EntitySyncSchedulerOptions.HaloToBillCom]);
+        var status = new EntitySyncSchedulerStatus();
+        var dashboard = new EntitySyncSchedulerDashboardStore(TimeProvider.System);
+        var run = new EntitySyncScheduledRun(
+            schedulerOptions,
+            new FakeRunLock(true),
+            factory,
+            connections,
+            plans,
+            service,
+            status,
+            TimeProvider.System,
+            dashboard: dashboard);
+
+        var result = await run.RunAsync(default);
+
+        Assert.Equal("Applied", result.State);
+        Assert.Equal(1, result.Total);
+        Assert.Equal(1, result.Changed);
+        Assert.Equal(1, result.Succeeded);
+        Assert.Equal([EntitySyncVendors.BillCom, "HaloPSA"], factory.UpdatedVendors);
+        Assert.Contains(
+            factory.Queries,
+            call => call.Vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+                && call.Query.RequiredCustomFieldName == EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName);
+        var dashboardSnapshot = dashboard.Snapshot(status.Snapshot, schedulerOptions);
+        var planSummary = Assert.Single(dashboardSnapshot.RecentPlans);
+        Assert.Equal("Applied", planSummary.Status);
+        Assert.Equal(1, planSummary.Changed);
+        Assert.Equal(1, planSummary.Succeeded);
+        Assert.Equal("Applied", Assert.Single(dashboardSnapshot.RecentRuns).State);
+        Assert.Null(dashboardSnapshot.CurrentOperation);
+        Assert.Contains(
+            dashboardSnapshot.Events,
+            entry => entry.Message == "Plan applied: 1 succeeded, 0 failed, 0 skipped.");
+    }
+
 
     [Fact]
     public async Task OneMappedSourceChangeUpdatesOnlyThatSource()

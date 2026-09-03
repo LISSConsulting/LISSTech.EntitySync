@@ -33,6 +33,14 @@ public sealed class EntitySyncPlanner(
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
         var authoritativeBillSnapshot = BillComPlanReconciliation.IsAuthoritativeRoute(sourceVendor, sourceType, targetVendor, targetType);
         var authoritativeAgentControllerSnapshot = EntitySyncVendors.IsAgentController(targetVendor);
+        if (request.BootstrapExactNameLinks
+            && (!authoritativeBillSnapshot
+                || request.UpdatePolicy != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly))
+        {
+            throw new ArgumentException(
+                "Exact-name link bootstrap is restricted to changed-only HaloPSA-to-BILL.com plans.",
+                nameof(request));
+        }
         if (authoritativeAgentControllerSnapshot
             && (!sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
                 || !sourceType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase)))
@@ -240,7 +248,7 @@ public sealed class EntitySyncPlanner(
             }
 
             var item = CreateItem(source, index.FindMatches(source), options, customerLinks || siteLinks);
-            if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
+            if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!, request.BootstrapExactNameLinks);
             plan.Items.Add(item);
         }
         BillComPlanReconciliation.AddApprovedTargetOperations(plan);
@@ -377,8 +385,17 @@ public sealed class EntitySyncPlanner(
     private void ApplyChangedOnlyPolicy(
         EntitySyncPlanItem item,
         MatchOptions options,
-        IReadOnlyDictionary<string, EntitySyncChangeState> storedChangeStates)
+        IReadOnlyDictionary<string, EntitySyncChangeState> storedChangeStates,
+        bool bootstrapExactNameLinks)
     {
+        if (bootstrapExactNameLinks && IsSafeExactNameBootstrap(item, options))
+        {
+            item.Action = "Link";
+            item.MatchType = "BootstrapExactName";
+            item.Reasons.Add("Unique active BILL.com value has the exact normalized HaloPSA client name; bootstrap its immutable ID.");
+            SetDesiredState(item, options);
+            return;
+        }
 
         if (!item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase)
             || !item.MatchType.Equals("Linked", StringComparison.OrdinalIgnoreCase)
@@ -389,19 +406,38 @@ public sealed class EntitySyncPlanner(
             return;
         }
 
-        var write = mapper.MapUpdate(item.Source, item.Target, options);
-        var hash = EntityWriteRequestDigest.Compute(write);
-        item.DesiredStateHash = hash;
-        item.DesiredStateHashVersion = EntityWriteRequestDigest.SchemaVersion;
+        SetDesiredState(item, options);
         if (storedChangeStates.TryGetValue(item.Source.Id, out var state)
             && state.TargetEntityId.Equals(item.Target.Id, StringComparison.OrdinalIgnoreCase)
             && state.HashVersion == EntityWriteRequestDigest.SchemaVersion
-            && state.PayloadHash.Equals(hash, StringComparison.Ordinal))
+            && state.PayloadHash.Equals(item.DesiredStateHash, StringComparison.Ordinal))
         {
             item.Action = "None";
             item.MatchType = "Unchanged";
             item.Reasons.Add("Mapped update payload matches the last successful synchronization.");
         }
+    }
+
+    private static bool IsSafeExactNameBootstrap(EntitySyncPlanItem item, MatchOptions options)
+    {
+        if (item.Target is null
+            || item.Target.IsActive == false
+            || item.MatchType.Equals("Linked", StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(item.Source.GetExternalId(options.SourceExternalIdName)))
+        {
+            return false;
+        }
+
+        var sourceName = EntityNormalizer.NormalizeName(item.Source.Name);
+        return sourceName.Length > 0
+            && sourceName.Equals(EntityNormalizer.NormalizeName(item.Target.Name), StringComparison.Ordinal);
+    }
+
+    private void SetDesiredState(EntitySyncPlanItem item, MatchOptions options)
+    {
+        var write = mapper.MapUpdate(item.Source, item.Target!, options);
+        item.DesiredStateHash = EntityWriteRequestDigest.Compute(write);
+        item.DesiredStateHashVersion = EntityWriteRequestDigest.SchemaVersion;
     }
 
     private static void Validate(CreateEntitySyncPlanRequest request)

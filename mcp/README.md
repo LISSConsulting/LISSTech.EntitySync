@@ -46,7 +46,8 @@ NetSuite Customer -> HaloPSA Client -> N-central Customer
 ```
 
 - By default, it runs once immediately after database migrations and then every 12 hours measured from completion of the previous run. Set `SCHEDULER_AUTOMATIC_RUNS_ENABLED=false` to suppress both automatic paths while retaining authenticated `POST /run`; `/status.nextRunAt` remains `null`. A failed run remains visible in status, but liveness stays healthy and there is no immediate retry.
-- Every edge includes active and inactive sources. It updates only persistently linked targets; `createMissing` is always false, so unmatched records and fuzzy matches never write unattended.
+- Every edge includes active and inactive sources. It ordinarily updates only persistently linked targets; `createMissing` is always false, so unmatched records and fuzzy matches never write unattended.
+- The BILL.com edge may bootstrap a missing HaloPSA `CFBillSpendClientID` only when exactly one active BILL.com value has the same normalized client name. Ambiguous, inactive, and non-exact matches remain skipped. A successful bootstrap writes only that HaloPSA custom field and persists the ordinary changed-only checkpoint.
 - The edges execute in order. NetSuite-to-HaloPSA completes before HaloPSA is reread for each leaf, and a failed edge stops all later edges in that run.
 - The first successful run is an intentional baseline reconciliation for all four edges. PostgreSQL stores each edge's target identity, canonical SHA-256 desired-payload hash, digest schema version, and applied timestamp only after a successful write. Later runs skip identical mapped writes.
 - Recurring BILL.com planning suppresses orphan target-only deletion. A linked BILL.com rename still follows BILL.com's required replacement flow: create the renamed value, write its ID to HaloPSA, and only then delete the old value.
@@ -58,11 +59,16 @@ The scheduler exposes only these internal routes:
 
 | Route | Meaning |
 |---|---|
+| `/` | Read-only operations dashboard with current stage, fixed route chain, bounded recent run and plan summaries, and a payload-free operational event log |
+| `/dashboard` | Redirect to `/` |
+| `/dashboard/data` | No-store JSON backing the dashboard; current aggregate plus at most 24 runs, 40 plans, and 200 scheduler-authored events retained in this process |
 | `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
 | `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
 | `POST /run` | Queue one immediate full-chain reconciliation; requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
 
-`/health` and `/status` are unauthenticated for private-network probes and inspection. `POST /run` validates the bearer token with a constant-time digest comparison. Keep every scheduler route on the private Compose network and invoke it only from another service or the Coolify container console:
+`/`, `/dashboard`, `/dashboard/data`, `/health`, and `/status` are unauthenticated for private-network inspection and probes. Dashboard history is process-local, bounded, and excludes vendor payloads and entity names. `POST /run` validates the bearer token with a constant-time digest comparison. Keep every scheduler route on the private Compose network and invoke it only from another service or the Coolify container console:
+
+The dashboard source lives in `scheduler-ui/` and uses React 19, Vite 8, an adapted Aceternity Background Lines component, and self-hosted Archivo/Nunito Sans variable fonts. `just dashboard-build` performs a locked `npm ci` and production build; `just dashboard-dev` starts Vite with `/dashboard/data` proxied to a scheduler on port `8080`. `just scheduler-build` and the production scheduler container build the frontend before publishing ASP.NET Core.
 
 ```sh
 curl --fail-with-body --request POST \

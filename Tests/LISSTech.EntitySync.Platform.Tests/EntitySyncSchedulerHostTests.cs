@@ -44,6 +44,7 @@ public sealed class EntitySyncSchedulerHostTests
         await using var app = BuildSchedulerApplication();
 
         Assert.IsType<EntitySyncSchedulerStatus>(app.Services.GetRequiredService<EntitySyncSchedulerStatus>());
+        Assert.IsType<EntitySyncSchedulerDashboardStore>(app.Services.GetRequiredService<EntitySyncSchedulerDashboardStore>());
         Assert.IsType<EntitySyncScheduledRun>(app.Services.GetRequiredService<IEntitySyncScheduledRun>());
         Assert.IsType<PostgresEntitySyncSchedulerRunLock>(app.Services.GetRequiredService<IEntitySyncSchedulerRunLock>());
         var hostedServices = app.Services.GetServices<IHostedService>().ToArray();
@@ -152,6 +153,105 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.Equal("Failed", status.Snapshot.State);
     }
 
+    [Fact]
+    public async Task DashboardEndpointReturnsBuiltReactApplication()
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+
+        var response = await InvokeEndpointAsync(app, "/");
+
+        Assert.Equal(StatusCodes.Status200OK, response.StatusCode);
+        Assert.StartsWith("text/html", response.ContentType, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("no-store, max-age=0", response.CacheControl);
+        Assert.Contains("default-src 'none'", response.ContentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("<title>EntitySync Scheduler | LISS Technologies</title>", response.Body, StringComparison.Ordinal);
+        Assert.Contains("<div id=\"root\"></div>", response.Body, StringComparison.Ordinal);
+        Assert.Contains("type=\"module\"", response.Body, StringComparison.Ordinal);
+        Assert.Contains("/assets/index-", response.Body, StringComparison.Ordinal);
+        Assert.DoesNotContain(EntitySyncSchedulerRunAuthorization.EnvironmentVariable, response.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DashboardDataEndpointReturnsCurrentOperationPlansRunsAndEvents()
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+        var dashboard = app.Services.GetRequiredService<EntitySyncSchedulerDashboardStore>();
+        var status = app.Services.GetRequiredService<EntitySyncSchedulerStatus>();
+        var startedAt = new DateTimeOffset(2026, 9, 2, 20, 0, 0, TimeSpan.Zero);
+        dashboard.BeginRun(startedAt);
+        dashboard.SetOperation("Apply", EntitySyncSchedulerOptions.HaloToBillCom, "plan-42");
+        dashboard.RecordPlan("plan-42", EntitySyncSchedulerOptions.HaloToBillCom);
+        dashboard.RecordPlanValidation("plan-42", 10, 2, 7, 1);
+        dashboard.RecordPlanProgress("plan-42", 1, 0, 0);
+        var completed = status.Snapshot with
+        {
+            State = "Applied",
+            LastStartedAt = startedAt,
+            LastCompletedAt = startedAt.AddMinutes(1),
+            PlanId = "plan-42",
+            Total = 10,
+            Changed = 2,
+            Unchanged = 7,
+            PolicySkipped = 1,
+            Succeeded = 2
+        };
+        status.Publish(completed);
+        dashboard.CompletePlan("plan-42", "Applied", 2, 0, 0);
+        dashboard.CompleteRun(completed);
+
+        var response = await InvokeEndpointAsync(app, "/dashboard/data");
+        using var json = JsonDocument.Parse(response.Body);
+        var root = json.RootElement;
+
+        Assert.Equal(StatusCodes.Status200OK, response.StatusCode);
+        Assert.Equal("no-store, max-age=0", response.CacheControl);
+        Assert.Equal(
+            ["current", "currentOperation", "events", "generatedAt", "recentPlans", "recentRuns", "routes"],
+            root.EnumerateObject().Select(property => property.Name).Order());
+        Assert.Equal("Applied", root.GetProperty("current").GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("currentOperation").ValueKind);
+        Assert.Equal(4, root.GetProperty("routes").GetArrayLength());
+        Assert.Equal("plan-42", root.GetProperty("recentPlans")[0].GetProperty("planId").GetString());
+        Assert.Equal(2, root.GetProperty("recentPlans")[0].GetProperty("changed").GetInt32());
+        Assert.Equal("Applied", root.GetProperty("recentRuns")[0].GetProperty("state").GetString());
+        Assert.Contains(
+            root.GetProperty("events").EnumerateArray(),
+            item => item.GetProperty("message").GetString() == "Plan applied: 2 succeeded, 0 failed, 0 skipped.");
+    }
+
+    [Fact]
+    public void DashboardStoreBoundsProcessLocalHistory()
+    {
+        var status = new EntitySyncSchedulerStatus();
+        var dashboard = new EntitySyncSchedulerDashboardStore(TimeProvider.System);
+        for (var index = 0; index < 45; index++)
+            dashboard.RecordPlan($"plan-{index}", EntitySyncSchedulerOptions.NetSuiteToHalo);
+        for (var index = 0; index < 205; index++)
+            dashboard.RecordEvent("Information", $"Event {index}.");
+        for (var index = 0; index < 25; index++)
+        {
+            dashboard.CompleteRun(status.Snapshot with
+            {
+                State = "Applied",
+                LastStartedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+                LastCompletedAt = DateTimeOffset.UtcNow,
+                PlanId = $"run-{index}"
+            });
+        }
+
+        var snapshot = dashboard.Snapshot(
+            status.Snapshot,
+            new EntitySyncSchedulerOptions([EntitySyncSchedulerOptions.NetSuiteToHalo]));
+
+        Assert.Equal(40, snapshot.RecentPlans.Count);
+        Assert.Equal(24, snapshot.RecentRuns.Count);
+        Assert.Equal(200, snapshot.Events.Count);
+        Assert.Equal("plan-44", snapshot.RecentPlans[0].PlanId);
+        Assert.Equal("run-24", snapshot.RecentRuns[0].PlanId);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("wrong-scheduler-run-token-0123456789abcdef")]
@@ -228,7 +328,10 @@ public sealed class EntitySyncSchedulerHostTests
         int StatusCode,
         string Body,
         string? WwwAuthenticate,
-        string? Location)> InvokeEndpointAsync(
+        string? Location,
+        string? ContentType,
+        string? CacheControl,
+        string? ContentSecurityPolicy)> InvokeEndpointAsync(
         WebApplication app,
         string route,
         string method = "GET",
@@ -251,7 +354,10 @@ public sealed class EntitySyncSchedulerHostTests
             context.Response.StatusCode,
             await reader.ReadToEndAsync(),
             context.Response.Headers.WWWAuthenticate,
-            context.Response.Headers.Location);
+            context.Response.Headers.Location,
+            context.Response.ContentType,
+            context.Response.Headers.CacheControl,
+            context.Response.Headers["Content-Security-Policy"]);
     }
 }
 

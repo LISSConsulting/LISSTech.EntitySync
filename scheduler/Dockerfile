@@ -1,3 +1,13 @@
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS dashboard-build
+
+WORKDIR /src/scheduler-ui
+
+COPY scheduler-ui/package.json scheduler-ui/package-lock.json ./
+RUN npm ci
+
+COPY scheduler-ui/ ./
+RUN npm run build
+
 FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine@sha256:8a80a27ddac789b4cb6d09d244f9c8d840da599c5ad22f7233c04be470e55261 AS build
 
 WORKDIR /src
@@ -17,6 +27,7 @@ RUN dotnet restore scheduler/LISSTech.EntitySync.Scheduler.csproj
 
 COPY src/ src/
 COPY scheduler/ scheduler/
+COPY --from=dashboard-build /src/scheduler/wwwroot/ scheduler/wwwroot/
 RUN dotnet publish scheduler/LISSTech.EntitySync.Scheduler.csproj \
     --configuration Release \
     --no-restore \

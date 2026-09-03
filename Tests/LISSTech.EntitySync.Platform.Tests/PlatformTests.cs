@@ -480,11 +480,137 @@ public sealed class PlatformTests
         {
             Assert.Equal(1, halo.UpdateCalls);
             Assert.Equal("1", halo.LastUpdateRequest?.CustomFields["CFBillSpendClientID"]);
+            Assert.True(halo.LastUpdateRequest?.CustomFieldOnly);
         }
         else
         {
             Assert.Equal(1, halo.NCentralClientLinkCalls);
         }
+    }
+
+    [Fact]
+    public async Task ChangedOnlyBillComBootstrapWritesUniqueExactNameLinkToHalo()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "halo-1",
+            Name = "Custom Protective Services"
+        };
+        var billTarget = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "2378",
+            Name = "Custom Protective Services",
+            IsActive = true
+        };
+        billTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = billTarget.Id;
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [billTarget]);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        var service = CreateService(connections, changeStates: changeStates);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            SourceEntityType = "Client",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            TargetEntityType = "Client",
+            BootstrapExactNameLinks = true,
+            UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+            ChangeStateScope = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }, CancellationToken.None);
+
+        var bootstrap = Assert.Single(plan.Items);
+        Assert.Equal("Link", bootstrap.Action);
+        Assert.Equal("BootstrapExactName", bootstrap.MatchType);
+        Assert.Equal("2378", bootstrap.Target?.Id);
+        Assert.NotNull(bootstrap.DesiredStateHash);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, bill.UpdateCalls);
+        Assert.Equal(1, halo.UpdateCalls);
+        Assert.True(halo.LastUpdateRequest?.CustomFieldOnly);
+        Assert.Equal(
+            "2378",
+            halo.LastUpdateRequest?.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName]);
+
+        var route = EntitySyncChangeStateRoute.Create(
+            "tenant",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "HaloPSA",
+            "halo",
+            "Client",
+            EntitySyncVendors.BillCom,
+            "bill",
+            "Client");
+        var checkpoints = await changeStates.GetBySourceIdsAsync(route, ["halo-1"], CancellationToken.None);
+        var checkpoint = Assert.Single(checkpoints).Value;
+        Assert.Equal("2378", checkpoint.TargetEntityId);
+        Assert.Equal(bootstrap.DesiredStateHash, checkpoint.PayloadHash);
+    }
+
+    [Fact]
+    public async Task ChangedOnlyBillComBootstrapRejectsDuplicateExactNames()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "halo-1",
+            Name = "Duplicate"
+        };
+        var first = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "1",
+            Name = "Duplicate",
+            IsActive = true
+        };
+        var second = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "2",
+            Name = "Duplicate",
+            IsActive = true
+        };
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", new FakeAdapter(EntitySyncVendors.BillCom, [first, second]));
+        var service = CreateService(connections);
+
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            SourceEntityType = "Client",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            TargetEntityType = "Client",
+            BootstrapExactNameLinks = true,
+            UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+            ChangeStateScope = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }, CancellationToken.None);
+
+        var ambiguous = Assert.Single(plan.Items);
+        Assert.Equal("None", ambiguous.Action);
+        Assert.Equal("Ambiguous", ambiguous.MatchType);
+        Assert.Null(ambiguous.Target);
+        Assert.Equal(0, halo.UpdateCalls);
     }
 
     [Fact]
@@ -1490,11 +1616,12 @@ public sealed class PlatformTests
     private static EntitySyncService CreateService(
         IEntityConnectionRepository connections,
         IEntitySyncPlanRepository? plans = null,
-        IEntityExclusionRepository? exclusions = null)
+        IEntityExclusionRepository? exclusions = null,
+        IEntitySyncChangeStateRepository? changeStates = null)
     {
         plans ??= new InMemoryEntitySyncPlanRepository();
         exclusions ??= new InMemoryEntityExclusionRepository();
-        var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        changeStates ??= new InMemoryEntitySyncChangeStateRepository();
         var mapper = new DefaultEntityMapper();
         var graph = new InMemoryEntityGraphRepository();
         return new EntitySyncService(

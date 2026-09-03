@@ -12,6 +12,10 @@ artifacts/
 src/Artifacts/bin/
 src/Artifacts/obj/
 
+# Frontend dependencies and generated dashboard assets
+scheduler-ui/node_modules/
+scheduler/wwwroot/
+
 # Module build artifacts. Keep the manifest in source control.
 Module/*.dll
 Module/*.pdb

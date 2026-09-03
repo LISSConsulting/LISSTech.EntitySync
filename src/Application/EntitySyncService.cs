@@ -581,7 +581,8 @@ public sealed class EntitySyncService(
                 Vendor = "HaloPSA",
                 EntityType = "Client",
                 Id = item.Source.Id,
-                Name = item.Source.Name
+                Name = item.Source.Name,
+                CustomFieldOnly = true
             };
             writebackRequest.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName] = numericId;
             var writeback = await sourceAdapter.UpdateEntityAsync(writebackRequest, cancellationToken).ConfigureAwait(false);
@@ -674,16 +675,37 @@ public sealed class EntitySyncService(
             if (item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)
                 || item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (!item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Changed-only plans may apply update actions only.");
+            var update = item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+            var bootstrap = IsSafeExactNameBootstrap(plan, item);
+            if (!update && !bootstrap)
+                throw new InvalidOperationException("Changed-only plans may apply linked updates or safe BILL.com exact-name bootstrap links only.");
             if (item.Target is null
                 || string.IsNullOrWhiteSpace(item.Target.Id)
                 || item.DesiredStateHashVersion != EntityWriteRequestDigest.SchemaVersion
                 || !IsLowercaseSha256(item.DesiredStateHash))
-                throw new InvalidOperationException("Changed-only update checkpoint metadata is missing or invalid.");
+                throw new InvalidOperationException("Changed-only checkpoint metadata is missing or invalid.");
         }
 
         return route;
+    }
+
+    private static bool IsSafeExactNameBootstrap(EntitySyncPlan plan, EntitySyncPlanItem item)
+    {
+        if (!plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            || !plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            || !EntitySyncVendors.IsBillCom(plan.TargetVendor)
+            || !item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+            || !item.MatchType.Equals("BootstrapExactName", StringComparison.Ordinal)
+            || item.Target is null
+            || item.Target.IsActive == false
+            || !string.IsNullOrWhiteSpace(item.Source.GetExternalId(plan.Execution.MatchOptions.SourceExternalIdName)))
+        {
+            return false;
+        }
+
+        var sourceName = EntityNormalizer.NormalizeName(item.Source.Name);
+        return sourceName.Length > 0
+            && sourceName.Equals(EntityNormalizer.NormalizeName(item.Target.Name), StringComparison.Ordinal);
     }
 
     private static bool IsLowercaseSha256(string? value) =>

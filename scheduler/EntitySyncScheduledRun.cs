@@ -27,6 +27,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
     private readonly EntitySyncSchedulerStatus status;
     private readonly TimeProvider timeProvider;
     private readonly ILogger<EntitySyncScheduledRun> logger;
+    private readonly EntitySyncSchedulerDashboardStore dashboard;
 
     public EntitySyncScheduledRun(
         EntitySyncSchedulerOptions options,
@@ -37,7 +38,8 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         EntitySyncService service,
         EntitySyncSchedulerStatus status,
         TimeProvider timeProvider,
-        ILogger<EntitySyncScheduledRun>? logger = null)
+        ILogger<EntitySyncScheduledRun>? logger = null,
+        EntitySyncSchedulerDashboardStore? dashboard = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         this.options = options;
@@ -49,6 +51,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         this.status = status ?? throw new ArgumentNullException(nameof(status));
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.logger = logger ?? NullLogger<EntitySyncScheduledRun>.Instance;
+        this.dashboard = dashboard ?? new EntitySyncSchedulerDashboardStore(timeProvider);
     }
 
     public async Task<EntitySyncSchedulerStatusSnapshot> RunAsync(CancellationToken cancellationToken)
@@ -57,8 +60,10 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         string? planId = null;
         var aggregate = PlanAggregate.Empty;
         var progress = ApplyAggregate.Empty;
+        var currentPlanProgress = ApplyAggregate.Empty;
         var stage = RunStage.AcquireLock;
         status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+        dashboard.BeginRun(startedAt);
 
         try
         {
@@ -89,6 +94,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     ApplyAggregate.Empty,
                     null);
                 status.Publish(skipped);
+                dashboard.CompleteRun(skipped);
                 return skipped;
             }
             await using var lease = new CancellationPreservingLease(
@@ -97,6 +103,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 logger);
 
             stage = RunStage.VendorConnections;
+            dashboard.SetOperation("VendorConnections", null, null);
             var registrations = new List<EntityConnectionRegistration>();
             var endpoints = options.Routes
                 .SelectMany(route => new[]
@@ -125,11 +132,13 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 ExceptionDispatchInfo.Capture(probeException).Throw();
             if (probes.Any(probe => !probe.Connected))
                 throw new InvalidOperationException("A scheduled vendor connection test failed.");
+            dashboard.RecordEvent("Information", $"{probes.Count} vendor connections validated.");
 
             foreach (var scopedRoute in scopedRoutes)
             {
                 var route = scopedRoute.Route;
                 stage = RunStage.Planning;
+                dashboard.SetOperation("Planning", route, null);
                 var createdPlan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
                 {
                     TenantId = EntitySyncSchedulerOptions.TenantId,
@@ -142,21 +151,32 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     IncludeInactive = true,
                     CreateMissing = false,
                     SourceExternalIdName = route.SourceExternalIdName,
+                    BootstrapExactNameLinks = EntitySyncVendors.IsBillCom(route.TargetVendor),
                     UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
                     ChangeStateScope = scopedRoute.ChangeStateScope
                 }, cancellationToken).ConfigureAwait(false);
                 planId = createdPlan.Id;
+                dashboard.RecordPlan(planId, route);
 
                 stage = RunStage.PlanValidation;
+                dashboard.SetOperation("PlanValidation", route, planId);
                 var inspectedDigest = InspectEveryPage(planId);
                 var snapshot = plans.Get(EntitySyncSchedulerOptions.TenantId, planId);
                 ValidateScheduledRoute(snapshot, route, scopedRoute.ChangeStateScope);
                 if (!EntitySyncPlanDigest.Compute(snapshot).Equals(inspectedDigest, StringComparison.Ordinal))
                     throw new InvalidOperationException("The plan changed after inspection.");
-                aggregate = aggregate.Add(ValidateAndAggregate(snapshot));
+                var routeAggregate = ValidateAndAggregate(snapshot);
+                aggregate = aggregate.Add(routeAggregate);
+                dashboard.RecordPlanValidation(
+                    planId,
+                    routeAggregate.Total,
+                    routeAggregate.Changed,
+                    routeAggregate.Unchanged,
+                    routeAggregate.PolicySkipped);
                 status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
 
                 stage = RunStage.Approval;
+                dashboard.SetOperation("Approval", route, planId);
                 var approvedDigest = service.ApprovePlan(
                     EntitySyncSchedulerOptions.TenantId,
                     planId,
@@ -165,6 +185,8 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     throw new InvalidOperationException("The approved digest did not exactly match the inspected digest.");
 
                 stage = RunStage.Apply;
+                dashboard.SetOperation("Apply", route, planId);
+                currentPlanProgress = ApplyAggregate.Empty;
                 var completedProgress = progress;
                 var applyResult = await service.ApplyAsync(
                     EntitySyncSchedulerOptions.TenantId,
@@ -173,13 +195,20 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     cancellationToken,
                     update =>
                     {
-                        progress = completedProgress.Add(new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped));
+                        currentPlanProgress = new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped);
+                        progress = completedProgress.Add(currentPlanProgress);
+                        dashboard.RecordPlanProgress(
+                            planId,
+                            currentPlanProgress.Succeeded,
+                            currentPlanProgress.Failed,
+                            currentPlanProgress.Skipped);
                         status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
                     }).ConfigureAwait(false);
-                progress = completedProgress.Add(new ApplyAggregate(
+                currentPlanProgress = new ApplyAggregate(
                     applyResult.Succeeded,
                     applyResult.Failed,
-                    applyResult.Skipped));
+                    applyResult.Skipped);
+                progress = completedProgress.Add(currentPlanProgress);
                 if (!applyResult.Success)
                 {
                     var failedApply = CreateStatus(
@@ -191,8 +220,21 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                         progress,
                         "Synchronization apply completed with failures.");
                     status.Publish(failedApply);
+                    dashboard.CompletePlan(
+                        planId,
+                        "Failed",
+                        currentPlanProgress.Succeeded,
+                        currentPlanProgress.Failed,
+                        currentPlanProgress.Skipped);
+                    dashboard.CompleteRun(failedApply);
                     return failedApply;
                 }
+                dashboard.CompletePlan(
+                    planId,
+                    "Applied",
+                    currentPlanProgress.Succeeded,
+                    currentPlanProgress.Failed,
+                    currentPlanProgress.Skipped);
             }
 
             var terminal = CreateStatus(
@@ -204,6 +246,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 progress,
                 null);
             status.Publish(terminal);
+            dashboard.CompleteRun(terminal);
             return terminal;
         }
         catch (OperationCanceledException)
@@ -217,6 +260,8 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 progress,
                 "Scheduled synchronization was cancelled.");
             status.Publish(cancelled);
+            dashboard.FailPlan(planId, "Scheduled synchronization was cancelled.");
+            dashboard.CompleteRun(cancelled);
             throw;
         }
         catch (Exception exception)
@@ -231,6 +276,8 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 progress,
                 safeError);
             status.Publish(failed);
+            dashboard.FailPlan(planId, safeError);
+            dashboard.CompleteRun(failed);
             logger.LogError(
                 "Scheduled synchronization failed at {Stage}. ExceptionType={ExceptionType}; Message={ErrorMessage}",
                 stage,
@@ -366,6 +413,17 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                 continue;
             }
 
+            if (IsSafeExactNameBootstrap(plan, item))
+            {
+                if (item.DesiredStateHashVersion != EntityWriteRequestDigest.SchemaVersion
+                    || !IsLowercaseSha256(item.DesiredStateHash))
+                {
+                    throw new InvalidOperationException("A BILL.com bootstrap item failed scheduled checkpoint validation.");
+                }
+                changed++;
+                continue;
+            }
+
             if (!item.Action.Equals("None", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("The plan contains a prohibited scheduled action.");
             if (item.MatchType.Equals("Unchanged", StringComparison.OrdinalIgnoreCase)) unchanged++;
@@ -373,6 +431,25 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         }
 
         return new PlanAggregate(plan.Items.Count, changed, unchanged, policySkipped);
+    }
+
+    private static bool IsSafeExactNameBootstrap(EntitySyncPlan plan, EntitySyncPlanItem item)
+    {
+        if (!plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            || !plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            || !EntitySyncVendors.IsBillCom(plan.TargetVendor)
+            || !item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+            || !item.MatchType.Equals("BootstrapExactName", StringComparison.Ordinal)
+            || item.Target is null
+            || item.Target.IsActive == false
+            || !string.IsNullOrWhiteSpace(item.Source.GetExternalId(plan.Execution.MatchOptions.SourceExternalIdName)))
+        {
+            return false;
+        }
+
+        var sourceName = EntityNormalizer.NormalizeName(item.Source.Name);
+        return sourceName.Length > 0
+            && sourceName.Equals(EntityNormalizer.NormalizeName(item.Target.Name), StringComparison.Ordinal);
     }
 
     private static bool IsLowercaseSha256(string? value) =>

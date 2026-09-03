@@ -39,6 +39,7 @@ namespace LISSTech.EntitySync.Scheduler
                 Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
             builder.Services.AddSingleton<EntitySyncSchedulerOptions>();
             builder.Services.AddSingleton<EntitySyncSchedulerStatus>();
+            builder.Services.AddSingleton<EntitySyncSchedulerDashboardStore>();
             builder.Services.AddSingleton(
                 EntitySyncSchedulerRunAuthorization.FromCurrentEnvironment());
             builder.Services.AddSingleton<IEntitySyncSchedulerRunLock, PostgresEntitySyncSchedulerRunLock>();
@@ -68,6 +69,7 @@ namespace LISSTech.EntitySync.Scheduler
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);
+            app.MapDashboard();
             app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
             app.MapGet(
                 "/status",

@@ -20,4 +20,10 @@
     <ProjectReference Include="..\src\Application\LISSTech.EntitySync.Application.csproj" />
     <ProjectReference Include="..\src\Hosting\LISSTech.EntitySync.Hosting.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Update="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="EnsureDashboardAssets" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\wwwroot\index.html')" Text="Scheduler dashboard assets are missing. Run 'just dashboard-build' before building the scheduler." />
+  </Target>
 </Project>
