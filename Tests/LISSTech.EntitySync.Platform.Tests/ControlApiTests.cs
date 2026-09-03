@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Encodings.Web;
 using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Core;
+using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Mcp.ControlApi;
 using LISSTech.EntitySync.Ports;
 using Microsoft.AspNetCore.Authentication;
@@ -566,12 +567,34 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     [Fact]
     public async Task Stale_connection_test_generation_is_a_safe_state_conflict()
     {
+        var repository = new HttpConnectionDefinitionRepository();
+        var protector = new IdentityDataProtector();
+        var runtime = new ConnectionRuntimeFactory(
+            repository,
+            protector,
+            new NeverCreatingAdapterFactory());
         var service = new ConnectionDefinitionService(
-            null!,
-            null!,
-            new ThrowingConnectionRuntimeFactory(
-                new StaleConnectionGenerationException("halo-main", 3, 4)),
+            repository,
+            protector,
+            runtime,
             TimeProvider.System);
+        var definitionRequest = new ConnectionDefinitionRequest(
+            "HaloPSA",
+            "halo-main",
+            "Halo primary",
+            new Dictionary<string, JsonElement>(),
+            new Dictionary<string, string>());
+        var first = await service.CreateAsync(
+            "tenant-a", definitionRequest, new EntitySyncActor("seed"), default);
+        var current = await service.UpdateAsync(
+            "tenant-a",
+            first.ConnectionId,
+            first.Generation,
+            definitionRequest with { DisplayName = "Halo rotated" },
+            new EntitySyncActor("rotate"),
+            default);
+        Assert.Equal(first.Generation + 1, current.Generation);
+
         using var staleFactory = factory.WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
             {
@@ -587,7 +610,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
             HttpMethod.Post,
             "/api/v1/control/connections/halo-main/test")
         {
-            Content = Json("""{"expectedGeneration":3}""")
+            Content = Json($$"""{"expectedGeneration":{{first.Generation}}}""")
         };
         request.Headers.Add(IdempotencyEndpointFilter.HeaderName, "stale-test-generation");
 
@@ -1259,6 +1282,104 @@ public sealed class SensitiveLogRecorder : ILoggerProvider
         }
     }
 }
+
+public sealed class HttpConnectionDefinitionRepository : IConnectionDefinitionRepository
+{
+    private EntitySyncConnectionDefinition? current;
+
+    public Task<EntitySyncConnectionDefinition> InsertAsync(
+        string tenantId,
+        EntitySyncConnectionDefinition definition,
+        CancellationToken cancellationToken)
+    {
+        current = definition;
+        return Task.FromResult(definition);
+    }
+
+    public Task<EntitySyncConnectionDefinition?> GetAsync(
+        string tenantId,
+        string connectionId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(
+            current is not null
+            && current.TenantId.Equals(tenantId, StringComparison.Ordinal)
+            && current.ConnectionId.Equals(connectionId, StringComparison.Ordinal)
+                ? current
+                : null);
+
+    public Task<IReadOnlyList<EntitySyncConnectionDefinition>> ListAsync(
+        string tenantId,
+        string? vendor,
+        bool? enabled,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<EntitySyncConnectionDefinition>>(
+            current is not null && current.TenantId.Equals(tenantId, StringComparison.Ordinal)
+                ? [current]
+                : []);
+
+    public Task<EntitySyncConnectionDefinition?> TryReplaceAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        EntitySyncConnectionDefinition nextGeneration,
+        CancellationToken cancellationToken)
+    {
+        if (current is null
+            || !current.TenantId.Equals(tenantId, StringComparison.Ordinal)
+            || !current.ConnectionId.Equals(connectionId, StringComparison.Ordinal)
+            || current.Generation != expectedGeneration)
+            return Task.FromResult<EntitySyncConnectionDefinition?>(null);
+        current = nextGeneration;
+        return Task.FromResult<EntitySyncConnectionDefinition?>(nextGeneration);
+    }
+
+    public Task<ConnectionDefinitionDeleteResult> TryDeleteAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(ConnectionDefinitionDeleteResult.NotFound);
+}
+
+
+public sealed class IdentityDataProtector : IEntitySyncDataProtector
+{
+    public string Protect(EntitySyncDataProtectionPurpose purpose, string plaintext) => plaintext;
+
+    public string Unprotect(EntitySyncDataProtectionPurpose purpose, string ciphertext) =>
+        ciphertext;
+}
+
+
+public sealed class NeverCreatingAdapterFactory : IServerManagedEntityAdapterFactory
+{
+    public Task<IEntityAdapter> CreateAsync(
+        string vendor,
+        IReadOnlyDictionary<string, string>? profileSettings,
+        CancellationToken cancellationToken) =>
+        Task.FromException<IEntityAdapter>(
+            new InvalidOperationException("adapter creation was not expected"));
+
+    public Task<IEntityAdapter> CreateDurableAsync(
+        string vendor,
+        IReadOnlyDictionary<string, JsonElement> publicConfiguration,
+        IReadOnlyDictionary<string, string> secretConfiguration,
+        CancellationToken cancellationToken) =>
+        Task.FromException<IEntityAdapter>(
+            new InvalidOperationException("adapter creation was not expected"));
+
+    public ServerManagedConnectionConfiguration GetConnectionConfiguration(
+        string vendor,
+        IReadOnlyDictionary<string, string>? profileSettings) =>
+        throw new NotSupportedException();
+
+    public void ValidateNetSuiteHaloFixedRouteConfiguration() =>
+        throw new NotSupportedException();
+
+    public string GetNetSuiteHaloChangeStateScope() =>
+        throw new NotSupportedException();
+}
+
 
 public sealed class ThrowingConnectionRuntimeFactory(Exception error)
     : IConnectionRuntimeFactory
