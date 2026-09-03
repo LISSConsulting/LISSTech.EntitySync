@@ -585,9 +585,7 @@ public sealed class DurableOperationTests : IAsyncLifetime
             runtime = new FakeRuntime(Source, Target);
             ChangeStates = new TestChangeStates();
             var legacyPlans = new TestEntitySyncPlanRepository();
-            var planner = new EntitySyncPlanner(
-                runtime, legacyPlans, Exclusions, new WeightedEntityMatcher(),
-                mapper, ChangeStates);
+            var planner = new EntitySyncPlanner(runtime, legacyPlans, Exclusions, new WeightedEntityMatcher(), mapper, ChangeStates, new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
             var definition = new EntitySyncPolicyDefinition(
                 "NetSuite", SourceConnectionId, "Customer",
                 "HaloPSA", TargetConnectionId, "Client",

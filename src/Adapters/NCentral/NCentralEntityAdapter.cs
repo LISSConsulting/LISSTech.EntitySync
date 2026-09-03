@@ -98,29 +98,37 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, ICustomPropertyExper
 
     public async Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
     {
-        if (request.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase))
-        {
-            return new EntityWriteResult { Vendor = Vendor, EntityType = request.EntityType, Id = request.Id, Action = "Update", Success = true, Message = "N-central REST OpenAPI does not expose a site update endpoint; no N-central site fields were changed." };
-        }
+        var isCustomer = request.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase);
+        var isSite = request.EntityType.Equals("Site", StringComparison.OrdinalIgnoreCase);
+        if (!isCustomer && !isSite) throw new NotSupportedException("N-central adapter currently supports updating EntityType Customer and Site.");
 
-        if (!request.EntityType.Equals("Customer", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("N-central adapter currently supports updating EntityType Customer.");
-        if (string.IsNullOrWhiteSpace(request.Id)) throw new InvalidOperationException("N-central customer update requires a target customer ID.");
-        if (string.IsNullOrWhiteSpace(options.ServiceOrgId)) throw new InvalidOperationException("N-central customer update requires NCentralServiceOrgId. Reconnect with -NCentralServiceOrgId or set NCENTRAL_SERVICE_ORG_ID.");
-        EnsureSoapCredentials("N-central customer update requires SOAP credentials. Reconnect with -NCentralSoapUsername/-NCentralSoapPassword or set NCENTRAL_SOAP_USERNAME/NCENTRAL_SOAP_PASSWORD.");
-        var propertyIds = await ValidateDesiredOrganizationPropertiesAsync(request.Id, request, cancellationToken).ConfigureAwait(false);
+        var entityLabel = isSite ? "site" : "customer";
+        if (string.IsNullOrWhiteSpace(request.Id)) throw new InvalidOperationException($"N-central {entityLabel} update requires a target {entityLabel} ID.");
 
-        var settings = ToCustomerModifySettings(request);
+        var parentId = isSite
+            ? NCentralCustomerId(request) ?? throw new InvalidOperationException("N-central site update requires NCentralCustomerId from the parent customer link.")
+            : options.ServiceOrgId;
+        if (isCustomer && string.IsNullOrWhiteSpace(parentId)) throw new InvalidOperationException("N-central customer update requires NCentralServiceOrgId. Reconnect with -NCentralServiceOrgId or set NCENTRAL_SERVICE_ORG_ID.");
+
+        EnsureSoapCredentials($"N-central {entityLabel} update requires SOAP credentials. Reconnect with -NCentralSoapUsername/-NCentralSoapPassword or set NCENTRAL_SOAP_USERNAME/NCENTRAL_SOAP_PASSWORD.");
+        var propertyIds = isCustomer
+            ? await ValidateDesiredOrganizationPropertiesAsync(request.Id, request, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        var settings = ToCustomerModifySettings(request, parentId);
         var response = await InvokeEi2IntMethodAsync("customerModify", settings, cancellationToken).ConfigureAwait(false);
-        var customPropertyResult = await UpdateOrganizationPropertiesAsync(request.Id, request, cancellationToken, propertyIds).ConfigureAwait(false);
+        var customPropertyResult = isCustomer
+            ? await UpdateOrganizationPropertiesAsync(request.Id, request, cancellationToken, propertyIds).ConfigureAwait(false)
+            : null;
         return new EntityWriteResult
         {
             Vendor = Vendor,
             EntityType = request.EntityType,
             Id = response > 0 ? response.ToString(System.Globalization.CultureInfo.InvariantCulture) : request.Id,
             Action = "Update",
-            Success = response > 0 && customPropertyResult.Success,
-            Message = response > 0 ? customPropertyResult.Message : "N-central SOAP customerModify returned no customer ID.",
-            Raw = new { CustomerModify = response, OrganizationProperties = customPropertyResult.Raw }
+            Success = response > 0 && (customPropertyResult == null || customPropertyResult.Success),
+            Message = response > 0 ? customPropertyResult?.Message : "N-central SOAP customerModify returned no organization ID.",
+            Raw = new { CustomerModify = response, OrganizationProperties = customPropertyResult?.Raw }
         };
     }
 
@@ -558,13 +566,13 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, ICustomPropertyExper
         return payload;
     }
 
-    private IReadOnlyList<KeyValuePair<string, string>> ToCustomerModifySettings(EntityWriteRequest request)
+    private IReadOnlyList<KeyValuePair<string, string>> ToCustomerModifySettings(EntityWriteRequest request, string parentId)
     {
         var payload = ToCustomerPayload(request);
         var settings = new List<KeyValuePair<string, string>>
         {
             new("customerid", request.Id ?? string.Empty),
-            new("parentid", options.ServiceOrgId),
+            new("parentid", parentId),
             new("customername", ToStringValue(payload["customerName"]) ?? string.Empty)
         };
 
@@ -827,11 +835,8 @@ public sealed class NCentralEntityAdapter : IEntityAdapter, ICustomPropertyExper
         return !string.IsNullOrWhiteSpace(customerName) && customer.Name.Equals(customerName, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static string SanitizeNCentralName(string value)
-    {
-        var sanitized = value.Replace("&", " and ", StringComparison.Ordinal);
-        return string.Join(" ", sanitized.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Trim();
-    }
+    public static string SanitizeNCentralName(string value) =>
+        EntitySyncIntegrationContracts.SanitizeNCentralName(value);
 
     public static string? NormalizeNCentralCountryCode(string? value)
     {

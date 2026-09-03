@@ -195,10 +195,7 @@ public sealed class DurablePlanServiceTests
         var time = new ManualTimeProvider(instant);
         var repository = new MemoryDurableRepository(time, policies, connections);
         var mapper = new DefaultEntityMapper();
-        var planner = new EntitySyncPlanner(
-            connections, new TestEntitySyncPlanRepository(), exclusions,
-            new WeightedEntityMatcher(), mapper,
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(connections, new TestEntitySyncPlanRepository(), exclusions, new WeightedEntityMatcher(), mapper, new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
         var service = new DurablePlanService(
             planner, new PlanManifestBuilder(mapper), policies, connections,
             connections, exclusions, repository, time);
@@ -732,13 +729,7 @@ public sealed class DurablePlanServiceTests
             Time = new ManualTimeProvider(Instant);
             DurableRepository = new MemoryDurableRepository(
                 Time, Policies, Connections);
-            Planner = new EntitySyncPlanner(
-                Connections,
-                new TestEntitySyncPlanRepository(),
-                Exclusions,
-                new WeightedEntityMatcher(),
-                Mapper,
-                new InMemoryEntitySyncChangeStateRepository());
+            Planner = new EntitySyncPlanner(Connections, new TestEntitySyncPlanRepository(), Exclusions, new WeightedEntityMatcher(), Mapper, new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
             Service = CreateService();
         }
 

@@ -37,5 +37,11 @@ public interface IServerManagedEntityAdapterFactory
 
     void ValidateNetSuiteHaloFixedRouteConfiguration();
 
-    string GetNetSuiteHaloChangeStateScope();
+    string GetChangeStateScope(
+        string sourceVendor,
+        string sourceConnectionId,
+        string sourceEntityType,
+        string targetVendor,
+        string targetConnectionId,
+        string targetEntityType);
 }

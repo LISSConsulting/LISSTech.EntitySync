@@ -16,6 +16,7 @@ public sealed class EntityWriteRequest
     public EntityAddress? Address { get; set; }
     public EntityWriteParent? ResolvedParent { get; set; }
     public EntityWriteCorrelation? Correlation { get; set; }
+    public bool CustomFieldOnly { get; set; }
     public Dictionary<string, object?> Fields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string?> CustomFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

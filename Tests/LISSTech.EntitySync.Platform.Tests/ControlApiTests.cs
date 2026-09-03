@@ -1456,7 +1456,13 @@ public sealed class NeverCreatingAdapterFactory : IServerManagedEntityAdapterFac
     public void ValidateNetSuiteHaloFixedRouteConfiguration() =>
         throw new NotSupportedException();
 
-    public string GetNetSuiteHaloChangeStateScope() =>
+    public string GetChangeStateScope(
+        string sourceVendor,
+        string sourceConnectionId,
+        string sourceEntityType,
+        string targetVendor,
+        string targetConnectionId,
+        string targetEntityType) =>
         throw new NotSupportedException();
 }
 

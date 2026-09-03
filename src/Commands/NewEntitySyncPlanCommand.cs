@@ -6,6 +6,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
 using LISSTech.EntitySync.Matching;
@@ -26,7 +27,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     public ExternalEntity? InputObject { get; set; }
 
     [Parameter(Mandatory = true)]
-    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "Bill.com", "BillCom", "BILL", "BillSpend")]
+    [ValidateSet("HaloPSA", "NetSuite", "NCentral", "Bill.com", "BillCom", "BILL", "BillSpend", "Sophos Central", "SophosCentral", "Sophos")]
     public string SourceVendor { get; set; } = string.Empty;
 
     [Parameter(Mandatory = true)]
@@ -143,6 +144,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var sourceEntityType = DynamicValue<string?>("SourceEntityType", null) ?? DefaultEntityType(SourceVendor);
             var targetEntityType = DynamicValue<string?>("TargetEntityType", null) ?? DefaultEntityType(TargetVendor);
             var isLtacSnapshot = IsLtacSnapshotPlan(sourceEntityType);
+            var authoritativeBillSnapshot = BillComPlanReconciliation.IsAuthoritativeRoute(SourceVendor, sourceEntityType, TargetVendor, targetEntityType);
             WriteProgress(new ProgressRecord(1, "New EntitySync plan", "Preparing source records") { PercentComplete = 0 });
             if (targetAdapter is HaloEntityAdapter && !FullTargetObjects)
             {
@@ -158,9 +160,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
                     throw new InvalidOperationException("SourceSearch and SourceCount cannot be combined with pipeline source input.");
                 }
 
-                if (isLtacSnapshot)
+                if (isLtacSnapshot || authoritativeBillSnapshot)
                 {
-                    throw new InvalidOperationException("AgentController CustomerScope plans must read the complete N-central Customer and Site snapshot; pipeline input is not supported.");
+                    throw new InvalidOperationException(isLtacSnapshot
+                        ? "AgentController CustomerScope plans must read the complete N-central Customer and Site snapshot; pipeline input is not supported."
+                        : "BILL.com exact-list plans must read the complete HaloPSA client list; pipeline input is not supported.");
                 }
                 sources = pipelineSources;
                 WriteProgress(new ProgressRecord(1, "New EntitySync plan", $"Using {pipelineSources.Count} pipeline source record(s)") { PercentComplete = 30 });
@@ -179,6 +183,10 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
                 var sites = FetchEntitiesWithProgress(sourceAdapter, BuildSourceQuery(sourceAdapter, "Site"), "Reading N-central sites", 20, 40);
                 sources = customers.Concat(sites).ToArray();
                 targets = FetchEntitiesWithProgress(targetAdapter, BuildTargetQuery(targetAdapter, targetEntityType), "Reading target records", 40, 70);
+            }
+            else if (authoritativeBillSnapshot && (!string.IsNullOrWhiteSpace(SourceSearch) || SourceCount > 0))
+            {
+                throw new InvalidOperationException("BILL.com exact-list plans require a complete HaloPSA client list; SourceSearch and SourceCount are not supported.");
             }
             else
             {
@@ -219,6 +227,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             var duplicateLtacSlugs = isLtacTarget ? FindDuplicateLtacSlugs(sources) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var items = MatchSources(sources, matchIndex, AutoLinkScore, ReviewScore, CreateMissing, ThrottleLimit, sourceExternalIdName, requiresAuthoritativeTarget, isLtacTarget, duplicateLtacSourceIds, duplicateLtacSlugs);
             plan.Items.AddRange(items);
+            BillComPlanReconciliation.AddApprovedTargetOperations(plan);
 
             WriteObject(plan);
             WriteProgress(new ProgressRecord(1, "New EntitySync plan", "Complete") { RecordType = ProgressRecordType.Completed });
@@ -431,6 +440,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = traces.Enqueue;
 
         try
         {
@@ -468,6 +478,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
             if (adapter is NetSuiteEntityAdapter completedNetSuiteAdapter) completedNetSuiteAdapter.Trace = null;
             if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
             if (adapter is BillComEntityAdapter completedBillComAdapter) completedBillComAdapter.Trace = null;
+            if (adapter is SophosCentralEntityAdapter completedSophosCentralAdapter) completedSophosCentralAdapter.Trace = null;
         }
     }
 
@@ -569,7 +580,14 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
     private string EffectiveSourceExternalIdName(bool usingHaloNCentralLinks, bool usingHaloNCentralSiteLinks, string defaultLinkedIdName)
     {
         if ((usingHaloNCentralLinks || usingHaloNCentralSiteLinks) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return defaultLinkedIdName;
+        if (SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && EntitySyncVendors.IsBillCom(TargetVendor)
+            && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)))
+        {
+            return BillComEntityAdapter.ClientExternalIdName;
+        }
         if (EntitySyncVendors.IsBillCom(SourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        if (EntitySyncVendors.IsSophosCentral(SourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return SophosCentralEntityAdapter.TenantExternalIdName;
         return SourceExternalIdName;
     }
 
@@ -579,6 +597,11 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         {
             return BillComEntityAdapter.HaloClientCustomFieldName;
         }
+        if (EntitySyncVendors.IsSophosCentral(SourceVendor) && TargetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return SophosCentralEntityAdapter.HaloTenantCustomFieldName;
+        }
+
 
         return TargetCustomFieldName;
     }
@@ -588,19 +611,22 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         var enrichHaloClientForNCentralCustomer = SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
             && TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
             && sourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase);
+        var enrichHaloClientForBill = BillComPlanReconciliation.IsAuthoritativeRoute(SourceVendor, sourceEntityType, TargetVendor, "Client");
         var query = new EntityQuery
         {
             EntityType = sourceEntityType,
             Search = SourceSearch,
             IncludeInactive = IncludeInactive,
-            FullObjects = enrichHaloClientForNCentralCustomer,
+            FullObjects = enrichHaloClientForNCentralCustomer || enrichHaloClientForBill,
             IncludeSiteDetails = enrichHaloClientForNCentralCustomer,
             ThrottleLimit = ThrottleLimit
         };
         if (SourceCount > 0) query.Count = SourceCount;
         if (sourceAdapter is HaloEntityAdapter haloSourceAdapter)
         {
-            query.RequiredCustomFieldName = string.Join(',', haloSourceAdapter.NetSuiteCustomerIdField, haloSourceAdapter.NetSuiteCustomerNameField);
+            query.RequiredCustomFieldName = enrichHaloClientForBill
+                ? string.Join(',', haloSourceAdapter.NetSuiteCustomerIdField, haloSourceAdapter.NetSuiteCustomerNameField, BillComEntityAdapter.HaloClientCustomFieldName)
+                : string.Join(',', haloSourceAdapter.NetSuiteCustomerIdField, haloSourceAdapter.NetSuiteCustomerNameField);
         }
 
         return query;
@@ -683,6 +709,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = traces.Enqueue;
     }
 
     private static void ClearAdapterEvents(IEntityAdapter adapter)
@@ -696,6 +723,7 @@ public sealed class NewEntitySyncPlanCommand : PSCmdlet, IDynamicParameters
         if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = null;
         if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = null;
         if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = null;
+        if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = null;
     }
     private static Guid ParseRequiredGuidEnvironment(string name)
     {

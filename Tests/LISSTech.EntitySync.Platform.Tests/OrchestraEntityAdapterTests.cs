@@ -751,13 +751,7 @@ public sealed class OrchestraEntityAdapterTests
             ]),
             PlatformInstanceId);
         connections.Register("tenant", "target", target);
-        var planner = new EntitySyncPlanner(
-            connections,
-            new TestEntitySyncPlanRepository(),
-            new InMemoryEntityExclusionRepository(),
-            new WeightedEntityMatcher(),
-            new DefaultEntityMapper(),
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(connections, new TestEntitySyncPlanRepository(), new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher(), new DefaultEntityMapper(), new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
 
         var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
         {
@@ -952,13 +946,7 @@ public sealed class OrchestraEntityAdapterTests
             }
         ]));
         connections.Register("tenant", "target", target);
-        var planner = new EntitySyncPlanner(
-            connections,
-            new TestEntitySyncPlanRepository(),
-            new InMemoryEntityExclusionRepository(),
-            new WeightedEntityMatcher(),
-            new DefaultEntityMapper(),
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(connections, new TestEntitySyncPlanRepository(), new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher(), new DefaultEntityMapper(), new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
 
         var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
         {

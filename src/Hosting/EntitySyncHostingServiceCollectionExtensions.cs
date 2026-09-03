@@ -31,7 +31,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
-                "DATABASE_URL is required. EntitySync refuses to run without durable exclusion storage.");
+                "DATABASE_URL is required. EntitySync refuses to run without durable record, relationship, exclusion, and change-state storage.");
         }
 
         var keyPath = ResolveDataProtectionKeyPath(hostMode);
@@ -67,6 +67,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IIdempotentCommandExecutor>(
             provider => provider.GetRequiredService<PostgresIdempotencyRepository>());
         services.AddSingleton<IEntitySyncDataProtector, EntitySyncDataProtector>();
+        services.AddSingleton<IEntityGraphRepository, PostgresEntityGraphRepository>();
         services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
         services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
         services.AddSingleton<IServerManagedEntityAdapterFactory, ServerManagedEntityAdapterFactory>();

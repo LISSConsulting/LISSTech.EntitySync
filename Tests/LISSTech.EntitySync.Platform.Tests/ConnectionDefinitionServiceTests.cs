@@ -579,13 +579,7 @@ public sealed class ConnectionDefinitionServiceTests
             Request(connectionId: "halo"),
             Actor,
             default);
-        var planner = new EntitySyncPlanner(
-            runtime,
-            new TestEntitySyncPlanRepository(),
-            new InMemoryEntityExclusionRepository(),
-            new WeightedEntityMatcher(),
-            new DefaultEntityMapper(),
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(runtime, new TestEntitySyncPlanRepository(), new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher(), new DefaultEntityMapper(), new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
 
         var plan = await planner.CreateAsync(
             new CreateEntitySyncPlanRequest
@@ -905,7 +899,13 @@ public sealed class ConnectionDefinitionServiceTests
         {
         }
 
-        public string GetNetSuiteHaloChangeStateScope() => "unused";
+        public string GetChangeStateScope(
+            string sourceVendor,
+            string sourceConnectionId,
+            string sourceEntityType,
+            string targetVendor,
+            string targetConnectionId,
+            string targetEntityType) => "unused";
     }
 
     private sealed class FakeRuntimeFactory(IConnectionDefinitionRepository repository) : IConnectionRuntimeFactory

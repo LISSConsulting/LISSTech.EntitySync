@@ -868,13 +868,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var mapper = new DefaultEntityMapper();
         var exclusions = new PostgresEntityExclusionRepository(tinyPool);
         var plans = new PostgresDurableSyncPlanRepository(tinyPool);
-        var planner = new EntitySyncPlanner(
-            runtime,
-            new TestEntitySyncPlanRepository(),
-            exclusions,
-            new WeightedEntityMatcher(),
-            mapper,
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(runtime, new TestEntitySyncPlanRepository(), exclusions, new WeightedEntityMatcher(), mapper, new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
         var service = new DurablePlanService(
             planner,
             new PlanManifestBuilder(mapper),
@@ -3051,13 +3045,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var mapper = new DefaultEntityMapper();
         var exclusions = new PostgresEntityExclusionRepository(Database);
         return new DurablePlanService(
-            new EntitySyncPlanner(
-                runtime,
-                new TestEntitySyncPlanRepository(),
-                exclusions,
-                new WeightedEntityMatcher(),
-                mapper,
-                new InMemoryEntitySyncChangeStateRepository()),
+            new EntitySyncPlanner(runtime, new TestEntitySyncPlanRepository(), exclusions, new WeightedEntityMatcher(), mapper, new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository()),
             new PlanManifestBuilder(mapper),
             policies ?? new PostgresSyncPolicyRepository(Database),
             connections ?? new PostgresConnectionDefinitionRepository(Database),

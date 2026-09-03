@@ -45,6 +45,7 @@ services:
       OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:?OTEL Logfire authorization header is required}"
       OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
       OTEL_SERVICE_NAME: "${SCHEDULER_OTEL_SERVICE_NAME:-lisstech-entitysync-scheduler}"
+
     expose:
       - "8080"
     healthcheck:

@@ -6,6 +6,7 @@ using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Runtime;
 
@@ -48,6 +49,10 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
         else if (EntitySyncVendors.IsBillCom(Vendor))
         {
             AddEntityTypeParameter("Client");
+        }
+        else if (EntitySyncVendors.IsSophosCentral(Vendor))
+        {
+            AddEntityTypeParameter("Customer");
         }
         else if (EntitySyncVendors.IsAgentController(Vendor))
         {
@@ -93,6 +98,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
             if (adapter is NetSuiteEntityAdapter netSuiteAdapter) netSuiteAdapter.Trace = traces.Enqueue;
             if (adapter is NCentralEntityAdapter nCentralAdapter) nCentralAdapter.Trace = traces.Enqueue;
             if (adapter is BillComEntityAdapter billComAdapter) billComAdapter.Trace = traces.Enqueue;
+            if (adapter is SophosCentralEntityAdapter sophosCentralAdapter) sophosCentralAdapter.Trace = traces.Enqueue;
             IReadOnlyList<ExternalEntity> entities;
             try
             {
@@ -129,6 +135,7 @@ public sealed class GetEntitySyncEntityCommand : PSCmdlet, IDynamicParameters
                 if (adapter is LTACEntityAdapter completedLtacAdapter) completedLtacAdapter.Trace = null;
                 if (adapter is NCentralEntityAdapter completedNCentralAdapter) completedNCentralAdapter.Trace = null;
                 if (adapter is BillComEntityAdapter completedBillComAdapter) completedBillComAdapter.Trace = null;
+                if (adapter is SophosCentralEntityAdapter completedSophosCentralAdapter) completedSophosCentralAdapter.Trace = null;
             }
             DrainMessages(traces, progress);
             WriteProgress(new ProgressRecord(1, "Get EntitySync entities", "Complete") { RecordType = ProgressRecordType.Completed });

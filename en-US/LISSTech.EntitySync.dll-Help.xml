@@ -59,6 +59,8 @@
       <maml:para>NetSuite connections use standard REST Web Services SuiteQL. Pass the account ID only, such as `1234567` or `1234567_SB1`; the adapter derives the SuiteTalk REST host. The NetSuite role used by the token must have REST Web Services access and permissions to query customers with SuiteQL.</maml:para>
       <maml:para>N-central connections use a User-API token for REST discovery and creation. The adapter exchanges it with `POST /api/auth/authenticate`, then uses the returned access token for customer discovery and creation. Set `NCENTRAL_SERVICE_ORG_ID` or `-NCentralServiceOrgId` because customer creation posts to `/api/service-orgs/{soId}/customers`.</maml:para>
       <maml:para>N-central customer updates and organization custom-property writes use EI2 SOAP. Configure `-NCentralSoapUsername` and `-NCentralSoapPassword` for apply operations that update existing customers or maintain the `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name` custom properties.</maml:para>
+      <maml:para>Bill.com connections use the Bill Spend &amp; Expense custom fields API. Set `BILLCOM_API_TOKEN` or `BILLSPEND_API_TOKEN`, or pass `-BillComApiToken`. `-BillComBaseUrl` defaults to `https://gateway.prod.bill.com/connect/v3/spend/custom-fields`, and `-BillComClientFieldName` defaults to `Client`. The adapter exposes that custom field's values as EntitySync `Client` records and can create missing values during apply.</maml:para>
+      <maml:para>Sophos Central connections use OAuth client credentials from Sophos Central Partner or Enterprise. Set `SOPHOS_CENTRAL_CLIENT_ID` and `SOPHOS_CENTRAL_CLIENT_SECRET`, or pass `-SophosCentralClientId` and `-SophosCentralClientSecret`. The adapter accepts partner or organization identities and exposes their tenants as EntitySync `Customer` records. Partner identities can create tenants and patch their `showAs` display names; organization identities are read-only. Tenant creation requires canonical contact/address data and geography/region plus billing type. Supply the latter values through source custom fields or `-SophosCentralDefaultDataGeography`/`-SophosCentralDefaultDataRegion` and `-SophosCentralDefaultBillingType`.</maml:para>
       <maml:para>`Connect-EntitySyncVendor -Vendor AgentController -Session &lt;Object&gt;` consumes structured session data returned by `LISSTech.DeviceAssetOps` (`Get-DeviceAssetOpsAccessToken -AsSession`). The session supplies the AgentController ops/PostgREST base URL (`OpsBaseUrl`) and a SecureString operator JWT (`Token`). The generated client uses `POST /rpc/has_scope` for non-mutating connection validation and `POST /rpc/sync_ncentral_customers` for apply, both relative to that ops base URL. It does not call `/rest/rpc/...`, derive `ops-` from `api-`, or retry alternate paths after 404.</maml:para>
       <maml:para>Manual break-glass mode remains available with `-Url &lt;String&gt; -Token &lt;String&gt;` or `-Url &lt;String&gt; -SecureToken &lt;SecureString&gt;`. In those parameter sets, `-Url` means the AgentController ops/PostgREST OpenAPI base URL, for example `https://ops-agent-controller.clfy-b.lissonline.com`, not the API/auth base URL `https://api-agent-controller.clfy-b.lissonline.com`. `-Vendor LTAC` is accepted and normalizes to `AgentController` in the returned connection. Tokens never appear in the returned connection object, `Get-EntitySyncConnection` output, exported plans, or common adapter error messages; Agent Controller HTTP failures report only the operation, HTTP status where available, and RPC path. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
     </maml:description>
@@ -78,7 +80,9 @@
         <maml:title>-------------------------- Example 1 --------------------------</maml:title>
         <dev:code>Connect-EntitySyncVendor -Vendor HaloPSA
 Connect-EntitySyncVendor -Vendor NetSuite
-Connect-EntitySyncVendor -Vendor NCentral</dev:code>
+Connect-EntitySyncVendor -Vendor NCentral
+Connect-EntitySyncVendor -Vendor Bill.com
+Connect-EntitySyncVendor -Vendor 'Sophos Central'</dev:code>
         <dev:remarks>
           <maml:para>Connects adapters using environment variables.</maml:para>
           <maml:para>Use `Get-EntitySyncLookup -Vendor HaloPSA -Type TopLevel` to discover values for `-HaloTopLevelId`, `Get-EntitySyncLookup -Vendor HaloPSA -Type NCentralIntegration` to discover values for `-HaloNCentralIntegrationId`, and `Get-EntitySyncLookup -Vendor NCentral -Type ServiceOrganization` to discover values for `-NCentralServiceOrgId`.</maml:para>
@@ -105,6 +109,7 @@ Connect-EntitySyncVendor -Vendor AgentController -Session $session</dev:code>
 Connect-EntitySyncVendor -Vendor HaloPSA -Profile prod -SaveProfile
 Connect-EntitySyncVendor -Vendor NCentral -Profile prod -SaveProfile
 Connect-EntitySyncVendor -Vendor AgentController -DeviceAssetOpsProfile prod -Profile prod -SaveProfile
+Connect-EntitySyncVendor -Vendor 'Sophos Central' -Profile prod -SaveProfile
 
 Connect-EntitySyncProfile prod</dev:code>
         <dev:remarks>
@@ -225,6 +230,8 @@ Get-EntitySyncConnection</dev:code>
     </command:details>
     <maml:description>
       <maml:para>Reads `ExternalEntity` records from the vendor adapter registered by `Connect-EntitySyncVendor`. `-Type` defaults to the connected vendor's supported entity type and completes only to values that vendor supports.</maml:para>
+      <maml:para>Bill.com supports `-Type Client`, backed by the configured Bill Spend &amp; Expense client custom field.</maml:para>
+      <maml:para>Sophos Central supports `-Type Customer`, backed by partner or organization tenants. Active tenants are returned by default; `-IncludeInactive` includes suspended and canceled tenants.</maml:para>
       <maml:para>`Get-EntitySyncEntity` is fast by default and returns the vendor's list payload. Use `-FullObjects` only when per-client detail or site address enrichment is required for HaloPSA; that mode is intentionally slower and shows standard PowerShell progress.</maml:para>
       <maml:para>`Get-EntitySyncEntity -Vendor AgentController -Type Customer` is the only supported Agent Controller read shape. `LTAC` is also accepted and normalizes to `AgentController`.</maml:para>
       <maml:para>LTAC currently has no customer-scope list/read endpoint in the sync contract, so Customer reads return an empty set instead of calling the batch write endpoint or fabricating target candidates. This empty-target fallback is intentional: N-central Customer and Site sources still plan as create/sync candidates, and the reviewed plan is applied later through the authoritative LTAC batch path. If LTAC adds a read surface later, this command should return active LTAC customer scopes without changing the plan-first flow. See `specs/001-ltac-sync-adapter/contracts/powershell-command-contract.md`.</maml:para>
@@ -258,6 +265,13 @@ Get-EntitySyncEntity -Vendor HaloPSA -Type Client</dev:code>
       </command:example>
       <command:example>
         <maml:title>-------------------------- Example 3 --------------------------</maml:title>
+        <dev:code>Get-EntitySyncEntity -Vendor 'Sophos Central' -Type Customer -Search 'Acme'</dev:code>
+        <dev:remarks>
+          <maml:para>Lists active Sophos Central tenants whose name, tenant ID, or contact email contains `Acme`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 4 --------------------------</maml:title>
         <dev:code>Get-EntitySyncEntity -Vendor AgentController -Type Customer</dev:code>
         <dev:remarks>
           <maml:para>Returns no records when the connected LTAC target has no customer-scope read surface. This keeps planning read-only while still allowing N-central sources to become LTAC customer-scope sync candidates.</maml:para>
@@ -521,6 +535,8 @@ Invoke-EntitySyncNetSuiteSuiteQL -Query 'SELECT id, entityid, companyname FROM c
     <maml:description>
       <maml:para>Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.</maml:para>
       <maml:para>`-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.</maml:para>
+      <maml:para>For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. For Bill.com target plans, creates add missing custom-field values; existing values are safe target no-ops, and HaloPSA source plans still write the existing or newly created BILL value ID back to `CFBillSpendClientID`.</maml:para>
+      <maml:para>For Sophos Central source plans targeting HaloPSA, `Invoke-EntitySyncPlan` writes the source `SophosCentralTenantId` to HaloPSA custom field `CFSophosCentralTenantID` unless `-TargetCustomFieldName` is explicitly supplied. Sophos Central partner connections can also be plan targets for tenant creation and `showAs` updates.</maml:para>
     </maml:description>
     <command:syntax>
       <command:syntaxItem>
@@ -599,6 +615,8 @@ $results = $plan | Invoke-EntitySyncPlan -Apply -PassThru</dev:code>
       <maml:para>Retrieves target entities, performs explainable fuzzy matching, and emits an EntitySync plan. This command does not write to any vendor.</maml:para>
       <maml:para>When HaloPSA is the target, planning reads full client records by default so custom fields such as `CFNetSuiteCustomerID` are available for link detection. Pass `-FullTargetObjects` only when every HaloPSA client must also be enriched with site details for address/postal matching; this can be slower on large tenants.</maml:para>
       <maml:para>`-SourceEntityType` and `-TargetEntityType` are dynamic parameters scoped to the chosen vendors. N-central normally exposes `Customer`/`Site`; when AgentController is the target it also exposes `CustomerScope`, the default complete Customer-plus-Site snapshot. Pipeline input remains available for non-authoritative Customer/Site planning, but is rejected for `CustomerScope` because it cannot prove completeness. `-TargetVendor LTAC` normalizes to `AgentController`.</maml:para>
+      <maml:para>Bill.com is a first-class vendor. It exposes EntityType `Client` from the Bill Spend &amp; Expense `Client` custom field. When Bill.com is the source and HaloPSA is the target, `-SourceExternalIdName` defaults to `BillSpendClientId` and `-TargetCustomFieldName` defaults to `CFBillSpendClientID` unless explicitly overridden.</maml:para>
+      <maml:para>Sophos Central exposes partner or organization tenants as EntityType `Customer`. When HaloPSA is the target, `-SourceExternalIdName` defaults to `SophosCentralTenantId` and `-TargetCustomFieldName` defaults to `CFSophosCentralTenantID`. Partner connections can also be targets; organization connections reject writes during apply because Sophos does not expose organization tenant write routes.</maml:para>
       <maml:para>Use `-SourceSearch` and optional `-SourceCount` for focused one-off customer plans. They filter the source read before matching, so operators do not have to build a full plan and manually prune unrelated rows.</maml:para>
     </maml:description>
     <command:syntax>
@@ -655,6 +673,24 @@ $plan | Invoke-EntitySyncPlan -Apply -WhatIf</dev:code>
         <dev:code>$plan = New-EntitySyncPlan -SourceVendor NCentral -SourceEntityType CustomerScope -TargetVendor AgentController -TargetEntityType Customer -CreateMissing</dev:code>
         <dev:remarks>
           <maml:para>The same `CustomerScope` plan includes every site-derived scope and its parent N-central customer identifier. A source-validation failure becomes `Action 'Review'`, `MatchType 'LtacSourceInvalid'`, and blocks the entire authoritative apply until resolved, preventing an omitted review row from retiring an existing AgentController scope. See `specs/001-ltac-sync-adapter/data-model.md`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 7 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor Bill.com
+Connect-EntitySyncVendor -Vendor HaloPSA
+$plan = New-EntitySyncPlan -SourceVendor Bill.com -SourceEntityType Client -TargetVendor HaloPSA -TargetEntityType Client -CreateMissing</dev:code>
+        <dev:remarks>
+          <maml:para>Creates a Bill.com client to HaloPSA client plan. The default Bill.com-to-HaloPSA link field is `CFBillSpendClientID`.</maml:para>
+        </dev:remarks>
+      </command:example>
+      <command:example>
+        <maml:title>-------------------------- Example 8 --------------------------</maml:title>
+        <dev:code>Connect-EntitySyncVendor -Vendor 'Sophos Central'
+Connect-EntitySyncVendor -Vendor HaloPSA
+$plan = New-EntitySyncPlan -SourceVendor 'Sophos Central' -SourceEntityType Customer -TargetVendor HaloPSA -TargetEntityType Client</dev:code>
+        <dev:remarks>
+          <maml:para>Creates a Sophos Central tenant to HaloPSA client plan. The default Sophos-to-HaloPSA link field is `CFSophosCentralTenantID`.</maml:para>
         </dev:remarks>
       </command:example>
     </command:examples>

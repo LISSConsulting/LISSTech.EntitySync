@@ -12,6 +12,7 @@ artifacts/
 src/Artifacts/bin/
 src/Artifacts/obj/
 
+
 # Module build artifacts. Keep the manifest in source control.
 Module/*.dll
 Module/*.pdb

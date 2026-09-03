@@ -102,13 +102,7 @@ public sealed class CanonicalChangeServiceTests
         var source = new CountingAdapter("OrchestraMSP", []);
         connections.Register("tenant", "source", source);
         connections.Register("tenant", "target", new CountingAdapter("HaloPSA", []));
-        var planner = new EntitySyncPlanner(
-            connections,
-            new TestEntitySyncPlanRepository(),
-            new InMemoryEntityExclusionRepository(),
-            new WeightedEntityMatcher(),
-            new DefaultEntityMapper(),
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(connections, new TestEntitySyncPlanRepository(), new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher(), new DefaultEntityMapper(), new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
 
         var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
         {
@@ -151,13 +145,7 @@ public sealed class CanonicalChangeServiceTests
         var target = new CountingAdapter("HaloPSA", []);
         connections.Register("tenant", "source", source);
         connections.Register("tenant", "target", target);
-        var planner = new EntitySyncPlanner(
-            connections,
-            new TestEntitySyncPlanRepository(),
-            new InMemoryEntityExclusionRepository(),
-            new WeightedEntityMatcher(),
-            new DefaultEntityMapper(),
-            new InMemoryEntitySyncChangeStateRepository());
+        var planner = new EntitySyncPlanner(connections, new TestEntitySyncPlanRepository(), new InMemoryEntityExclusionRepository(), new WeightedEntityMatcher(), new DefaultEntityMapper(), new InMemoryEntitySyncChangeStateRepository(), new LISSTech.EntitySync.Runtime.InMemoryEntityGraphRepository());
 
         var plan = await planner.CreateAsync(new CreateEntitySyncPlanRequest
         {

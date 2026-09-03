@@ -1,6 +1,6 @@
 {
   "version": "26.7.0",
-  "description": "LISSTech EntitySync MCP server for natural-language vendor entity synchronization (HaloPSA, NetSuite, N-central, Bill.com, AgentController).",
+  "description": "LISSTech EntitySync MCP server for natural-language vendor entity synchronization (HaloPSA, NetSuite, N-central, Bill.com, Sophos Central, AgentController).",
   "homepage": "https://github.com/LISSConsulting/LISSTech.EntitySync",
   "license": "Proprietary",
   "architecture": {

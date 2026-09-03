@@ -349,6 +349,7 @@ mcp-run: mcp-build
     $binary = Get-ChildItem '{{ mcp_publish_dir }}' -Filter 'lisstech-entitysync-mcp*' -File | Select-Object -First 1
     & $binary.FullName
 
+
 # Build the EntitySync scheduler as a self-contained single-file binary
 [group('scheduler')]
 [script('pwsh', '-NoProfile')]

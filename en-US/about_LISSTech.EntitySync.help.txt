@@ -8,7 +8,8 @@ LONG DESCRIPTION
     LISSTech.EntitySync provides a vendor-neutral synchronization engine with
     ports and adapters for external systems. Adapters support NetSuite
     customers, HaloPSA clients and sites, N-central customers and sites,
-    Bill.com client custom-field values, and AgentController customer scopes.
+    Bill.com client values, Sophos Central partner and organization tenants,
+    and AgentController customer scopes.
 
     The module separates discovery, matching, planning, review, and apply.
     Plans are deterministic and can be exported, reviewed, imported, and
@@ -61,6 +62,15 @@ CONFIGURATION
     the Bill Spend API surface used by EntitySync exposes value creation but not
     value update/delete. The default HaloPSA target custom field for Bill.com
     source plans is CFBillSpendClientID.
+
+    Sophos Central uses OAuth client credentials. Set
+    SOPHOS_CENTRAL_CLIENT_ID and SOPHOS_CENTRAL_CLIENT_SECRET, or pass
+    -SophosCentralClientId and -SophosCentralClientSecret to
+    Connect-EntitySyncVendor -Vendor 'Sophos Central'. Partner and organization
+    API credentials enumerate tenants as read-only Customer entities. The
+    adapter uses SophosCentralTenantId as the external ID. Tenant credentials
+    cannot enumerate customers, and Sophos Central cannot be used as a plan
+    target.
 
     AgentController uses an NSwag-generated client for the ops/PostgREST OpenAPI
     and only acts as a sync target. Build one complete N-central Customer-plus-Site

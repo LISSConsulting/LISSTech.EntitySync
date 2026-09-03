@@ -14,7 +14,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class ConnectionTools
 {
     [McpServerTool]
-    [Description("Connect a tenant-scoped vendor adapter using server-managed configuration. Remote callers cannot supply endpoints or credentials.")]
+    [Description("Start an EntitySync, Entity Sync, or ES workflow by connecting a vendor with server-managed credentials. Use before client sync, customer sync, account/company reconciliation, or vendor record lookup.")]
     public static async Task<string> ConnectVendor(
         IServiceProvider services,
         IServerManagedEntityAdapterFactory adapterFactory,
@@ -180,7 +180,7 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("Test a tenant-scoped vendor connection.")]
+    [Description("Check whether an EntitySync/ES vendor connection can authenticate and reach its provider.")]
     public static async Task<string> TestConnection(
         IConnectionRuntimeFactory connections,
         McpRequestContext context,
@@ -252,16 +252,18 @@ public static class ConnectionTools
     }
 
     [McpServerTool]
-    [Description("Read a bounded page of canonical entities from a tenant-scoped connection.")]
+    [Description("Answer read-only natural-language questions about vendor clients, customers, accounts, or companies—for example an address, contact, status, or external ID. Search by name to narrow results. Responses include contact, site, address, lifecycle, external-ID, and custom-field data when provided; set includeDetails=true for vendor detail reads.")]
     public static async Task<string> GetEntities(
         IConnectionRuntimeFactory connections,
+        IEntityGraphRepository graph,
         McpRequestContext context,
         [Description("Vendor name")] string vendor,
         [Description("Entity type")] string entityType = "Customer",
         [Description("Connection ID. Required when multiple connections exist for this vendor.")] string? connectionId = null,
         [Description("Optional name search filter")] string? search = null,
         [Description("Include inactive entities")] bool includeInactive = false,
-        [Description("Maximum entities, from 1 through 1000")] int count = 100,
+        [Description("Maximum entities, from 1 through 1000. Keep this small when includeDetails is true.")] int count = 100,
+        [Description("Request full vendor records. Use true for questions about addresses or other detailed fields.")] bool includeDetails = false,
         CancellationToken cancellationToken = default)
     {
         if (count is < 1 or > 1000) return Error("Count must be between 1 and 1000.");
@@ -278,9 +280,27 @@ public static class ConnectionTools
                 EntityType = entityType,
                 Search = search,
                 IncludeInactive = includeInactive,
-                FullObjects = false,
+                FullObjects = includeDetails,
                 Count = count
             }, cancellationToken).ConfigureAwait(false);
+            var observedAt = DateTimeOffset.UtcNow;
+            foreach (var group in entities.GroupBy(
+                         entity => string.IsNullOrWhiteSpace(entity.EntityType)
+                             ? entityType
+                             : entity.EntityType,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                await graph.ObserveEntitiesAsync(
+                    new EntityGraphObservation(
+                        new EntityGraphScope(
+                            context.TenantId,
+                            lease.Definition.Vendor,
+                            lease.Definition.ConnectionId,
+                            group.Key),
+                        group.ToArray(),
+                        observedAt),
+                    cancellationToken).ConfigureAwait(false);
+            }
             var result = entities.Take(count).Select(entity => new
             {
                 entity.Vendor,
@@ -290,7 +310,15 @@ public static class ConnectionTools
                 entity.Email,
                 entity.Phone,
                 entity.Website,
+                entity.Domain,
+                entity.PrimarySiteId,
+                entity.PrimarySiteName,
+                entity.PrimaryAddress,
+                entity.BillingAddress,
+                entity.ShippingAddress,
                 entity.IsActive,
+                entity.CreatedAt,
+                entity.UpdatedAt,
                 externalIds = FilterFields(entity.ExternalIds),
                 customFields = FilterFields(entity.CustomFields)
             });

@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Reflection;
 using System.Security.Claims;
 using System.Net;
 using System.Text.Json;
@@ -127,9 +129,9 @@ public sealed class PlatformTests
         var factory = new ServerManagedEntityAdapterFactory(
             FactorySettings("test-account", "https://halo.example.test", "net-suite-secret", "halo-secret"));
 
-        factory.ValidateNetSuiteHaloFixedRouteConfiguration();
+        factory.ValidateConfiguration(["NetSuite", "HaloPSA"]);
 
-        Assert.Equal(64, factory.GetNetSuiteHaloChangeStateScope().Length);
+        Assert.Equal(64, NetSuiteHaloScope(factory).Length);
     }
 
     [Theory]
@@ -152,7 +154,7 @@ public sealed class PlatformTests
         var factory = new ServerManagedEntityAdapterFactory(settings);
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+            () => factory.ValidateConfiguration(["NetSuite", "HaloPSA"]));
 
         Assert.Contains(variableName, error.Message, StringComparison.Ordinal);
     }
@@ -166,7 +168,7 @@ public sealed class PlatformTests
             FactorySettings("test-account", haloUrl, "net-suite-secret", "halo-secret"));
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.ValidateNetSuiteHaloFixedRouteConfiguration);
+            () => factory.ValidateConfiguration(["NetSuite", "HaloPSA"]));
 
         Assert.Contains("HTTPS", error.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -240,19 +242,19 @@ public sealed class PlatformTests
         var uppercaseAccount = new ServerManagedEntityAdapterFactory(
             FactorySettings(" ACCOUNT_SB1 ", "https://halo.example.test", "two", "halo-two"));
 
-        var scope = first.GetNetSuiteHaloChangeStateScope();
+        var scope = NetSuiteHaloScope(first);
 
         Assert.Equal(64, scope.Length);
         Assert.Matches("^[0-9a-f]{64}$", scope);
         Assert.Equal(
-            "648271df174a8ff29e5a10e3afdc35f58691542a83ef8bf20ae06c11f605f368",
+            "b0e71ffa748c0fd1b34c32e9999c664e063869019d1eb3f6c526bd10d3b52f69",
             scope);
-        Assert.Equal(scope, rotated.GetNetSuiteHaloChangeStateScope());
+        Assert.Equal(scope, NetSuiteHaloScope(rotated));
         Assert.Equal(
-            lowercaseAccount.GetNetSuiteHaloChangeStateScope(),
-            uppercaseAccount.GetNetSuiteHaloChangeStateScope());
-        Assert.NotEqual(scope, movedNetSuite.GetNetSuiteHaloChangeStateScope());
-        Assert.NotEqual(scope, movedHalo.GetNetSuiteHaloChangeStateScope());
+            NetSuiteHaloScope(lowercaseAccount),
+            NetSuiteHaloScope(uppercaseAccount));
+        Assert.NotEqual(scope, NetSuiteHaloScope(movedNetSuite));
+        Assert.NotEqual(scope, NetSuiteHaloScope(movedHalo));
         Assert.DoesNotContain("123", scope, StringComparison.Ordinal);
         Assert.DoesNotContain("halo.example.test", scope, StringComparison.Ordinal);
     }
@@ -267,7 +269,7 @@ public sealed class PlatformTests
             FactorySettings("123", haloUrl, "netsuite-secret", "halo-secret"));
 
         var error = Assert.Throws<InvalidOperationException>(
-            factory.GetNetSuiteHaloChangeStateScope);
+            () => NetSuiteHaloScope(factory));
 
         Assert.Contains("identity", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("route-secret", error.ToString(), StringComparison.Ordinal);
@@ -292,6 +294,8 @@ public sealed class PlatformTests
             provider.GetRequiredService<IEntityExclusionRepository>());
         Assert.IsType<PostgresEntitySyncChangeStateRepository>(
             provider.GetRequiredService<IEntitySyncChangeStateRepository>());
+        Assert.IsType<PostgresEntityGraphRepository>(
+            provider.GetRequiredService<IEntityGraphRepository>());
         Assert.IsType<WeightedEntityMatcher>(provider.GetRequiredService<IEntityMatcher>());
         Assert.IsType<DefaultEntityMapper>(provider.GetRequiredService<IEntityMapper>());
         Assert.NotNull(provider.GetRequiredService<EntitySyncPlanner>());
@@ -472,21 +476,323 @@ public sealed class PlatformTests
     [Theory]
     [InlineData("NCentral")]
     [InlineData("Bill.com")]
-    public async Task ApplicationPlannerRejectsFlowsThatRequireUnavailableSourceWriteBack(string targetVendor)
+    public async Task ApplicationAppliesHaloSourceRoutesWithRequiredWriteback(string targetVendor)
     {
         using var connections = new InMemoryEntityConnectionRepository();
+        var halo = new FakeAdapter("HaloPSA",
+        [
+            new ExternalEntity
+            {
+                Vendor = "HaloPSA",
+                EntityType = "Client",
+                Id = "halo-1",
+                Name = "Acme"
+            }
+        ]);
+        var target = new FakeAdapter(targetVendor);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "target", target);
         var service = CreateService(connections);
-
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
         {
             TenantId = "tenant",
             SourceVendor = "HaloPSA",
-            TargetVendor = targetVendor
-        }, CancellationToken.None));
+            SourceConnectionId = "halo",
+            TargetVendor = targetVendor,
+            TargetConnectionId = "target",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
 
-        Assert.Contains("source integration-link writeback", error.Message, StringComparison.OrdinalIgnoreCase);
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, target.CreateCalls);
+        if (targetVendor.Equals("Bill.com", StringComparison.OrdinalIgnoreCase))
+        {
+            Assert.Equal(1, halo.UpdateCalls);
+            Assert.Equal("1", halo.LastUpdateRequest?.CustomFields["CFBillSpendClientID"]);
+            Assert.True(halo.LastUpdateRequest?.CustomFieldOnly);
+        }
+        else
+        {
+            Assert.Equal(1, halo.NCentralClientLinkCalls);
+        }
     }
 
+    [Fact]
+    public async Task ChangedOnlyBillComBootstrapWritesUniqueExactNameLinkToHalo()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "halo-1",
+            Name = "Custom Protective Services"
+        };
+        var billTarget = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "2378",
+            Name = "Custom Protective Services",
+            IsActive = true
+        };
+        billTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = billTarget.Id;
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [billTarget]);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        var service = CreateService(connections, changeStates: changeStates);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            SourceEntityType = "Client",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            TargetEntityType = "Client",
+            BootstrapExactNameLinks = true,
+            UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+            ChangeStateScope = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }, CancellationToken.None);
+
+        var bootstrap = Assert.Single(plan.Items);
+        Assert.Equal("Link", bootstrap.Action);
+        Assert.Equal("BootstrapExactName", bootstrap.MatchType);
+        Assert.Equal("2378", bootstrap.Target?.Id);
+        Assert.NotNull(bootstrap.DesiredStateHash);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, bill.UpdateCalls);
+        Assert.Equal(1, halo.UpdateCalls);
+        Assert.True(halo.LastUpdateRequest?.CustomFieldOnly);
+        Assert.Equal(
+            "2378",
+            halo.LastUpdateRequest?.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName]);
+
+        var route = EntitySyncChangeStateRoute.Create(
+            "tenant",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "HaloPSA",
+            "halo",
+            "Client",
+            EntitySyncVendors.BillCom,
+            "bill",
+            "Client");
+        var checkpoints = await changeStates.GetBySourceIdsAsync(route, ["halo-1"], CancellationToken.None);
+        var checkpoint = Assert.Single(checkpoints).Value;
+        Assert.Equal("2378", checkpoint.TargetEntityId);
+        Assert.Equal(bootstrap.DesiredStateHash, checkpoint.PayloadHash);
+    }
+
+    [Fact]
+    public async Task ChangedOnlyBillComBootstrapRejectsDuplicateExactNames()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = "halo-1",
+            Name = "Duplicate"
+        };
+        var first = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "1",
+            Name = "Duplicate",
+            IsActive = true
+        };
+        var second = new ExternalEntity
+        {
+            Vendor = EntitySyncVendors.BillCom,
+            EntityType = "Client",
+            Id = "2",
+            Name = "Duplicate",
+            IsActive = true
+        };
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", new FakeAdapter(EntitySyncVendors.BillCom, [first, second]));
+        var service = CreateService(connections);
+
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            SourceEntityType = "Client",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            TargetEntityType = "Client",
+            BootstrapExactNameLinks = true,
+            UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+            ChangeStateScope = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }, CancellationToken.None);
+
+        var ambiguous = Assert.Single(plan.Items);
+        Assert.Equal("None", ambiguous.Action);
+        Assert.Equal("Ambiguous", ambiguous.MatchType);
+        Assert.Null(ambiguous.Target);
+        Assert.Equal(0, halo.UpdateCalls);
+    }
+
+    [Fact]
+    public async Task BillComExactListApplyReplacesRenamesAndDeletesTargetOnlyValues()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity { Vendor = "HaloPSA", EntityType = "Client", Id = "halo-1", Name = "New Name" };
+        haloSource.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var linkedTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "100", Name = "Old Name", IsActive = true };
+        linkedTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var obsoleteTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "200", Name = "Obsolete", IsActive = true };
+        obsoleteTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "200";
+        var halo = new FakeAdapter("HaloPSA", [haloSource]);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [linkedTarget, obsoleteTarget], updateResultId: "300");
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var service = CreateService(connections);
+
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            CreateMissing = true
+        }, CancellationToken.None);
+
+        var update = Assert.Single(plan.Items, item => item.Action == "Update");
+        Assert.Equal("100", update.Target?.Id);
+        Assert.Contains(update.Reasons, reason => reason.Contains("irreversibly delete", StringComparison.OrdinalIgnoreCase));
+        var delete = Assert.Single(plan.Items, item => item.Action == "Delete");
+        Assert.Equal("200", delete.Target?.Id);
+        Assert.Contains(delete.Reasons, reason => reason.Contains("irreversibly deleted", StringComparison.OrdinalIgnoreCase));
+        Assert.True(halo.LastQuery?.FullObjects);
+        Assert.Contains(EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName, halo.LastQuery?.RequiredCustomFieldName);
+
+        InspectAllAndApprove(service, plan);
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("300", halo.LastUpdateRequest?.CustomFields[EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName]);
+        Assert.Equal(["100", "200"], bill.DeletedIds);
+    }
+
+    [Fact]
+    public async Task BillComExactListSkipsDeletesWhenHaloWritebackFails()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var haloSource = new ExternalEntity { Vendor = "HaloPSA", EntityType = "Client", Id = "halo-1", Name = "New Name" };
+        haloSource.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var linkedTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "100", Name = "Old Name", IsActive = true };
+        linkedTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "100";
+        var obsoleteTarget = new ExternalEntity { Vendor = EntitySyncVendors.BillCom, EntityType = "Client", Id = "200", Name = "Obsolete", IsActive = true };
+        obsoleteTarget.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = "200";
+        var halo = new FakeAdapter("HaloPSA", [haloSource], updateSucceeds: false);
+        var bill = new FakeAdapter(EntitySyncVendors.BillCom, [linkedTarget, obsoleteTarget], updateResultId: "300");
+        connections.Register("tenant", "halo", halo);
+        connections.Register("tenant", "bill", bill);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "HaloPSA",
+            SourceConnectionId = "halo",
+            TargetVendor = EntitySyncVendors.BillCom,
+            TargetConnectionId = "bill",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Empty(bill.DeletedIds);
+    }
+
+    [Fact]
+    public async Task ApplicationAllowsSophosCentralAsPlanTarget()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var target = new FakeAdapter(EntitySyncVendors.SophosCentral);
+        connections.Register("tenant", "netsuite", new FakeAdapter("NetSuite", [Source("1", "Acme")]));
+        connections.Register("tenant", "sophos", target);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NetSuite",
+            SourceConnectionId = "netsuite",
+            TargetVendor = EntitySyncVendors.SophosCentral,
+            TargetConnectionId = "sophos",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, target.CreateCalls);
+    }
+
+    [Fact]
+    public async Task ApplicationUsesAuthoritativeBatchAdapterForAgentController()
+    {
+        using var connections = new InMemoryEntityConnectionRepository();
+        var customer = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Customer",
+            Id = "ncentral-1",
+            Name = "Acme"
+        };
+        customer.ExternalIds["NCentralCustomerId"] = customer.Id;
+        var site = new ExternalEntity
+        {
+            Vendor = "NCentral",
+            EntityType = "Site",
+            Id = "ncentral-site-1",
+            Name = "Acme HQ"
+        };
+        site.ExternalIds["NCentralSiteId"] = site.Id;
+        site.ExternalIds["NCentralCustomerId"] = customer.Id;
+        var target = new FakeAdapter(EntitySyncVendors.AgentController);
+        var sourceAdapter = new FakeAdapter("NCentral", [customer, site], filterByEntityType: true);
+        connections.Register("tenant", "ncentral", sourceAdapter);
+        connections.Register("tenant", "agent-controller", target);
+        var service = CreateService(connections);
+        var plan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+        {
+            TenantId = "tenant",
+            SourceVendor = "NCentral",
+            SourceConnectionId = "ncentral",
+            TargetVendor = EntitySyncVendors.AgentController,
+            TargetConnectionId = "agent-controller",
+            CreateMissing = true
+        }, CancellationToken.None);
+        InspectAllAndApprove(service, plan);
+
+        var result = await service.ApplyAsync("tenant", plan.Id, true, CancellationToken.None);
+
+        Assert.Equal("CustomerScope", plan.SourceEntityType);
+        Assert.True(result.Success);
+        Assert.Equal(1, target.BatchCalls);
+        Assert.Equal(0, target.CreateCalls);
+        Assert.Equal(2, target.LastBatchRequests!.Count);
+        Assert.Contains(target.LastBatchRequests, request => Equals(request.Fields["ncentral_customer_id"], "ncentral-1"));
+        Assert.Contains(target.LastBatchRequests, request => Equals(request.Fields["ncentral_customer_id"], "ncentral-site-1"));
+        Assert.Equal(new[] { "Customer", "Site" }, sourceAdapter.Queries.Select(query => query.EntityType));
+    }
     [Fact]
     public async Task ApprovalRequiresInspectionOfEveryPlanItem()
     {
@@ -848,6 +1154,46 @@ public sealed class PlatformTests
         Assert.DoesNotContain(parameters, name => name.Contains("url", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(parameters, name => name.Contains("secret", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(parameters, name => name.Contains("token", StringComparison.OrdinalIgnoreCase) && !name.Equals("cancellationToken", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void McpDiscoveryMetadataRoutesNaturalLanguageEntitySyncRequests()
+    {
+        var options = new ModelContextProtocol.Server.McpServerOptions();
+        EntitySyncMcpMetadata.Configure(options);
+
+        Assert.Equal("lisstech-entitysync", options.ServerInfo?.Name);
+        Assert.Contains("Entity Sync / ES", options.ServerInfo?.Title, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vendor-record lookup", options.ServerInfo?.Description, StringComparison.OrdinalIgnoreCase);
+
+        var instructions = options.ServerInstructions ?? string.Empty;
+        foreach (var phrase in new[]
+        {
+            "EntitySync",
+            "Entity Sync",
+            "ES",
+            "sync clients",
+            "client sync",
+            "customer sync",
+            "account sync",
+            "company sync",
+            "what is the address"
+        })
+        {
+            Assert.Contains(phrase, instructions, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var connectDescription = typeof(ConnectionTools).GetMethod(nameof(ConnectionTools.ConnectVendor))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+        var entityDescription = typeof(ConnectionTools).GetMethod(nameof(ConnectionTools.GetEntities))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+        var planDescription = typeof(SyncTools).GetMethod(nameof(SyncTools.CreateSyncPlan))!
+            .GetCustomAttribute<DescriptionAttribute>()?.Description;
+
+        Assert.Contains("client sync", connectDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("natural-language questions", entityDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("client sync", planDescription, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("customer sync", planDescription, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1342,12 +1688,14 @@ public sealed class PlatformTests
     private static EntitySyncService CreateService(
         IConnectionRuntimeFactory connections,
         IEntitySyncPlanRepository? plans = null,
-        IEntityExclusionRepository? exclusions = null)
+        IEntityExclusionRepository? exclusions = null,
+        IEntitySyncChangeStateRepository? changeStates = null)
     {
         plans ??= new TestEntitySyncPlanRepository();
         exclusions ??= new InMemoryEntityExclusionRepository();
-        var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        changeStates ??= new InMemoryEntitySyncChangeStateRepository();
         var mapper = new DefaultEntityMapper();
+        var graph = new InMemoryEntityGraphRepository();
         return new EntitySyncService(
             new EntitySyncPlanner(
                 connections,
@@ -1355,12 +1703,14 @@ public sealed class PlatformTests
                 exclusions,
                 new WeightedEntityMatcher(),
                 mapper,
-                changeStates),
+                changeStates,
+                graph),
             connections,
             plans,
             exclusions,
             mapper,
             changeStates,
+            graph,
             TimeProvider.System);
     }
 
@@ -1532,22 +1882,51 @@ public sealed class PlatformTests
         {
         }
 
-        public string GetNetSuiteHaloChangeStateScope() => "unused";
+        public string GetChangeStateScope(
+            string sourceVendor,
+            string sourceConnectionId,
+            string sourceEntityType,
+            string targetVendor,
+            string targetConnectionId,
+            string targetEntityType) => "unused";
     }
 
-    private sealed class FakeAdapter(string vendor, IReadOnlyList<ExternalEntity>? entities = null, Func<Task>? beforeCreate = null) : IEntityAdapter, IDisposable
+    private sealed class FakeAdapter(
+        string vendor,
+        IReadOnlyList<ExternalEntity>? entities = null,
+        Func<Task>? beforeCreate = null,
+        bool filterByEntityType = false,
+        string? updateResultId = null,
+        bool updateSucceeds = true)
+        : IEntityAdapter, IEntityBatchAdapter, IEntityDeleteAdapter, IHaloSourceWritebackAdapter, IDisposable
     {
         public string Vendor { get; } = vendor;
         public IReadOnlyList<string> LookupTypes => [];
         public int CreateCalls { get; private set; }
+        public int UpdateCalls { get; private set; }
+        public int DeleteCalls { get; private set; }
+        public int NCentralClientLinkCalls { get; private set; }
+        public int BatchCalls { get; private set; }
         public bool Disposed { get; private set; }
         public EntityQuery? LastQuery { get; private set; }
+        public EntityWriteRequest? LastUpdateRequest { get; private set; }
+        public List<EntityQuery> Queries { get; } = [];
+        public IReadOnlyList<EntityWriteRequest>? LastBatchRequests { get; private set; }
+        public List<string> DeletedIds { get; } = [];
 
         public Task<IReadOnlyList<ExternalEntity>> GetEntitiesAsync(EntityQuery query, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             LastQuery = query;
-            return Task.FromResult(entities ?? (IReadOnlyList<ExternalEntity>)Array.Empty<ExternalEntity>());
+            Queries.Add(query);
+            var result = entities ?? (IReadOnlyList<ExternalEntity>)Array.Empty<ExternalEntity>();
+            if (filterByEntityType)
+            {
+                result = result
+                    .Where(entity => entity.EntityType.Equals(query.EntityType, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
+            return Task.FromResult(result);
         }
 
         public Task<IReadOnlyList<EntitySyncLookup>> GetLookupsAsync(string type, CancellationToken cancellationToken) =>
@@ -1562,13 +1941,63 @@ public sealed class PlatformTests
             return new EntityWriteResult { Success = true, Id = CreateCalls.ToString(), Message = "Created." };
         }
 
-        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Message = "Updated." });
+        public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+        {
+            UpdateCalls++;
+            LastUpdateRequest = request;
+            return Task.FromResult(new EntityWriteResult { Success = updateSucceeds, Id = updateResultId ?? request.Id, Message = updateSucceeds ? "Updated." : "Update failed." });
+        }
+
+        public Task<EntityWriteResult> DeleteEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+        {
+            DeleteCalls++;
+            DeletedIds.Add(request.Id ?? string.Empty);
+            return Task.FromResult(new EntityWriteResult { Success = true, Id = request.Id, Action = "Delete", Message = "Deleted." });
+        }
+
+        public Task<EntityWriteResult> UpsertNCentralClientLinkAsync(
+            string haloClientId,
+            string haloClientName,
+            string nCentralCustomerId,
+            string nCentralCustomerName,
+            CancellationToken cancellationToken)
+        {
+            NCentralClientLinkCalls++;
+            return Task.FromResult(new EntityWriteResult { Success = true, Id = nCentralCustomerId, Message = "Linked." });
+        }
+
+        public Task<EntityWriteResult> UpsertNCentralSiteLinkAsync(
+            string haloSiteId,
+            string haloSiteName,
+            string haloClientName,
+            string nCentralSiteId,
+            string nCentralSiteName,
+            string nCentralCustomerId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new EntityWriteResult { Success = true, Id = nCentralSiteId, Message = "Linked." });
+
+        public Task<EntityWriteResult> ApplyBatchAsync(
+            IReadOnlyList<EntityWriteRequest> requests,
+            CancellationToken cancellationToken)
+        {
+            BatchCalls++;
+            LastBatchRequests = requests;
+            return Task.FromResult(new EntityWriteResult { Success = true, Message = "Batch applied." });
+        }
+
 
         public Task<bool> TestConnectionAsync(CancellationToken cancellationToken) => Task.FromResult(true);
 
         public void Dispose() => Disposed = true;
     }
+    private static string NetSuiteHaloScope(IServerManagedEntityAdapterFactory factory) =>
+        factory.GetChangeStateScope(
+            "NetSuite",
+            "netsuite",
+            "Customer",
+            "HaloPSA",
+            "halopsa",
+            "Client");
 
     private static Dictionary<string, string?> FactorySettings(
         string account,
@@ -1584,9 +2013,16 @@ public sealed class PlatformTests
         ["HALO_BASE_URL"] = haloUrl,
         ["HALO_CLIENT_ID"] = "halo-client-id",
         ["HALO_CLIENT_SECRET"] = haloSecret,
+        ["HALO_NCENTRAL_INTEGRATION_ID"] = "7",
         ["NCENTRAL_BASE_URL"] = "https://ncentral.example.test",
         ["NCENTRAL_USER_API_TOKEN"] = "ncentral-token",
         ["NCENTRAL_SERVICE_ORG_ID"] = "service-org",
-        ["BILLCOM_API_TOKEN"] = "bill-token"
+        ["NCENTRAL_SOAP_USERNAME"] = "soap-user",
+        ["NCENTRAL_SOAP_PASSWORD"] = "soap-password",
+        ["BILLCOM_BASE_URL"] = "https://bill.example.test",
+        ["BILLCOM_API_TOKEN"] = "bill-token",
+        ["BILLCOM_CLIENT_FIELD_NAME"] = "Client",
+        ["SOPHOS_CENTRAL_CLIENT_ID"] = "sophos-client-id",
+        ["SOPHOS_CENTRAL_CLIENT_SECRET"] = "sophos-client-secret"
     };
 }

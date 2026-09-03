@@ -3,8 +3,10 @@ using LISSTech.EntitySync.Application;
 using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Core;
 using LISSTech.EntitySync.Mapping;
+using LISSTech.EntitySync.Ports;
 using LISSTech.EntitySync.Runtime;
 
 namespace LISSTech.EntitySync.Commands;
@@ -182,8 +184,14 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             .AddParameter("AutoLinkScore", AutoLinkScore)
             .AddParameter("ReviewScore", ReviewScore)
             .AddParameter("ThrottleLimit", ThrottleLimit);
-        if (MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)) || !EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("TargetCustomFieldName", EffectiveTargetCustomFieldName(sourceVendor, targetVendor));
-        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)) || EntitySyncVendors.IsBillCom(sourceVendor)) ps.AddParameter("SourceExternalIdName", EffectiveSourceExternalIdName(sourceVendor));
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)) || !EntitySyncVendors.IsBillCom(sourceVendor) || EntitySyncVendors.IsSophosCentral(sourceVendor)) ps.AddParameter("TargetCustomFieldName", EffectiveTargetCustomFieldName(sourceVendor, targetVendor));
+        if (MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))
+            || EntitySyncVendors.IsBillCom(sourceVendor)
+            || EntitySyncVendors.IsSophosCentral(sourceVendor)
+            || sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && EntitySyncVendors.IsBillCom(targetVendor))
+        {
+            ps.AddParameter("SourceExternalIdName", EffectiveSourceExternalIdName(sourceVendor, targetVendor));
+        }
         if (IncludeInactive) ps.AddParameter("IncludeInactive");
         if (CreateMissing) ps.AddParameter("CreateMissing");
         if (FullTargetObjects) ps.AddParameter("FullTargetObjects");
@@ -202,6 +210,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         {
             var plan = ReadPlan(planPaths[planIndex]);
             ReviewedPlanPolicy.EnsureApproved(plan);
+            BillComPlanReconciliation.EnsureReadyToApply(plan);
             PowerShellControlRuntime.RejectUnsafeLocalOrchestraApply(
                 apply: true,
                 plan.TargetVendor);
@@ -214,7 +223,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
             var haloAdapter = (targetAdapter as HaloEntityAdapter) ?? (haloLease?.Connection.Adapter as HaloEntityAdapter);
             var options = new MatchOptions
             {
-                SourceExternalIdName = EffectiveSourceExternalIdName(plan.SourceVendor),
+                SourceExternalIdName = EffectiveSourceExternalIdName(plan.SourceVendor, plan.TargetVendor),
                 TargetCustomFieldName = EffectiveTargetCustomFieldName(plan.SourceVendor, plan.TargetVendor)
             };
             for (var i = 0; i < plan.Items.Count; i++)
@@ -228,11 +237,25 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
                     continue;
                 }
 
+                if (item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (item.Target is null) throw new InvalidOperationException("Target is required for delete actions.");
+                    var deleteAdapter = targetAdapter as IEntityDeleteAdapter
+                        ?? throw new InvalidOperationException($"{plan.TargetVendor} does not support entity deletion.");
+                    if (ShouldProcess(item.Target.Name, $"Irreversibly delete target entity from {plan.TargetVendor}"))
+                    {
+                        var deleteResult = deleteAdapter.DeleteEntityAsync(DeleteRequest(plan, item.Target), CancellationToken.None).GetAwaiter().GetResult();
+                        WriteResult(deleteResult);
+                        if (!deleteResult.Success) throw new InvalidOperationException(deleteResult.Message ?? $"Failed to delete '{item.Target.Name}'.");
+                    }
+                    continue;
+                }
+
                 if (item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase))
                 {
                     var request = mapper.MapCreate(item.Source, plan.TargetVendor, plan.TargetEntityType, options);
                     if (plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
-                    if (ShouldProcess(item.Source.Name, "Create target entity in " + plan.TargetVendor)) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.CreateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), haloAdapter);
+                    if (ShouldProcess(item.Source.Name, "Create target entity in " + plan.TargetVendor)) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.CreateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), targetAdapter, haloAdapter);
                     continue;
                 }
 
@@ -240,7 +263,7 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
                 {
                     var request = mapper.MapUpdate(item.Source, item.Target, options);
                     if (plan.TargetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)) request.Name = item.Source.Name;
-                    if (ShouldProcess(item.Target.Name, $"{item.Action} target entity from {item.Source.Name}")) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), haloAdapter);
+                    if (ShouldProcess(item.Target.Name, $"{item.Action} target entity from {item.Source.Name}")) WriteResultAndIntegrationLink(plan, item, request, targetAdapter.UpdateEntityAsync(request, CancellationToken.None).GetAwaiter().GetResult(), targetAdapter, haloAdapter);
                 }
             }
         }
@@ -248,9 +271,14 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         WriteProgress(new ProgressRecord(1, "Invoke EntitySync chain", "Complete") { RecordType = ProgressRecordType.Completed });
     }
 
-    private string EffectiveSourceExternalIdName(string sourceVendor)
+    private string EffectiveSourceExternalIdName(string sourceVendor, string targetVendor)
     {
+        if (sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && EntitySyncVendors.IsBillCom(targetVendor)
+            && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName)))
+            return BillComEntityAdapter.ClientExternalIdName;
         if (EntitySyncVendors.IsBillCom(sourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return BillComEntityAdapter.ClientExternalIdName;
+        if (EntitySyncVendors.IsSophosCentral(sourceVendor) && !MyInvocation.BoundParameters.ContainsKey(nameof(SourceExternalIdName))) return SophosCentralEntityAdapter.TenantExternalIdName;
         return SourceExternalIdName;
     }
 
@@ -260,6 +288,11 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         {
             return BillComEntityAdapter.HaloClientCustomFieldName;
         }
+        if (EntitySyncVendors.IsSophosCentral(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) && !MyInvocation.BoundParameters.ContainsKey(nameof(TargetCustomFieldName)))
+        {
+            return SophosCentralEntityAdapter.HaloTenantCustomFieldName;
+        }
+
 
         return TargetCustomFieldName;
     }
@@ -299,10 +332,30 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         if (PassThru) WriteObject(result);
     }
 
-    private void WriteResultAndIntegrationLink(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result, HaloEntityAdapter? haloAdapter)
+    private void WriteResultAndIntegrationLink(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteRequest request, EntityWriteResult result, IEntityAdapter targetAdapter, HaloEntityAdapter? haloAdapter)
     {
         WriteResult(result);
-        if (!result.Success) return;
+        if (!result.Success)
+        {
+            if (BillComPlanReconciliation.IsAuthoritativeRoute(plan.SourceVendor, plan.SourceEntityType, plan.TargetVendor, plan.TargetEntityType))
+                throw new InvalidOperationException(result.Message ?? $"BILL.com write failed for '{item.Source.Name}'.");
+            return;
+        }
+        if (RequiresBillComWriteBack(plan, item, result))
+        {
+            var writeback = WriteBillComIdToSource(item, result, haloAdapter);
+            if (!writeback.Success) throw new InvalidOperationException(writeback.Message ?? $"BILL.com writeback failed for '{item.Source.Name}'.");
+            if (BillComPlanReconciliation.IsReplacement(plan, item, result))
+            {
+                var deleteAdapter = targetAdapter as IEntityDeleteAdapter
+                    ?? throw new InvalidOperationException("BILL.com target connection does not support replacement cleanup.");
+                var deleteResult = deleteAdapter.DeleteEntityAsync(DeleteRequest(plan, item.Target!), CancellationToken.None).GetAwaiter().GetResult();
+                WriteResult(deleteResult);
+                if (!deleteResult.Success) throw new InvalidOperationException(deleteResult.Message ?? $"Failed to delete replaced BILL.com value '{item.Target!.Name}'.");
+            }
+            return;
+        }
+
         if (RequiresHaloNCentralSiteLink(plan, item))
         {
             WriteHaloNCentralSiteLink(item, request, result, haloAdapter);
@@ -322,6 +375,43 @@ public sealed class InvokeEntitySyncChainCommand : PSCmdlet
         var targetName = item.Target?.Name ?? NCentralEntityAdapter.SanitizeNCentralName(request.Name);
         WriteResult(requiredHaloAdapter.UpsertNCentralClientLinkAsync(item.Source.Id, item.Source.Name, targetId, targetName, CancellationToken.None).GetAwaiter().GetResult());
     }
+
+    private static bool RequiresBillComWriteBack(EntitySyncPlan plan, EntitySyncPlanItem item, EntityWriteResult result)
+    {
+        return EntitySyncVendors.IsBillCom(plan.TargetVendor)
+            && plan.SourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && plan.SourceEntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(result.Id ?? item.Target?.Id)
+            && !string.IsNullOrWhiteSpace(item.Source.Id);
+    }
+
+    private EntityWriteResult WriteBillComIdToSource(EntitySyncPlanItem item, EntityWriteResult result, HaloEntityAdapter? haloAdapter)
+    {
+        var requiredHaloAdapter = haloAdapter
+            ?? throw new InvalidOperationException("HaloPSA adapter is required to write back the BILL.com client ID.");
+        var valueId = result.Id ?? item.Target?.Id
+            ?? throw new InvalidOperationException("BILL.com value ID is required for HaloPSA writeback.");
+        var numericId = BillComEntityAdapter.DecodeBillComValueId(valueId);
+        var writebackRequest = new EntityWriteRequest
+        {
+            Vendor = "HaloPSA",
+            EntityType = "Client",
+            Id = item.Source.Id,
+            Name = item.Source.Name
+        };
+        writebackRequest.CustomFields[BillComEntityAdapter.HaloClientCustomFieldName] = numericId;
+        var writeback = requiredHaloAdapter.UpdateEntityAsync(writebackRequest, CancellationToken.None).GetAwaiter().GetResult();
+        WriteResult(writeback);
+        return writeback;
+    }
+
+    private static EntityWriteRequest DeleteRequest(EntitySyncPlan plan, ExternalEntity target) => new()
+    {
+        Vendor = plan.TargetVendor,
+        EntityType = plan.TargetEntityType,
+        Id = target.Id,
+        Name = target.Name
+    };
 
     private static bool RequiresHaloNCentralClientLink(EntitySyncPlan plan, EntitySyncPlanItem item)
     {

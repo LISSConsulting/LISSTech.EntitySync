@@ -12,7 +12,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Create an immutable tenant-scoped synchronization plan from an explicit persisted policy. Planning is read-only. Inspect every page and approve its digest before apply.")]
+    [Description("Create an immutable tenant-scoped EntitySync/ES plan for client sync, customer sync, account sync, company sync, or cross-vendor reconciliation from an explicit persisted policy. Planning is read-only. Inspect every page and approve its digest before apply.")]
     public static async Task<string> CreateSyncPlan(
         IEntitySyncControlCommands commands,
         McpRequestContext context,

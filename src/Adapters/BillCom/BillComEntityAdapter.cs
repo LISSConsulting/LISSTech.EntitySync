@@ -7,11 +7,11 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.BillCom;
 
-public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
+public sealed class BillComEntityAdapter : IEntityAdapter, IEntityDeleteAdapter, IDisposable
 {
     public const string ClientExternalIdName = "BillSpendClientId";
     public const string ClientUuidExternalIdName = "BillSpendUuid";
-    public const string HaloClientCustomFieldName = "CFBillSpendClientID";
+    public const string HaloClientCustomFieldName = EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
     private const int MaximumPagesPerQuery = 100;
 
     private readonly BillComOptions options;
@@ -97,19 +97,69 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         return new EntityWriteResult { Vendor = Vendor, EntityType = "Client", Id = created.Id, Action = "Create", Success = true, Message = $"Created Bill.com client '{request.Name}'.", Raw = document.RootElement.Clone() };
     }
 
-    public Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+    public async Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
     {
         if (!request.EntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("Bill.com adapter currently supports EntityType Client.");
-        if (string.IsNullOrWhiteSpace(request.Id)) return CreateEntityAsync(request, cancellationToken);
-        return Task.FromResult(new EntityWriteResult
+        if (string.IsNullOrWhiteSpace(request.Id)) return await CreateEntityAsync(request, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(request.Name)) throw new InvalidOperationException("Bill.com client name is required.");
+
+        var values = await GetEntitiesAsync(new EntityQuery { EntityType = "Client", IncludeInactive = true }, cancellationToken).ConfigureAwait(false);
+        var current = values.FirstOrDefault(entity => entity.Id.Equals(request.Id, StringComparison.OrdinalIgnoreCase));
+        if (current is { IsActive: not false } && current.Name.Equals(request.Name, StringComparison.Ordinal))
+        {
+            return new EntityWriteResult
+            {
+                Vendor = Vendor,
+                EntityType = "Client",
+                Id = current.Id,
+                Action = "Update",
+                Success = true,
+                Message = $"Bill.com client '{request.Name}' already has the desired value.",
+                Raw = current
+            };
+        }
+
+        var replacement = values.FirstOrDefault(entity =>
+            entity.IsActive != false
+            && entity.Name.Equals(request.Name, StringComparison.Ordinal));
+        if (replacement is null)
+        {
+            var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
+            using var document = await PostClientValuesAsync(clientField.Id, [request.Name], cancellationToken).ConfigureAwait(false);
+            replacement = ReadFirstClient(document.RootElement)
+                ?? throw new InvalidOperationException("Bill.com created the replacement client value but did not return its ID.");
+        }
+
+        return new EntityWriteResult
+        {
+            Vendor = Vendor,
+            EntityType = "Client",
+            Id = replacement.Id,
+            Action = "Update",
+            Success = true,
+            Message = current is null
+                ? $"Prepared Bill.com client value '{request.Name}'."
+                : $"Prepared replacement Bill.com client value '{request.Name}'; the old value remains until source writeback succeeds.",
+            Raw = replacement
+        };
+    }
+
+    public async Task<EntityWriteResult> DeleteEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
+    {
+        if (!request.EntityType.Equals("Client", StringComparison.OrdinalIgnoreCase)) throw new NotSupportedException("Bill.com adapter currently supports deleting EntityType Client.");
+        if (string.IsNullOrWhiteSpace(request.Id)) throw new InvalidOperationException("Bill.com client value ID is required for deletion.");
+
+        var clientField = await GetClientFieldAsync(cancellationToken).ConfigureAwait(false);
+        await DeleteClientValuesAsync(clientField.Id, [request.Id], cancellationToken).ConfigureAwait(false);
+        return new EntityWriteResult
         {
             Vendor = Vendor,
             EntityType = "Client",
             Id = request.Id,
-            Action = "Update",
+            Action = "Delete",
             Success = true,
-            Message = "Bill.com client custom-field values are already present; the Bill Spend API surface used by EntitySync supports creating values but not updating existing values."
-        });
+            Message = $"Deleted Bill.com client value '{request.Name}' (ID {request.Id})."
+        };
     }
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
@@ -167,6 +217,22 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         return await ReadJsonResponseAsync(response, "create client value", cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task DeleteClientValuesAsync(string fieldId, IReadOnlyList<string> valueIds, CancellationToken cancellationToken)
+    {
+        var path = Uri.EscapeDataString(fieldId) + "/values";
+        var body = JsonSerializer.Serialize(new { customFieldValueIds = valueIds });
+        Trace?.Invoke("Bill.com DELETE " + path);
+        using var response = await rateLimiter.SendAsync(
+            httpClient,
+            () => new HttpRequestMessage(HttpMethod.Delete, path) { Content = new StringContent(body, Encoding.UTF8, "application/json") },
+            Trace,
+            cancellationToken).ConfigureAwait(false);
+        if (response.IsSuccessStatusCode) return;
+
+        var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        throw new InvalidOperationException($"Bill.com delete client value request failed with HTTP {(int)response.StatusCode} {response.ReasonPhrase}. Response preview: {Preview(text)}");
+    }
+
     private async Task<ExternalEntity?> FindClientByNameAsync(string name, CancellationToken cancellationToken)
     {
         var entities = await GetEntitiesAsync(new EntityQuery { EntityType = "Client", IncludeInactive = true }, cancellationToken).ConfigureAwait(false);
@@ -211,20 +277,8 @@ public sealed class BillComEntityAdapter : IEntityAdapter, IDisposable
         return entity;
     }
 
-    internal static string DecodeBillComValueId(string? rawId)
-    {
-        if (string.IsNullOrWhiteSpace(rawId)) return string.Empty;
-        try
-        {
-            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(rawId));
-            var colonIndex = decoded.LastIndexOf(':');
-            return colonIndex >= 0 && colonIndex < decoded.Length - 1 ? decoded[(colonIndex + 1)..] : rawId;
-        }
-        catch (FormatException)
-        {
-            return rawId;
-        }
-    }
+    internal static string DecodeBillComValueId(string? rawId) =>
+        EntitySyncIntegrationContracts.DecodeBillComValueId(rawId);
 
     private static ExternalEntity? ReadFirstClient(JsonElement root)
     {

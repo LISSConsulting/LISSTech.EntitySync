@@ -9,7 +9,8 @@ public sealed class EntitySyncPlanner(
     IEntityExclusionRepository exclusions,
     IEntityMatcher matcher,
     IEntityMapper mapper,
-    IEntitySyncChangeStateRepository changeStates)
+    IEntitySyncChangeStateRepository changeStates,
+    IEntityGraphRepository graph)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
     private IEntitySyncPlanRepository? legacyPlans;
@@ -20,8 +21,9 @@ public sealed class EntitySyncPlanner(
         IEntityExclusionRepository exclusions,
         IEntityMatcher matcher,
         IEntityMapper mapper,
-        IEntitySyncChangeStateRepository changeStates)
-        : this(connections, exclusions, matcher, mapper, changeStates)
+        IEntitySyncChangeStateRepository changeStates,
+        IEntityGraphRepository graph)
+        : this(connections, exclusions, matcher, mapper, changeStates, graph)
     {
         legacyPlans = plans;
     }
@@ -73,9 +75,45 @@ public sealed class EntitySyncPlanner(
             request, sourceVendor, request.SourceConnectionId, sourceConnection, nameof(sourceLease));
         ValidatePinnedLease(
             request, targetVendor, request.TargetConnectionId, targetConnection, nameof(targetLease));
-        var sourceType = request.SourceEntityType ?? DefaultEntityType(sourceVendor);
+        var sourceType = request.SourceEntityType
+            ?? (sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+                && EntitySyncVendors.IsAgentController(targetVendor)
+                    ? "CustomerScope"
+                    : DefaultEntityType(sourceVendor));
         var targetType = request.TargetEntityType ?? DefaultEntityType(targetVendor);
         var customFieldName = request.TargetCustomFieldName ?? DefaultCustomFieldName(sourceVendor, targetVendor);
+        var authoritativeBillSnapshot = BillComPlanReconciliation.IsAuthoritativeRoute(sourceVendor, sourceType, targetVendor, targetType);
+        var authoritativeAgentControllerSnapshot = EntitySyncVendors.IsAgentController(targetVendor);
+        if (request.BootstrapExactNameLinks
+            && (!authoritativeBillSnapshot
+                || request.UpdatePolicy != EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly))
+        {
+            throw new ArgumentException(
+                "Exact-name link bootstrap is restricted to changed-only HaloPSA-to-BILL.com plans.",
+                nameof(request));
+        }
+        if (authoritativeAgentControllerSnapshot
+            && (!sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase)
+                || !sourceType.Equals("CustomerScope", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException("AgentController apply requires a complete N-central CustomerScope source snapshot.");
+        }
+        if (authoritativeAgentControllerSnapshot
+            && (!string.IsNullOrWhiteSpace(request.SourceSearch)
+                || request.SourceCount.HasValue
+                || !string.IsNullOrWhiteSpace(request.SourceEntityId)))
+        {
+            throw new ArgumentException("AgentController authoritative planning cannot use sourceSearch, sourceCount, or sourceEntityId because the complete N-central customer-and-site snapshot is required.");
+        }
+        if (authoritativeBillSnapshot
+            && (!string.IsNullOrWhiteSpace(request.SourceSearch)
+                || request.SourceCount.HasValue
+                || !string.IsNullOrWhiteSpace(request.SourceEntityId)))
+        {
+            throw new ArgumentException("BILL.com exact-list reconciliation cannot use sourceSearch, sourceCount, or sourceEntityId because the complete HaloPSA client list is required.");
+        }
+
+
 
         IReadOnlyList<ExternalEntity> sources;
         if (request.PinnedCanonicalOnly || request.PinnedCanonicalSources.Count > 0)
@@ -110,10 +148,40 @@ public sealed class EntitySyncPlanner(
                 EntityType = sourceType,
                 Search = request.SourceSearch?.Trim(),
                 IncludeInactive = request.IncludeInactive,
-                Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1
+                Count = request.SourceCount ?? MaxEntitiesPerPlanSide + 1,
+                FullObjects = authoritativeBillSnapshot,
+                RequiredCustomFieldName = RequiredSourceCustomFieldName(
+                    sourceVendor,
+                    targetVendor,
+                    authoritativeBillSnapshot)
             };
-            sources = await ReadEntitiesAsync(
-                sourceLease.Adapter, sourceQuery, cancellationToken).ConfigureAwait(false);
+            if (authoritativeAgentControllerSnapshot)
+            {
+                var customers = await ReadEntitiesAsync(
+                    sourceLease.Adapter,
+                    new EntityQuery
+                    {
+                        EntityType = "Customer",
+                        IncludeInactive = request.IncludeInactive,
+                        Count = MaxEntitiesPerPlanSide + 1
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                var sites = await ReadEntitiesAsync(
+                    sourceLease.Adapter,
+                    new EntityQuery
+                    {
+                        EntityType = "Site",
+                        IncludeInactive = request.IncludeInactive,
+                        Count = MaxEntitiesPerPlanSide + 1
+                    },
+                    cancellationToken).ConfigureAwait(false);
+                sources = customers.Concat(sites).ToArray();
+            }
+            else
+            {
+                sources = await ReadEntitiesAsync(
+                    sourceLease.Adapter, sourceQuery, cancellationToken).ConfigureAwait(false);
+            }
             if (request.SourceEntityId is not null)
             {
                 var expectedSourceId = request.SourceEntityId.Trim();
@@ -181,7 +249,13 @@ public sealed class EntitySyncPlanner(
         }
 
         var externalIdName = request.SourceExternalIdName
-            ?? (siteLinks ? "NCentralSiteId" : customerLinks ? "NCentralCustomerId" : DefaultExternalIdName(sourceVendor));
+            ?? (siteLinks
+                ? "NCentralSiteId"
+                : customerLinks
+                    ? "NCentralCustomerId"
+                    : authoritativeBillSnapshot
+                        ? EntitySyncIntegrationContracts.BillComClientExternalIdName
+                        : DefaultExternalIdName(sourceVendor));
         var options = new MatchOptions
         {
             SourceExternalIdName = externalIdName,
@@ -229,6 +303,24 @@ public sealed class EntitySyncPlanner(
                 ChangeStateScope = request.ChangeStateScope
             }
         };
+        await ObserveEntitiesAsync(
+            plan.TenantId,
+            sourceVendor,
+            sourceConnection.ConnectionId,
+            sourceType,
+            sources,
+            plan.CreatedAt,
+            plan.Id,
+            cancellationToken).ConfigureAwait(false);
+        await ObserveEntitiesAsync(
+            plan.TenantId,
+            targetVendor,
+            targetConnection.ConnectionId,
+            targetType,
+            targets,
+            plan.CreatedAt,
+            plan.Id,
+            cancellationToken).ConfigureAwait(false);
 
         var index = matcher.CreateIndex(targets, options);
         foreach (var source in sources)
@@ -257,10 +349,79 @@ public sealed class EntitySyncPlanner(
                     targetLease.Adapter,
                     sourceConnection.PlatformInstanceId,
                     cancellationToken).ConfigureAwait(false);
-            if (changedOnly) ApplyChangedOnlyPolicy(item, options, storedChangeStates!);
+            if (changedOnly)
+                ApplyChangedOnlyPolicy(
+                    item,
+                    options,
+                    storedChangeStates!,
+                    request.BootstrapExactNameLinks);
             plan.Items.Add(item);
         }
+        BillComPlanReconciliation.AddApprovedTargetOperations(plan);
+        await graph.ObserveRelationshipsAsync(
+            CreateRelationshipObservations(plan),
+            cancellationToken).ConfigureAwait(false);
         return plan;
+    }
+
+    private async Task ObserveEntitiesAsync(
+        string tenantId,
+        string vendor,
+        string connectionId,
+        string fallbackEntityType,
+        IReadOnlyCollection<ExternalEntity> entities,
+        DateTimeOffset observedAt,
+        string planId,
+        CancellationToken cancellationToken)
+    {
+        foreach (var group in entities.GroupBy(
+                     entity => string.IsNullOrWhiteSpace(entity.EntityType)
+                         ? fallbackEntityType
+                         : entity.EntityType,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            await graph.ObserveEntitiesAsync(
+                new EntityGraphObservation(
+                    new EntityGraphScope(tenantId, vendor, connectionId, group.Key),
+                    group.ToArray(),
+                    observedAt,
+                    planId),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static IReadOnlyCollection<EntityGraphRelationshipObservation> CreateRelationshipObservations(
+        EntitySyncPlan plan)
+    {
+        var observedAt = plan.CreatedAt;
+        return plan.Items
+            .Where(item => item.Target is not null)
+            .Where(item => !item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase)
+                && !item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+                && !item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase))
+            .Select(item => new EntityGraphRelationshipObservation(
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.SourceVendor,
+                    plan.Execution.SourceConnectionId,
+                    string.IsNullOrWhiteSpace(item.Source.EntityType) ? plan.SourceEntityType : item.Source.EntityType,
+                    item.Source.Id),
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.TargetVendor,
+                    plan.Execution.TargetConnectionId,
+                    string.IsNullOrWhiteSpace(item.Target!.EntityType) ? plan.TargetEntityType : item.Target.EntityType,
+                    item.Target.Id),
+                EntityGraphRelationshipTypes.EquivalentTo,
+                item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+                    ? EntityGraphRelationshipStatuses.Proposed
+                    : EntityGraphRelationshipStatuses.Confirmed,
+                item.MatchType,
+                item.Score,
+                item.Reasons.ToArray(),
+                observedAt,
+                plan.Id))
+            .ToArray();
     }
 
     private static EntitySyncPlanItem CreateItem(ExternalEntity source, IReadOnlyList<EntityMatchCandidate> candidates, MatchOptions options, bool requiresAuthoritativeTarget)
@@ -380,8 +541,17 @@ public sealed class EntitySyncPlanner(
     private void ApplyChangedOnlyPolicy(
         EntitySyncPlanItem item,
         MatchOptions options,
-        IReadOnlyDictionary<string, EntitySyncChangeState> storedChangeStates)
+        IReadOnlyDictionary<string, EntitySyncChangeState> storedChangeStates,
+        bool bootstrapExactNameLinks)
     {
+        if (bootstrapExactNameLinks && IsSafeExactNameBootstrap(item, options))
+        {
+            item.Action = "Link";
+            item.MatchType = "BootstrapExactName";
+            item.Reasons.Add("Unique active BILL.com value has the exact normalized HaloPSA client name; bootstrap its immutable ID.");
+            SetDesiredState(item, options);
+            return;
+        }
 
         if (!item.Action.Equals("Update", StringComparison.OrdinalIgnoreCase)
             || !item.MatchType.Equals("Linked", StringComparison.OrdinalIgnoreCase)
@@ -392,14 +562,11 @@ public sealed class EntitySyncPlanner(
             return;
         }
 
-        var write = mapper.MapUpdate(item.Source, item.Target, options);
-        var hash = EntityWriteRequestDigest.Compute(write);
-        item.DesiredStateHash = hash;
-        item.DesiredStateHashVersion = EntityWriteRequestDigest.SchemaVersion;
+        SetDesiredState(item, options);
         if (storedChangeStates.TryGetValue(item.Source.Id, out var state)
             && state.TargetEntityId.Equals(item.Target.Id, StringComparison.OrdinalIgnoreCase)
             && state.HashVersion == EntityWriteRequestDigest.SchemaVersion
-            && state.PayloadHash.Equals(hash, StringComparison.Ordinal))
+            && state.PayloadHash.Equals(item.DesiredStateHash, StringComparison.Ordinal))
         {
             item.Action = "None";
             item.MatchType = "Unchanged";
@@ -426,6 +593,27 @@ public sealed class EntitySyncPlanner(
             throw new ArgumentException(
                 "The pinned connection lease does not match the requested connection ID.",
                 parameterName);
+    }
+    private static bool IsSafeExactNameBootstrap(EntitySyncPlanItem item, MatchOptions options)
+    {
+        if (item.Target is null
+            || item.Target.IsActive == false
+            || item.MatchType.Equals("Linked", StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(item.Source.GetExternalId(options.SourceExternalIdName)))
+        {
+            return false;
+        }
+
+        var sourceName = EntityNormalizer.NormalizeName(item.Source.Name);
+        return sourceName.Length > 0
+            && sourceName.Equals(EntityNormalizer.NormalizeName(item.Target.Name), StringComparison.Ordinal);
+    }
+
+    private void SetDesiredState(EntitySyncPlanItem item, MatchOptions options)
+    {
+        var write = mapper.MapUpdate(item.Source, item.Target!, options);
+        item.DesiredStateHash = EntityWriteRequestDigest.Compute(write);
+        item.DesiredStateHashVersion = EntityWriteRequestDigest.SchemaVersion;
     }
 
     private static void Validate(CreateEntitySyncPlanRequest request)
@@ -469,16 +657,50 @@ public sealed class EntitySyncPlanner(
         if (sourceVendor.Equals(targetVendor, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Source and target vendors must be different.");
         if (targetVendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("NetSuite is read-only in the application executor and cannot be used as a plan target.");
-        var requiresHaloWriteBack = sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
-            && (targetVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(targetVendor));
-        if (requiresHaloWriteBack)
-            throw new ArgumentException($"{sourceVendor} to {targetVendor} requires a source integration-link writeback that is not available through the application executor. Use the reviewed PowerShell execution workflow.");
+            throw new ArgumentException($"{targetVendor} is read-only and cannot be used as a plan target.");
+        if (EntitySyncVendors.IsAgentController(targetVendor)
+            && !sourceVendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("AgentController authoritative synchronization requires NCentral as the source vendor.");
+        }
     }
 
     private static string DefaultEntityType(string vendor) => vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) || EntitySyncVendors.IsBillCom(vendor) ? "Client" : "Customer";
-    private static string DefaultExternalIdName(string vendor) => EntitySyncVendors.IsBillCom(vendor) ? "BillSpendClientId" : "NetSuiteInternalId";
-    private static string DefaultCustomFieldName(string sourceVendor, string targetVendor) => EntitySyncVendors.IsBillCom(sourceVendor) && targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase) ? "CFBillSpendClientID" : "CFNetSuiteCustomerID";
+    private static string DefaultExternalIdName(string vendor)
+    {
+        if (EntitySyncVendors.IsBillCom(vendor))
+            return EntitySyncIntegrationContracts.BillComClientExternalIdName;
+        return EntitySyncVendors.IsSophosCentral(vendor)
+            ? EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName
+            : "NetSuiteInternalId";
+    }
+
+    private static string? RequiredSourceCustomFieldName(
+        string sourceVendor,
+        string targetVendor,
+        bool authoritativeBillSnapshot)
+    {
+        if (authoritativeBillSnapshot)
+            return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+        return sourceVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase)
+            && EntitySyncVendors.IsSophosCentral(targetVendor)
+                ? EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName
+                : null;
+    }
+
+    private static string DefaultCustomFieldName(string sourceVendor, string targetVendor)
+    {
+        if (targetVendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+        {
+            if (EntitySyncVendors.IsBillCom(sourceVendor))
+                return EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName;
+            if (EntitySyncVendors.IsSophosCentral(sourceVendor))
+                return EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName;
+        }
+
+        return "CFNetSuiteCustomerID";
+    }
+
     private static async Task<IReadOnlyList<ExternalEntity>> ReadEntitiesAsync(
         IEntityAdapter adapter,
         EntityQuery query,
@@ -502,5 +724,4 @@ public sealed class EntitySyncPlanner(
                 "The entity adapter is unavailable.", exception);
         }
     }
-
 }

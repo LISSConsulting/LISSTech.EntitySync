@@ -11,15 +11,16 @@ schema: 2.0.0
 Applies a reviewed EntitySync plan.
 
 ## DESCRIPTION
-Applies create, link, and update actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
+Applies create, link, update, and delete actions from a plan. Review items are skipped. The command requires -Apply for writes and supports -WhatIf and -Confirm. Result objects are only written when -PassThru is specified.
 For durable plans, `-PlanId` queues a run immediately. Apply also requires the
 matching one-time `-ApprovalId`; the cmdlet returns operation ID/status without
 waiting for vendor work. A consumed approval cannot authorize another run.
 
-
 `-Plan` accepts pipeline input by value. `-TargetCustomFieldName` defaults to `CFNetSuiteCustomerID` and is used by HaloPSA target link/update writes. Apply is sequential by default; pass `-ThrottleLimit 2` or higher to apply independent create/update rows concurrently. `-ThrottleLimit 0` uses the machine default. Plans that must write HaloPSA/N-central integration links after target writes remain sequential.
 
-For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. For Bill.com target plans, creates add missing Bill.com client custom-field values; updates to existing Bill.com values are safe no-ops because the Bill Spend API surface used by EntitySync exposes value creation but not value update/delete.
+For Bill.com source plans targeting HaloPSA, `Invoke-EntitySyncPlan` defaults the HaloPSA target custom field to `CFBillSpendClientID` and writes the Bill.com `BillSpendClientId` unless `-TargetCustomFieldName` is explicitly supplied. HaloPSA-to-Bill.com plans are exact-list reconciliations. Apply first adds missing or renamed values and writes their BILL IDs to `CFBillSpendClientID`; only after successful writeback does it irreversibly delete the old renamed value. Explicit reviewed `Delete` rows remove active BILL values absent from the complete HaloPSA client list. Any unresolved source row blocks apply, and BILL apply remains sequential so a failed create or writeback prevents subsequent deletions.
+
+For Sophos Central source plans targeting HaloPSA, `Invoke-EntitySyncPlan` writes the source `SophosCentralTenantId` to HaloPSA custom field `CFSophosCentralTenantID` unless `-TargetCustomFieldName` is explicitly supplied. Sophos Central partner connections can also be plan targets for tenant creation and `showAs` updates.
 
 ## SYNTAX
 
@@ -66,20 +67,18 @@ HaloPSA to NCentral:
 
 Apply maintains both sides of the HaloPSA client to N-central customer relationship. Creates use REST, updates use EI2 SOAP `customerModify`, and both write `externalId = <HaloPSA client ID>` plus configured organization custom properties for `HaloPSA Client ID`, `NetSuite Customer ID`, and `NetSuite Customer Name`. After a successful N-central write, HaloPSA `client_links` are upserted with `POST /api/ncentraldetails`.
 
-For HaloPSA Site -> NCentral Site plans, creates use `POST /api/customers/{customerId}/sites`, existing site links update HaloPSA `site_links`, and N-central site field updates are no-op because the confirmed OpenAPI exposes site read/create but no site update endpoint.
+For HaloPSA Site -> NCentral Site plans, creates use `POST /api/customers/{customerId}/sites`, updates use EI2 SOAP `customerModify` with the linked N-central parent customer ID, and successful writes update HaloPSA `site_links`.
 
 Confirmed N-central behavior:
 
 - Customer discovery uses `GET /api/service-orgs/{soId}/customers` when `-NCentralServiceOrgId` is configured, otherwise `GET /api/customers`.
 - Customer creation uses `POST /api/service-orgs/{soId}/customers`.
 - N-central customer names are sanitized before create by replacing `&` with `and`.
-- The OpenAPI spec does not expose a customer update endpoint, so customer updates use EI2 SOAP `customerModify`.
+- The OpenAPI spec does not expose customer or site update endpoints, so both use EI2 SOAP `customerModify`.
 - N-central organization custom properties are updated with EI2 SOAP `organizationPropertyList` and `organizationPropertyModify`.
 - HaloPSA N-central client links are written with `POST /api/ncentraldetails` by sending the integration account `id` and updated `client_links` collection.
-- N-central site discovery uses `GET /api/sites`; site creation uses `POST /api/customers/{customerId}/sites`.
+- N-central site discovery uses `GET /api/sites`; site creation uses `POST /api/customers/{customerId}/sites`; site updates use EI2 SOAP `customerModify`.
 - HaloPSA N-central site links are written with `POST /api/ncentraldetails` by sending the integration account `id`, preserved `client_links`, and updated `site_links` collection.
-
-Site updates only maintain the HaloPSA integration link until a confirmed N-central site update endpoint is available.
 
 NCentral to LTAC:
 

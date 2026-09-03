@@ -8,7 +8,7 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.Halo;
 
-public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
+public sealed class HaloEntityAdapter : IEntityAdapter, IHaloSourceWritebackAdapter, IDisposable
 {
     private const int DefaultPageSize = 100;
     private const int DefaultEnrichmentConcurrency = 2;
@@ -513,7 +513,6 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
                 continue;
             }
 
-            if (!fieldName.Equals(options.NetSuiteCustomerNameField, StringComparison.OrdinalIgnoreCase)) continue;
             var fieldId = await ResolveCustomFieldIdAsync(fieldName, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(fieldId)) fieldIds.Add(fieldId);
         }
@@ -580,6 +579,26 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
 
     public async Task<EntityWriteResult> UpdateEntityAsync(EntityWriteRequest request, CancellationToken cancellationToken)
     {
+        if (request.CustomFieldOnly)
+        {
+            if (string.IsNullOrWhiteSpace(request.Id)) throw new InvalidOperationException("HaloPSA custom-field-only updates require a client ID.");
+            if (request.CustomFields.Count == 0) throw new InvalidOperationException("HaloPSA custom-field-only updates require at least one custom field.");
+
+            var customFieldBody = JsonSerializer.Serialize(new[] { ToHaloCustomFieldOnlyPayload(request) });
+            using var customFieldResponse = await PostJsonAsync("api/client", customFieldBody, cancellationToken).ConfigureAwait(false);
+            var customFieldText = await customFieldResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return new EntityWriteResult
+            {
+                Vendor = Vendor,
+                EntityType = request.EntityType,
+                Id = request.Id,
+                Action = "Update",
+                Success = customFieldResponse.IsSuccessStatusCode,
+                Message = customFieldResponse.IsSuccessStatusCode ? null : customFieldText,
+                Raw = customFieldText
+            };
+        }
+
         await AddConfiguredCustomFieldsAsync(request, cancellationToken).ConfigureAwait(false);
         var body = JsonSerializer.Serialize(new[] { await ToHaloClientPayloadAsync(request, true, false, cancellationToken).ConfigureAwait(false) });
         using var response = await PostJsonAsync("api/client", body, cancellationToken).ConfigureAwait(false);
@@ -869,6 +888,16 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
                     entity.ExternalIds["NetSuiteInternalId"] = value;
                 }
 
+                if (name.Equals(EntitySyncIntegrationContracts.BillComHaloClientCustomFieldName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+                {
+                    entity.ExternalIds[EntitySyncIntegrationContracts.BillComClientExternalIdName] = value;
+                }
+
+                if (name.Equals(EntitySyncIntegrationContracts.SophosCentralHaloTenantCustomFieldName, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+                {
+                    entity.ExternalIds[EntitySyncIntegrationContracts.SophosCentralTenantExternalIdName] = value;
+                }
+
                 if (name.Equals(options.NetSuiteCustomerNameField, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
                 {
                     entity.CustomFields["NetSuiteCustomerName"] = value;
@@ -982,6 +1011,18 @@ public sealed class HaloEntityAdapter : IEntityAdapter, IDisposable
         }
 
         return null;
+    }
+
+    private static Dictionary<string, object?> ToHaloCustomFieldOnlyPayload(EntityWriteRequest request)
+    {
+        return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = request.Id,
+            ["name"] = request.Name,
+            ["customfields"] = request.CustomFields
+                .Select(field => new Dictionary<string, object?> { ["name"] = field.Key, ["value"] = field.Value })
+                .ToArray()
+        };
     }
 
     private async Task<Dictionary<string, object?>> ToHaloClientPayloadAsync(EntityWriteRequest request, bool includeId, bool isCreate, CancellationToken cancellationToken)

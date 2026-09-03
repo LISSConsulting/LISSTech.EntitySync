@@ -13,7 +13,7 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <Version>26.8.0</Version>
     <PackageReadmeFile>..\README.md</PackageReadmeFile>
-    <Description>LISSTech EntitySync MCP server for natural-language vendor entity synchronization.</Description>
+    <Description>EntitySync (Entity Sync/ES) MCP server for natural-language client, customer, account, and company synchronization and vendor-record lookup.</Description>
   </PropertyGroup>
 
   <ItemGroup>

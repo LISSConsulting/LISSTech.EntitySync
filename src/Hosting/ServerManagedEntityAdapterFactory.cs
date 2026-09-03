@@ -8,6 +8,7 @@ using LISSTech.EntitySync.Adapters.BillCom;
 using LISSTech.EntitySync.Adapters.Halo;
 using LISSTech.EntitySync.Adapters.LTAC;
 using LISSTech.EntitySync.Adapters.NCentral;
+using LISSTech.EntitySync.Adapters.SophosCentral;
 using LISSTech.EntitySync.Adapters.NetSuite;
 using LISSTech.EntitySync.Adapters.OrchestraMSP;
 using LISSTech.EntitySync.Core;
@@ -57,7 +58,12 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         "ORCHESTRA_CLIENT_ID",
         "ORCHESTRA_RESOURCE",
         "ORCHESTRA_CLIENT_SECRET",
-        "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA"
+        "ENTITYSYNC_TEST_ALLOW_HTTP_ORCHESTRA",
+        "SOPHOS_CENTRAL_CLIENT_ID",
+        "SOPHOS_CENTRAL_CLIENT_SECRET",
+        "SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY",
+        "SOPHOS_CENTRAL_DEFAULT_DATA_REGION",
+        "SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE"
     ];
 
     private readonly IReadOnlyDictionary<string, string?> environment;
@@ -221,6 +227,18 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                 ClientFieldName = ResolveOptional(profileSettings, "BillComClientFieldName", "BILLCOM_CLIENT_FIELD_NAME") ?? "Client"
             });
         }
+        if (EntitySyncVendors.IsSophosCentral(normalized))
+        {
+            return new SophosCentralEntityAdapter(new SophosCentralOptions
+            {
+                ClientId = Resolve(profileSettings, "SophosCentralClientId", "SOPHOS_CENTRAL_CLIENT_ID"),
+                ClientSecret = Resolve(profileSettings, "SophosCentralClientSecret", "SOPHOS_CENTRAL_CLIENT_SECRET"),
+                DefaultDataGeography = ResolveOptional(profileSettings, "SophosCentralDefaultDataGeography", "SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY"),
+                DefaultDataRegion = ResolveOptional(profileSettings, "SophosCentralDefaultDataRegion", "SOPHOS_CENTRAL_DEFAULT_DATA_REGION"),
+                DefaultBillingType = ResolveOptional(profileSettings, "SophosCentralDefaultBillingType", "SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE")
+            });
+        }
+
 
         if (EntitySyncVendors.IsOrchestraMSP(normalized))
         {
@@ -492,6 +510,36 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
                 "BillComApiToken",
                 Resolve(profileSettings, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN"));
         }
+        else if (EntitySyncVendors.IsSophosCentral(normalized))
+        {
+            AddPublic(
+                "SophosCentralClientId",
+                Resolve(profileSettings, "SophosCentralClientId", "SOPHOS_CENTRAL_CLIENT_ID"));
+            AddOptionalPublic(
+                "SophosCentralDefaultDataGeography",
+                ResolveOptional(
+                    profileSettings,
+                    "SophosCentralDefaultDataGeography",
+                    "SOPHOS_CENTRAL_DEFAULT_DATA_GEOGRAPHY"));
+            AddOptionalPublic(
+                "SophosCentralDefaultDataRegion",
+                ResolveOptional(
+                    profileSettings,
+                    "SophosCentralDefaultDataRegion",
+                    "SOPHOS_CENTRAL_DEFAULT_DATA_REGION"));
+            AddOptionalPublic(
+                "SophosCentralDefaultBillingType",
+                ResolveOptional(
+                    profileSettings,
+                    "SophosCentralDefaultBillingType",
+                    "SOPHOS_CENTRAL_DEFAULT_BILLING_TYPE"));
+            secretConfiguration.Add(
+                "SophosCentralClientSecret",
+                Resolve(
+                    profileSettings,
+                    "SophosCentralClientSecret",
+                    "SOPHOS_CENTRAL_CLIENT_SECRET"));
+        }
         else if (EntitySyncVendors.IsOrchestraMSP(normalized))
         {
             var baseUrl = Resolve(
@@ -643,24 +691,111 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             $"Stored connection configuration is missing required setting '{key}'.");
     }
 
-    public void ValidateNetSuiteHaloFixedRouteConfiguration()
+    public void ValidateNetSuiteHaloFixedRouteConfiguration() =>
+        ValidateConfiguration(["NetSuite", "HaloPSA"]);
+
+    public void ValidateConfiguration(IEnumerable<string> vendors)
     {
-        _ = CreateNetSuiteOptions(null);
-        _ = Resolve(null, "HaloClientId", "HALO_CLIENT_ID");
-        _ = Resolve(null, "HaloClientSecret", "HALO_CLIENT_SECRET");
-        _ = CreateHaloOptions(null, "startup-configuration-validation");
-        _ = GetNetSuiteHaloChangeStateScope();
+        ArgumentNullException.ThrowIfNull(vendors);
+        foreach (var vendor in vendors.Select(EntitySyncVendors.Normalize).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (vendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = CreateNetSuiteOptions(null);
+                continue;
+            }
+            if (vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = Resolve(null, "HaloClientId", "HALO_CLIENT_ID");
+                _ = Resolve(null, "HaloClientSecret", "HALO_CLIENT_SECRET");
+                _ = CreateHaloOptions(null, "startup-configuration-validation");
+                var nCentralIntegrationId = Resolve(
+                    null,
+                    "HaloNCentralIntegrationId",
+                    "HALO_NCENTRAL_INTEGRATION_ID");
+                if (!int.TryParse(nCentralIntegrationId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedIntegrationId)
+                    || parsedIntegrationId <= 0)
+                {
+                    throw new InvalidOperationException(
+                        "Server configuration 'HALO_NCENTRAL_INTEGRATION_ID' must be a positive integer.");
+                }
+                continue;
+            }
+            if (vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = RequireHttps(Resolve(null, "NCentralBaseUrl", "NCENTRAL_BASE_URL"), vendor);
+                _ = Resolve(null, "NCentralUserApiToken", "NCENTRAL_USER_API_TOKEN");
+                _ = Resolve(null, "NCentralServiceOrgId", "NCENTRAL_SERVICE_ORG_ID");
+                _ = Resolve(null, "NCentralSoapUsername", "NCENTRAL_SOAP_USERNAME");
+                _ = Resolve(null, "NCentralSoapPassword", "NCENTRAL_SOAP_PASSWORD");
+                continue;
+            }
+            if (EntitySyncVendors.IsBillCom(vendor))
+            {
+                _ = RequireHttps(
+                    ResolveOptional(null, "BillComBaseUrl", "BILLCOM_BASE_URL")
+                        ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields",
+                    vendor);
+                _ = Resolve(null, "BillComApiToken", "BILLCOM_API_TOKEN", "BILLSPEND_API_TOKEN");
+                continue;
+            }
+            if (EntitySyncVendors.IsSophosCentral(vendor))
+            {
+                _ = Resolve(null, "SophosCentralClientId", "SOPHOS_CENTRAL_CLIENT_ID");
+                _ = Resolve(null, "SophosCentralClientSecret", "SOPHOS_CENTRAL_CLIENT_SECRET");
+                continue;
+            }
+
+            throw new InvalidOperationException($"Unsupported scheduled vendor '{vendor}'.");
+        }
     }
 
-    public string GetNetSuiteHaloChangeStateScope()
+    public string GetChangeStateScope(
+        string sourceVendor,
+        string sourceConnectionId,
+        string sourceEntityType,
+        string targetVendor,
+        string targetConnectionId,
+        string targetEntityType)
     {
-        var accountId = Resolve(null, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID")
-            .Trim()
-            .ToUpperInvariant();
-        var haloBaseUrl = RequireRouteIdentityHttpsBaseUrl(
-            Resolve(null, "HaloBaseUrl", "HALO_BASE_URL"));
-        var canonical = $"netsuite|{accountId}|customer|netsuite|halopsa|{haloBaseUrl}|client|halopsa";
+        var normalizedSource = EntitySyncVendors.Normalize(sourceVendor);
+        var normalizedTarget = EntitySyncVendors.Normalize(targetVendor);
+        var canonical = string.Join(
+            "|",
+            normalizedSource.ToLowerInvariant(),
+            GetVendorRouteIdentity(normalizedSource),
+            sourceConnectionId.Trim().ToLowerInvariant(),
+            sourceEntityType.Trim().ToLowerInvariant(),
+            normalizedTarget.ToLowerInvariant(),
+            GetVendorRouteIdentity(normalizedTarget),
+            targetConnectionId.Trim().ToLowerInvariant(),
+            targetEntityType.Trim().ToLowerInvariant());
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private string GetVendorRouteIdentity(string vendor)
+    {
+        if (vendor.Equals("NetSuite", StringComparison.OrdinalIgnoreCase))
+            return Resolve(null, "NetSuiteAccountId", "NETSUITE_ACCOUNT_ID").Trim().ToUpperInvariant();
+        if (vendor.Equals("HaloPSA", StringComparison.OrdinalIgnoreCase))
+            return RequireRouteIdentityHttpsBaseUrl(Resolve(null, "HaloBaseUrl", "HALO_BASE_URL"), vendor);
+        if (vendor.Equals("NCentral", StringComparison.OrdinalIgnoreCase))
+            return string.Join(
+                "|",
+                RequireRouteIdentityHttpsBaseUrl(Resolve(null, "NCentralBaseUrl", "NCENTRAL_BASE_URL"), vendor),
+                Resolve(null, "NCentralServiceOrgId", "NCENTRAL_SERVICE_ORG_ID").Trim());
+        if (EntitySyncVendors.IsBillCom(vendor))
+            return string.Join(
+                "|",
+                RequireRouteIdentityHttpsBaseUrl(
+                    ResolveOptional(null, "BillComBaseUrl", "BILLCOM_BASE_URL")
+                        ?? "https://gateway.prod.bill.com/connect/v3/spend/custom-fields",
+                    vendor),
+                ResolveOptional(null, "BillComClientFieldName", "BILLCOM_CLIENT_FIELD_NAME")?.Trim() ?? "Client");
+        if (EntitySyncVendors.IsSophosCentral(vendor))
+            return Resolve(null, "SophosCentralClientId", "SOPHOS_CENTRAL_CLIENT_ID").Trim();
+
+        throw new InvalidOperationException($"Unsupported scheduled vendor '{vendor}'.");
     }
 
     internal NetSuiteOptions CreateNetSuiteOptions(IReadOnlyDictionary<string, string>? profileSettings) => new()
@@ -820,7 +955,7 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
         return uri.AbsoluteUri;
     }
 
-    private static string RequireRouteIdentityHttpsBaseUrl(string value)
+    private static string RequireRouteIdentityHttpsBaseUrl(string value, string vendor)
     {
         if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri)
             || !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
@@ -829,7 +964,7 @@ public sealed class ServerManagedEntityAdapterFactory : IServerManagedEntityAdap
             || !string.IsNullOrEmpty(uri.Fragment))
         {
             throw new InvalidOperationException(
-                "HaloPSA route identity must use an absolute HTTPS base URL without user info, a query, or a fragment.");
+                $"{vendor} route identity must use an absolute HTTPS base URL without user info, a query, or a fragment.");
         }
 
         return uri.AbsoluteUri;

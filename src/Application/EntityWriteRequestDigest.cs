@@ -43,6 +43,7 @@ public static class EntityWriteRequestDigest
                     ["observedOwnerVersion"] =
                         request.ResolvedParent.ObservedOwnerVersion
                 },
+            ["customFieldOnly"] = request.CustomFieldOnly,
             ["fields"] = Canonicalize(request.Fields),
             ["customFields"] = Canonicalize(request.CustomFields)
         };

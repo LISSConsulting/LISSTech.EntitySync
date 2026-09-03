@@ -27,5 +27,6 @@ public static class ReviewedPlanPolicy
     private static bool IsExecutable(string action) =>
         action.Equals("Create", StringComparison.OrdinalIgnoreCase)
         || action.Equals("Link", StringComparison.OrdinalIgnoreCase)
-        || action.Equals("Update", StringComparison.OrdinalIgnoreCase);
+        || action.Equals("Update", StringComparison.OrdinalIgnoreCase)
+        || action.Equals("Delete", StringComparison.OrdinalIgnoreCase);
 }

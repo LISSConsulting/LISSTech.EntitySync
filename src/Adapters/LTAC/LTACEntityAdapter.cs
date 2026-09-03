@@ -5,7 +5,7 @@ using LISSTech.EntitySync.Ports;
 
 namespace LISSTech.EntitySync.Adapters.LTAC;
 
-public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
+public sealed class LTACEntityAdapter : IEntityAdapter, IEntityBatchAdapter, IDisposable
 {
     private const string SyncReason = "EntitySync N-central to LTAC sync";
     private const string SyncPath = "rpc/sync_ncentral_customers";
@@ -70,6 +70,30 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
     {
         throw new NotSupportedException("LTAC does not support per-item update. Apply an approved plan through the LTAC batch sync path.");
     }
+    public async Task<EntityWriteResult> ApplyBatchAsync(
+        IReadOnlyList<EntityWriteRequest> requests,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(requests);
+        var customers = requests.Select(request => new LTACCustomerScopeRequest
+        {
+            Slug = StringField(request, "slug"),
+            DisplayName = StringField(request, "display_name"),
+            NCentralCustomerId = StringField(request, "ncentral_customer_id"),
+            NCentralParentCustomerId = OptionalStringField(request, "ncentral_parent_customer_id")
+        }).ToArray();
+        var result = await SyncCustomerScopesAsync(customers, cancellationToken).ConfigureAwait(false);
+        return new EntityWriteResult
+        {
+            Vendor = Vendor,
+            EntityType = "Customer",
+            Action = "BatchSync",
+            Success = true,
+            Message = $"AgentController batch sync applied (inserted {result.InsertedCount}, updated {result.UpdatedCount}, retired {result.RetiredCount}, active {result.ActiveCount}).",
+            Raw = result
+        };
+    }
+
 
     public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken)
     {
@@ -234,6 +258,18 @@ public sealed class LTACEntityAdapter : IEntityAdapter, IDisposable
             Reason = SyncReason,
             Ticket = null
         }, cancellationToken);
+    }
+
+    private static string StringField(EntityWriteRequest request, string name)
+    {
+        return OptionalStringField(request, name) ?? string.Empty;
+    }
+
+    private static string? OptionalStringField(EntityWriteRequest request, string name)
+    {
+        return request.Fields.TryGetValue(name, out var value)
+            ? value as string
+            : null;
     }
 
     private void SetAuthorization(string bearerToken)

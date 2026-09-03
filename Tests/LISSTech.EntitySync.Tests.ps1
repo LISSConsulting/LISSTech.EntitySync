@@ -605,6 +605,7 @@ namespace EntitySyncTests
     $releaseNotes | Should -Match 'N-central' -Because 'N-central adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Bill\.com' -Because 'Bill.com adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'AgentController' -Because 'AgentController adapter is shipped and must appear in operator-facing release notes'
+    $releaseNotes | Should -Match 'Sophos Central' -Because 'Sophos Central adapter is shipped and must appear in operator-facing release notes'
     $releaseNotes | Should -Match 'Retry-After' -Because 'rate-limit/backoff is a load-bearing reliability feature and must be advertised'
     $releaseNotes | Should -Match 'redacted' -Because 'credential redaction across plan artifacts and error paths is a load-bearing safety guarantee'
     $releaseNotes | Should -Match 'SecureString' -Because '-SecureToken is the operator-session JWT entry point and must be advertised'
@@ -619,6 +620,7 @@ namespace EntitySyncTests
     $tags | Should -Contain 'ncentral' -Because 'N-central adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'billcom' -Because 'Bill.com adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'agentcontroller' -Because 'AgentController adapter is shipped and must be discoverable on PowerShell Gallery'
+    $tags | Should -Contain 'sophoscentral' -Because 'Sophos Central adapter is shipped and must be discoverable on PowerShell Gallery'
     $tags | Should -Contain 'ltac' -Because 'LTAC should be discoverable as the corrected LISSTech Agent Controller abbreviation'
   }
 
@@ -756,6 +758,10 @@ namespace EntitySyncTests
     $billComInput = 'Get-EntitySyncEntity -Vendor Bill.com -Type '
     $billComTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComInput, $billComInput.Length, $null).CompletionMatches.CompletionText
     $billComTypes | Should -Be @('Client')
+
+    $sophosInput = "Get-EntitySyncEntity -Vendor 'Sophos Central' -Type "
+    $sophosTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosInput, $sophosInput.Length, $null).CompletionMatches.CompletionText
+    $sophosTypes | Should -Be @('Customer')
   }
 
   It 'Completes vendors for New-EntitySyncPlan' {
@@ -765,6 +771,7 @@ namespace EntitySyncTests
     $sourceVendors | Should -Contain 'NetSuite'
     $sourceVendors | Should -Contain 'NCentral'
     $sourceVendors | Should -Contain 'Bill.com'
+    $sourceVendors | Should -Contain "'Sophos Central'"
 
     $targetInput = 'New-EntitySyncPlan -TargetVendor '
     $targetVendors = [System.Management.Automation.CommandCompletion]::CompleteInput($targetInput, $targetInput.Length, $null).CompletionMatches.CompletionText
@@ -772,6 +779,7 @@ namespace EntitySyncTests
     $targetVendors | Should -Contain 'NetSuite'
     $targetVendors | Should -Contain 'NCentral'
     $targetVendors | Should -Contain 'Bill.com'
+    $targetVendors | Should -Contain "'Sophos Central'"
   }
 
   It 'Completes vendor-specific entity types for New-EntitySyncPlan' {
@@ -796,7 +804,15 @@ namespace EntitySyncTests
     $billComTargetInput = 'New-EntitySyncPlan -TargetVendor Bill.com -TargetEntityType '
     $billComTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($billComTargetInput, $billComTargetInput.Length, $null).CompletionMatches.CompletionText
     $billComTargetTypes | Should -Be @('Client')
+
+    $sophosSourceInput = "New-EntitySyncPlan -SourceVendor 'Sophos Central' -SourceEntityType "
+    $sophosSourceTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosSourceInput, $sophosSourceInput.Length, $null).CompletionMatches.CompletionText
+    $sophosSourceTypes | Should -Be @('Customer')
+    $sophosTargetInput = "New-EntitySyncPlan -TargetVendor 'Sophos Central' -TargetEntityType "
+    $sophosTargetTypes = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosTargetInput, $sophosTargetInput.Length, $null).CompletionMatches.CompletionText
+    $sophosTargetTypes | Should -Be @('Customer')
   }
+
 
   It 'Completes vendor-specific lookup types for Get-EntitySyncLookup' {
     $haloInput = 'Get-EntitySyncLookup -Vendor HaloPSA -Type '
@@ -874,6 +890,12 @@ namespace EntitySyncTests
     $billCom | Should -Contain '-BillComClientFieldName'
     $billCom | Should -Not -Contain '-HaloBaseUrl'
     $billCom | Should -Not -Contain '-NetSuiteAccountId'
+
+    $sophosInput = "Connect-EntitySyncVendor -Vendor 'Sophos Central' -"
+    $sophos = [System.Management.Automation.CommandCompletion]::CompleteInput($sophosInput, $sophosInput.Length, $null).CompletionMatches.CompletionText
+    $sophos | Should -Contain '-SophosCentralClientId'
+    $sophos | Should -Contain '-SophosCentralClientSecret'
+    $sophos | Should -Not -Contain '-HaloBaseUrl'
   }
 
   It 'Completes AgentController as the visible vendor on command surfaces that support AgentController (T013, US1)' {
@@ -989,6 +1011,49 @@ namespace EntitySyncTests
       $server.Wait(3)
       $server.Requests[2] | Should -Match 'POST /cf1/values HTTP/1\.1'
       $server.Requests[2] | Should -Match '"values":\["New Corp"\]'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
+  It 'Prepares Bill.com renames and deletes old values only through the irreversible delete endpoint' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"cf1","name":"Client"}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"100","uuid":"u-100","value":"Old Corp","deleted":false}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"300","uuid":"u-300","value":"New Corp","deleted":false}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(204, 'No Content', '')
+    )
+    $server.Start()
+    $adapter = New-TestBillComAdapter -Options (New-TestBillComOptions -BaseUrl $server.BaseUrl -ApiToken 'bill-token')
+    try {
+      $rename = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $rename.Vendor = 'Bill.com'
+      $rename.EntityType = 'Client'
+      $rename.Id = '100'
+      $rename.Name = 'New Corp'
+
+      $prepared = $adapter.UpdateEntityAsync($rename, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $prepared.Success | Should -BeTrue
+      $prepared.Id | Should -Be '300'
+
+      $server.Wait(3)
+      $server.Requests.Count | Should -Be 3
+      $server.Requests[2] | Should -Match 'POST /cf1/values HTTP/1\.1'
+      $server.Requests[2] | Should -Match '"values":\["New Corp"\]'
+
+      $delete = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $delete.Vendor = 'Bill.com'
+      $delete.EntityType = 'Client'
+      $delete.Id = '100'
+      $delete.Name = 'Old Corp'
+      $deleted = $adapter.DeleteEntityAsync($delete, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      $deleted.Success | Should -BeTrue
+      $server.Wait(4)
+      $server.Requests[3] | Should -Match 'DELETE /cf1/values HTTP/1\.1'
+      $server.Requests[3] | Should -Match '"customFieldValueIds":\["100"\]'
     }
     finally {
       $adapter.Dispose()
@@ -1173,6 +1238,48 @@ namespace EntitySyncTests
       $body[0].newclient_country_code | Should -Be '236'
       $body[0].newclient_region_code | Should -Be 44
       $body[0].newclient_timezone | Should -Be 'Eastern Standard Time'
+    }
+    finally {
+      $server.Dispose()
+      $haloAdapter.Dispose()
+    }
+  }
+
+  It 'Updates only the requested HaloPSA custom field for reverse-link writes' {
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '[{"id":42}]')
+    )
+    $server.Start()
+    $options = New-TestHaloOptions -BaseUrl $server.BaseUrl
+    $options.AccountManagerEmail = 'manager@example.test'
+    $haloAdapter = New-TestHaloAdapter -Options $options
+
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.Vendor = 'HaloPSA'
+      $request.EntityType = 'Client'
+      $request.Id = '42'
+      $request.PrimarySiteId = '99'
+      $request.Name = 'Canonical Halo Client Name'
+      $request.CustomFieldOnly = $true
+      $request.Fields['phonenumber'] = '555-0101'
+      $request.CustomFields['CFSophosCentralTenantID'] = 'sophos-tenant-id'
+
+      $result = $haloAdapter.UpdateEntityAsync($request, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $server.Wait(1)
+
+      $result.Success | Should -BeTrue
+      $server.Requests.Count | Should -Be 1
+      $server.Requests[0] | Should -Match '^POST /api/client HTTP/1\.1'
+      $body = $server.Requests[0].Substring($server.Requests[0].IndexOf("`r`n`r`n") + 4) | ConvertFrom-Json
+      $body[0].id | Should -Be '42'
+      $body[0].name | Should -Be 'Canonical Halo Client Name'
+      $body[0].customfields.Count | Should -Be 1
+      $body[0].customfields[0].name | Should -Be 'CFSophosCentralTenantID'
+      $body[0].customfields[0].value | Should -Be 'sophos-tenant-id'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'toplevel_id'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'colour'
+      $body[0].PSObject.Properties.Name | Should -Not -Contain 'phonenumber'
     }
     finally {
       $server.Dispose()
@@ -4495,11 +4602,13 @@ namespace EntitySyncTests
     $options.SourceExternalIdName = 'NCentralSiteId'
     $options.TargetExternalIdName = 'NCentralSiteId'
     $match = [LISSTech.EntitySync.Matching.WeightedEntityMatcher]::new().FindMatches($source, $targets, $options)
+    $request = [LISSTech.EntitySync.Mapping.DefaultEntityMapper]::new().MapUpdate($source, $target, $options)
 
     $resolved.SiteLinks | Should -Be 1
     $resolved.ParentLinks | Should -Be 1
     $source.ExternalIds['NCentralSiteId'] | Should -Be '353'
     $source.ExternalIds['NCentralCustomerId'] | Should -Be '390'
+    $request.CustomFields['NCentralCustomerId'] | Should -Be '390'
     $match[0].MatchType | Should -Be 'Linked'
     $match[0].Score | Should -Be 100
   }
@@ -4586,6 +4695,56 @@ namespace EntitySyncTests
     }
     finally {
       $adapter.Dispose()
+    }
+  }
+
+  It 'Updates N-central sites through SOAP customerModify under their parent customer' {
+    $soapResponse = @'
+<?xml version="1.0" encoding="utf-8"?>
+<soapenv:Envelope xmlns:soapenv="http://www.w3.org/2003/05/soap-envelope">
+  <soapenv:Body>
+    <customerModifyResponse>
+      <customerModifyReturn>402</customerModifyReturn>
+    </customerModifyResponse>
+  </soapenv:Body>
+</soapenv:Envelope>
+'@
+    $server = [EntitySyncTests.OneShotHttpServer]::new(200, 'OK', $soapResponse)
+    $server.Start()
+    $options = New-TestNCentralOptions -BaseUrl $server.BaseUrl
+    $options.SoapUsername = 'soap-user'
+    $options.SoapPassword = 'soap-password'
+    $adapter = New-TestNCentralAdapter -Options $options
+    try {
+      $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+      $request.EntityType = 'Site'
+      $request.Id = '402'
+      $request.Name = 'Main & Office'
+      $request.CustomFields['externalId'] = '810'
+      $request.CustomFields['NCentralCustomerId'] = '390'
+      $address = [System.Collections.Generic.Dictionary[string,object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+      $address['street1'] = '123 Main St'
+      $address['city'] = 'New York'
+      $address['stateProv'] = 'NY'
+      $address['postalCode'] = '10001'
+      $address['country'] = 'US'
+      $request.Fields['address'] = $address
+
+      $result = $adapter.UpdateEntityAsync($request, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+      $server.Wait()
+
+      $result.Success | Should -BeTrue
+      $result.Id | Should -Be '402'
+      $server.RequestText | Should -Match 'POST /dms2/services2/ServerEI2'
+      $server.RequestText | Should -Match '<ei2:customerModify>'
+      $server.RequestText | Should -Match '<ei2:key>customerid</ei2:key><ei2:value>402</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>parentid</ei2:key><ei2:value>390</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>customername</ei2:key><ei2:value>Main and Office</ei2:value>'
+      $server.RequestText | Should -Match '<ei2:key>street1</ei2:key><ei2:value>123 Main St</ei2:value>'
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
     }
   }
 
