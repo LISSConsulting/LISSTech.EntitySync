@@ -10,6 +10,7 @@ public sealed class EntitySyncService(
     IEntityExclusionRepository exclusions,
     IEntityMapper mapper,
     IEntitySyncChangeStateRepository changeStates,
+    IEntityGraphRepository graph,
     TimeProvider? timeProvider = null)
 {
     public Task<EntitySyncPlan> CreatePlanAsync(CreateEntitySyncPlanRequest request, CancellationToken cancellationToken) => planner.CreateAsync(request, cancellationToken);
@@ -154,6 +155,30 @@ public sealed class EntitySyncService(
                     var skippedItem = item.Action.Equals("None", StringComparison.OrdinalIgnoreCase)
                         || item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase);
                     var success = skippedItem || batchWrite.Success;
+                    var message = skippedItem
+                        ? "Skipped: requires review or no action."
+                        : batchWrite.Message ?? "AgentController batch sync applied.";
+                    if (!skippedItem && success && item.Target is not null)
+                    {
+                        try
+                        {
+                            await CheckpointRelationshipAsync(
+                                plan,
+                                item,
+                                item.Target.Id,
+                                EntityGraphRelationshipStatuses.Confirmed,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch
+                        {
+                            success = false;
+                            message = "AgentController apply succeeded, but the EntitySync relationship checkpoint failed.";
+                        }
+                    }
                     results.Add(new EntitySyncApplyItemResult(
                         item.Action,
                         item.Source.Name,
@@ -161,7 +186,7 @@ public sealed class EntitySyncService(
                         success,
                         skippedItem,
                         item.Target?.Id,
-                        skippedItem ? "Skipped: requires review or no action." : batchWrite.Message ?? "AgentController batch sync applied."));
+                        message));
                     if (skippedItem) skipped++;
                     else if (success) succeeded++;
                     else failed++;
@@ -293,7 +318,47 @@ public sealed class EntitySyncService(
                         }
 
                         var checkpointSucceeded = true;
-                        if (changeStateRoute is not null)
+                        try
+                        {
+                            await CheckpointRelationshipAsync(
+                                plan,
+                                item,
+                                write.Id ?? item.Target?.Id,
+                                deleteAction
+                                    ? EntityGraphRelationshipStatuses.Removed
+                                    : EntityGraphRelationshipStatuses.Confirmed,
+                                cancellationToken).ConfigureAwait(false);
+                            if (replacementDelete is not null
+                                && item.Target is not null
+                                && !string.IsNullOrWhiteSpace(write.Id)
+                                && !write.Id.Equals(item.Target.Id, StringComparison.OrdinalIgnoreCase))
+                            {
+                                await CheckpointRelationshipAsync(
+                                    plan,
+                                    item,
+                                    item.Target.Id,
+                                    EntityGraphRelationshipStatuses.Removed,
+                                    cancellationToken).ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch
+                        {
+                            results.Add(new EntitySyncApplyItemResult(
+                                item.Action,
+                                item.Source.Name,
+                                item.Target?.Name,
+                                false,
+                                false,
+                                write.Id,
+                                "Target write succeeded, but the EntitySync relationship checkpoint failed."));
+                            failed++;
+                            checkpointSucceeded = false;
+                        }
+                        if (checkpointSucceeded && changeStateRoute is not null)
                         {
                             try
                             {
@@ -324,7 +389,6 @@ public sealed class EntitySyncService(
                                 checkpointSucceeded = false;
                             }
                         }
-
                         if (checkpointSucceeded)
                         {
                             results.Add(new EntitySyncApplyItemResult(
@@ -374,6 +438,113 @@ public sealed class EntitySyncService(
         }
 
         return new EntitySyncApplyResult(plan.Id, apply, failed == 0, succeeded, failed, skipped, results);
+    }
+
+    private async Task CheckpointRelationshipAsync(
+        EntitySyncPlan plan,
+        EntitySyncPlanItem item,
+        string? targetId,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(targetId)) return;
+        var observedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
+        var targetEntityType = string.IsNullOrWhiteSpace(item.Target?.EntityType)
+            ? plan.TargetEntityType
+            : item.Target.EntityType;
+        var targetChanged = item.Target is null
+            || !targetId.Equals(item.Target.Id, StringComparison.OrdinalIgnoreCase);
+        if (targetChanged || status == EntityGraphRelationshipStatuses.Removed)
+        {
+            var projection = status == EntityGraphRelationshipStatuses.Removed && item.Target is not null
+                ? CopyWithActiveState(item.Target, false, "RemovedProjection")
+                : new ExternalEntity
+                {
+                    Vendor = plan.TargetVendor,
+                    EntityType = targetEntityType,
+                    Id = targetId,
+                    Name = item.Source.Name,
+                    IsActive = true,
+                    CustomFields =
+                    {
+                        ["EntitySyncRecordState"] = "AppliedProjection"
+                    }
+                };
+            await graph.ObserveEntitiesAsync(
+                new EntityGraphObservation(
+                    new EntityGraphScope(
+                        plan.TenantId,
+                        plan.TargetVendor,
+                        plan.Execution.TargetConnectionId,
+                        targetEntityType),
+                    [projection],
+                    observedAt,
+                    plan.Id),
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (string.IsNullOrWhiteSpace(item.Source.Id))
+        {
+            if (status == EntityGraphRelationshipStatuses.Removed) return;
+            throw new InvalidOperationException("A relationship checkpoint requires a source entity ID.");
+        }
+
+        await graph.ObserveRelationshipsAsync(
+            [new EntityGraphRelationshipObservation(
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.SourceVendor,
+                    plan.Execution.SourceConnectionId,
+                    string.IsNullOrWhiteSpace(item.Source.EntityType)
+                        ? plan.SourceEntityType
+                        : item.Source.EntityType,
+                    item.Source.Id),
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.TargetVendor,
+                    plan.Execution.TargetConnectionId,
+                    targetEntityType,
+                    targetId),
+                EntityGraphRelationshipTypes.EquivalentTo,
+                status,
+                item.MatchType,
+                item.Score,
+                [.. item.Reasons, status == EntityGraphRelationshipStatuses.Removed
+                    ? "Plan apply removed the relationship."
+                    : "Plan apply succeeded."],
+                observedAt,
+                plan.Id)],
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ExternalEntity CopyWithActiveState(
+        ExternalEntity entity,
+        bool isActive,
+        string recordState)
+    {
+        var copy = new ExternalEntity
+        {
+            Vendor = entity.Vendor,
+            EntityType = entity.EntityType,
+            Id = entity.Id,
+            ExternalIds = new Dictionary<string, string>(entity.ExternalIds, StringComparer.OrdinalIgnoreCase),
+            Name = entity.Name,
+            Email = entity.Email,
+            Phone = entity.Phone,
+            Website = entity.Website,
+            Domain = entity.Domain,
+            PrimarySiteId = entity.PrimarySiteId,
+            PrimarySiteName = entity.PrimarySiteName,
+            PrimaryAddress = entity.PrimaryAddress,
+            BillingAddress = entity.BillingAddress,
+            ShippingAddress = entity.ShippingAddress,
+            IsActive = isActive,
+            CreatedAt = entity.CreatedAt,
+            UpdatedAt = entity.UpdatedAt,
+            CustomFields = new Dictionary<string, string?>(entity.CustomFields, StringComparer.OrdinalIgnoreCase)
+        };
+        copy.CustomFields["EntitySyncRecordState"] = recordState;
+        return copy;
     }
 
     private static EntityWriteRequest DeleteRequest(EntitySyncPlan plan, ExternalEntity target) => new()

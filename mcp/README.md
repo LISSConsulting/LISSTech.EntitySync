@@ -26,7 +26,7 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
 5. Set `MCP_OAUTH_AUDIENCE` to the value expected in the access token's `aud` claim. It can differ from the public resource URI for providers such as Microsoft Entra ID.
 6. Set `MCP_OAUTH_SCOPES` to the space-delimited scopes clients should request. Set `MCP_OAUTH_REQUIRED_SCOPE` to the single scope value expected in the validated token's `scope` or `scp` claim. They can differ because Entra advertises a full permission URI but emits its short value in `scp`.
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
-7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for permanent exclusions, scheduler change-state checkpoints, and migration coordination.
+7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for canonical vendor record snapshots and history, typed relationship edges, permanent exclusions, scheduler change-state checkpoints, and migration coordination.
 8. Set the HaloPSA, NetSuite, N-central, BILL.com, and Sophos Central variables listed below. They are required by `entitysync-scheduler`. Set `SCHEDULER_RUN_TOKEN` to a high-entropy secret of 32–256 non-whitespace characters for authenticated manual runs.
 9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; all scheduler routes are intentionally Compose-network-only.
    The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
@@ -112,10 +112,14 @@ Use `get_entities` for read-only factual questions about connected vendor record
 
 Each result includes the canonical primary, billing, and shipping addresses when available, plus contact data, site context, lifecycle timestamps, external IDs, and non-secret custom fields. Multiple matches remain separate records so the caller can identify ambiguity instead of guessing.
 
+Every successful `get_entities` call retains the returned canonical records in EntitySync's PostgreSQL graph. `create_sync_plan` also retains both plan sides and records each resolved cross-vendor relationship as `Proposed` or `Confirmed`; successful apply promotes the edge to `Confirmed`, while deletion marks it `Removed`. Records keep a current snapshot and payload-hash version history. HaloPSA vendor-ID fields remain visible operational projections, not the relationship system of record.
+
+Use `get_entity_records` to query retained records by vendor, connection, entity type, name, or immutable ID. Use `get_entity_relationships` with a complete record identity to inspect all inbound and outbound typed edges, including status, match type, score, evidence, observation times, and originating plan ID.
+
 ## Safe Workflow
 
 1. Call `connect_vendor` for the source and target and retain both connection IDs.
-2. Call `create_sync_plan` with those connection IDs. Planning performs no writes. For a focused plan, pass `sourceSearch` and `sourceCount` to bound the vendor query and `sourceEntityId` to require the exact immutable vendor ID. A missing or duplicate exact ID fails before target discovery.
+2. Call `create_sync_plan` with those connection IDs. Planning performs no vendor writes; it does durably observe both vendor record sets and resolved relationships in EntitySync. For a focused plan, pass `sourceSearch` and `sourceCount` to bound the vendor query and `sourceEntityId` to require the exact immutable vendor ID. A missing or duplicate exact ID fails before target discovery.
 3. Call `get_sync_plan` until every page has been inspected.
 4. Call `approve_sync_plan` with the final inspected digest.
 5. Call `apply_sync_plan` with `apply=false` for a dry run.
@@ -149,9 +153,9 @@ Sophos Central partner and organization tenants are readable `Customer` entities
 
 ## Operational Model
 
-- Run exactly one replica. Connections and plans are partitioned by the validated issuer plus OAuth `sub` claim, so equal subjects from different issuers cannot share in-memory state. Permanent exclusion audit actors use the same immutable identity.
-- A restart clears connections, plans, and in-memory apply-operation snapshots. In-flight applies are not recovered or resumed, and cannot be polled after restart. Reconnect vendors and create a fresh plan after each deployment or restart.
-- Creating a plan and polling apply status are read-only. Applying writes requires digest approval and `apply=true`; the default is a synchronous dry run.
+- Run exactly one replica. Connections and plans are partitioned by the validated issuer plus OAuth `sub` claim, so equal subjects from different issuers cannot share in-memory state. Durable graph records, relationships, change-state checkpoints, and permanent exclusions use the same tenant partition in PostgreSQL.
+- A restart clears connections, plans, and in-memory apply-operation snapshots. The PostgreSQL entity graph remains available through `get_entity_records` and `get_entity_relationships`, but in-flight applies are not recovered or resumed and cannot be polled after restart. Reconnect vendors and create a fresh plan after each deployment or restart.
+- Creating a plan and polling apply status perform no vendor writes. Plan creation does persist observed vendor snapshots and resolved relationships in EntitySync's PostgreSQL graph. Applying vendor writes requires digest approval and `apply=true`; the default is a synchronous dry run.
 - `/health` proves that the process is serving HTTP. It does not call vendor APIs; use the MCP `test_connection` tool for vendor connectivity.
 - Credential-bearing vendor clients reject redirects, cap each response at 8 MiB, and share per-origin request spacing and concurrency limits. N-central SOAP endpoints must be relative paths on the configured HTTPS origin. Vendor pagination and Halo site scans fail closed at bounded scan limits.
 - Both application images are framework-dependent and use the same digest-pinned SDK and ASP.NET runtime images; local release builds remain self-contained single files.

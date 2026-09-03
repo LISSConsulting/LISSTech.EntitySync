@@ -123,6 +123,7 @@ public static class ConnectionTools
     [Description("Answer read-only natural-language questions about vendor clients, customers, accounts, or companies—for example an address, contact, status, or external ID. Search by name to narrow results. Responses include contact, site, address, lifecycle, external-ID, and custom-field data when provided; set includeDetails=true for vendor detail reads.")]
     public static async Task<string> GetEntities(
         IEntityConnectionRepository connections,
+        IEntityGraphRepository graph,
         McpRequestContext context,
         [Description("Vendor name")] string vendor,
         [Description("Entity type")] string entityType = "Customer",
@@ -147,6 +148,24 @@ public static class ConnectionTools
                 FullObjects = includeDetails,
                 Count = count
             }, cancellationToken).ConfigureAwait(false);
+            var observedAt = DateTimeOffset.UtcNow;
+            foreach (var group in entities.GroupBy(
+                         entity => string.IsNullOrWhiteSpace(entity.EntityType)
+                             ? entityType
+                             : entity.EntityType,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                await graph.ObserveEntitiesAsync(
+                    new EntityGraphObservation(
+                        new EntityGraphScope(
+                            context.TenantId,
+                            connection.Vendor,
+                            connection.Id,
+                            group.Key),
+                        group.ToArray(),
+                        observedAt),
+                    cancellationToken).ConfigureAwait(false);
+            }
             var result = entities.Take(count).Select(entity => new
             {
                 entity.Vendor,

@@ -382,6 +382,7 @@ public sealed class EntitySyncApplyCoordinatorTests
     {
         var mapper = new DefaultEntityMapper();
         var changeStates = new InMemoryEntitySyncChangeStateRepository();
+        var graph = new InMemoryEntityGraphRepository();
         return new EntitySyncService(
             new EntitySyncPlanner(
                 connections,
@@ -389,12 +390,14 @@ public sealed class EntitySyncApplyCoordinatorTests
                 new InMemoryEntityExclusionRepository(),
                 new WeightedEntityMatcher(),
                 mapper,
-                changeStates),
+                changeStates,
+                graph),
             connections,
             plans,
             new InMemoryEntityExclusionRepository(),
             mapper,
             changeStates,
+            graph,
             TimeProvider.System);
     }
 

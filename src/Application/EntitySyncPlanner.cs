@@ -10,7 +10,8 @@ public sealed class EntitySyncPlanner(
     IEntityExclusionRepository exclusions,
     IEntityMatcher matcher,
     IEntityMapper mapper,
-    IEntitySyncChangeStateRepository changeStates)
+    IEntitySyncChangeStateRepository changeStates,
+    IEntityGraphRepository graph)
 {
     private const int MaxEntitiesPerPlanSide = 5000;
 
@@ -203,6 +204,24 @@ public sealed class EntitySyncPlanner(
                 ChangeStateScope = request.ChangeStateScope
             }
         };
+        await ObserveEntitiesAsync(
+            plan.TenantId,
+            sourceVendor,
+            sourceConnection.Id,
+            sourceType,
+            sources,
+            plan.CreatedAt,
+            plan.Id,
+            cancellationToken).ConfigureAwait(false);
+        await ObserveEntitiesAsync(
+            plan.TenantId,
+            targetVendor,
+            targetConnection.Id,
+            targetType,
+            targets,
+            plan.CreatedAt,
+            plan.Id,
+            cancellationToken).ConfigureAwait(false);
 
         var index = matcher.CreateIndex(targets, options);
         foreach (var source in sources)
@@ -225,8 +244,71 @@ public sealed class EntitySyncPlanner(
             plan.Items.Add(item);
         }
         BillComPlanReconciliation.AddApprovedTargetOperations(plan);
+        await graph.ObserveRelationshipsAsync(
+            CreateRelationshipObservations(plan),
+            cancellationToken).ConfigureAwait(false);
         plans.Add(plan);
         return plan;
+    }
+
+    private async Task ObserveEntitiesAsync(
+        string tenantId,
+        string vendor,
+        string connectionId,
+        string fallbackEntityType,
+        IReadOnlyCollection<ExternalEntity> entities,
+        DateTimeOffset observedAt,
+        string planId,
+        CancellationToken cancellationToken)
+    {
+        foreach (var group in entities.GroupBy(
+                     entity => string.IsNullOrWhiteSpace(entity.EntityType)
+                         ? fallbackEntityType
+                         : entity.EntityType,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            await graph.ObserveEntitiesAsync(
+                new EntityGraphObservation(
+                    new EntityGraphScope(tenantId, vendor, connectionId, group.Key),
+                    group.ToArray(),
+                    observedAt,
+                    planId),
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static IReadOnlyCollection<EntityGraphRelationshipObservation> CreateRelationshipObservations(
+        EntitySyncPlan plan)
+    {
+        var observedAt = plan.CreatedAt;
+        return plan.Items
+            .Where(item => item.Target is not null)
+            .Where(item => !item.Action.Equals("Review", StringComparison.OrdinalIgnoreCase)
+                && !item.Action.Equals("Create", StringComparison.OrdinalIgnoreCase)
+                && !item.Action.Equals("Delete", StringComparison.OrdinalIgnoreCase))
+            .Select(item => new EntityGraphRelationshipObservation(
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.SourceVendor,
+                    plan.Execution.SourceConnectionId,
+                    string.IsNullOrWhiteSpace(item.Source.EntityType) ? plan.SourceEntityType : item.Source.EntityType,
+                    item.Source.Id),
+                new EntityGraphNodeKey(
+                    plan.TenantId,
+                    plan.TargetVendor,
+                    plan.Execution.TargetConnectionId,
+                    string.IsNullOrWhiteSpace(item.Target!.EntityType) ? plan.TargetEntityType : item.Target.EntityType,
+                    item.Target.Id),
+                EntityGraphRelationshipTypes.EquivalentTo,
+                item.Action.Equals("Link", StringComparison.OrdinalIgnoreCase)
+                    ? EntityGraphRelationshipStatuses.Proposed
+                    : EntityGraphRelationshipStatuses.Confirmed,
+                item.MatchType,
+                item.Score,
+                item.Reasons.ToArray(),
+                observedAt,
+                plan.Id))
+            .ToArray();
     }
 
     private static EntitySyncPlanItem CreateItem(ExternalEntity source, IReadOnlyList<EntityMatchCandidate> candidates, MatchOptions options, bool requiresAuthoritativeTarget)

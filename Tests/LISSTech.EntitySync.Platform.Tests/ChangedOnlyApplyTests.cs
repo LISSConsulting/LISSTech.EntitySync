@@ -265,6 +265,7 @@ public sealed class ChangedOnlyApplyTests
             Events = [];
             ChangeStates = new RecordingChangeStateRepository(Events, checkpoint);
             var mapper = new DefaultEntityMapper();
+            var graph = new InMemoryEntityGraphRepository();
             Target = new TestAdapter("HaloPSA", [ChangedOnlyApplyTests.Target()], update, Events);
             connections.Register("tenant", "source", new TestAdapter("NetSuite", [Source()]));
             connections.Register("tenant", "target", Target);
@@ -275,12 +276,14 @@ public sealed class ChangedOnlyApplyTests
                     new InMemoryEntityExclusionRepository(),
                     new WeightedEntityMatcher(),
                     mapper,
-                    ChangeStates),
+                    ChangeStates,
+                    graph),
                 connections,
                 plans,
                 new InMemoryEntityExclusionRepository(),
                 mapper,
                 ChangeStates,
+                graph,
                 new FixedTimeProvider(AppliedAt));
             Route = EntitySyncChangeStateRoute.Create(
                 "tenant",

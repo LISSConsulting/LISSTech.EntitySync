@@ -256,6 +256,7 @@ public sealed class ChangedOnlyPlanningTests
             connections.Register("tenant", "target", new TestAdapter("HaloPSA", Targets));
             Mapper = new DefaultEntityMapper();
             ChangeStates = new RecordingChangeStateRepository();
+            var graph = new InMemoryEntityGraphRepository();
             Service = new EntitySyncService(
                 new EntitySyncPlanner(
                     connections,
@@ -263,12 +264,14 @@ public sealed class ChangedOnlyPlanningTests
                     exclusions,
                     new WeightedEntityMatcher(),
                     Mapper,
-                    ChangeStates),
+                    ChangeStates,
+                    graph),
                 connections,
                 plans,
                 exclusions,
                 Mapper,
                 ChangeStates,
+                graph,
                 TimeProvider.System);
             Route = EntitySyncChangeStateRoute.Create(
                 "tenant",

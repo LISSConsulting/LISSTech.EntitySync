@@ -141,9 +141,9 @@ graph LR
 |---|---|---|
 | 🎮 **Cmdlets** | Operator surface | PowerShell objects in, PowerShell objects out. No GUI ceremony. |
 | 🌐 **MCP server** | Agent surface | Thin transport tools over the Application layer; remote callers cannot supply vendor secrets or endpoints. |
-| ⚙️ **Application** | Use cases | Tenant-scoped connections, complete plan inspection, digest approval, expiry, stale-connection rejection, and replay prevention. |
+| ⚙️ **Application** | Use cases | Tenant-scoped connections, durable record/relationship observation, complete plan inspection, digest approval, expiry, stale-connection rejection, and replay prevention. |
 | 🔌 **Ports and adapters** | Vendor and persistence boundaries | Core/Application do not reference concrete vendor or runtime assemblies. |
-| 📦 **Canonical model** | Shared entity shape | Matching works against normalized `ExternalEntity` data instead of vendor-shaped chaos. |
+| 📦 **Canonical model** | Shared entity shape | Matching and the durable graph use normalized `ExternalEntity` data instead of vendor-shaped chaos. |
 | 🧠 **Matcher** | Decision support | Scores come with reasons. If it cannot explain the match, it does not pretend. |
 | 📋 **Plan** | Change manifest | Sync becomes an Excel-reviewable artifact before it becomes vendor mutation. |
 | 🧨 **Apply** | Controlled write path | `-Apply` is mandatory and `-WhatIf` is supported. AgentController additionally requires a complete, fully approved snapshot. |
@@ -403,6 +403,8 @@ The intended workflow is **inspect → plan → review → dry run → apply**. 
 ## 🌐 MCP Server & Full-Chain Changed-Only Scheduler
 
 `mcp/` is a first-class MCP host for the same adapters, canonical model, matcher, plans, and guarded apply path used by the PowerShell module. Local clients use stdio by default. Container deployments use authenticated Streamable HTTP at `/mcp` and expose `/health` for orchestration.
+
+Every vendor read and sync plan observed by the MCP host or scheduler is retained in PostgreSQL as a canonical current record plus payload-hash version history. EntitySync owns typed cross-vendor relationship edges and their proposed, confirmed, or removed lifecycle; vendor IDs written into HaloPSA remain operational projections rather than the system of record. MCP clients can query the retained graph with `get_entity_records` and `get_entity_relationships`.
 
 `scheduler/` is an internal-only sidecar for the ordered NetSuite Customer → HaloPSA Client → N-central Customer, BILL.com Client, and Sophos Central Customer chain. It reconciles immediately at startup and then 12 hours after each completion. Every edge includes active and inactive sources but updates persistently linked targets only: it does not create unmatched records, establish fuzzy links, or delete orphan BILL.com values. A linked BILL.com rename still uses BILL.com's required replacement flow—create the renamed value, write its ID back to HaloPSA, then delete the old value. PostgreSQL holds successful desired-state hashes for each edge and one advisory lock for the complete chain. The first run establishes each edge's baseline; later runs skip identical mapped writes. Edges execute in order, and any failed edge stops the remaining downstream work. Failures do not trigger immediate retries or make `/health` unhealthy.
 

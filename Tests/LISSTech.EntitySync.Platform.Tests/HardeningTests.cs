@@ -364,6 +364,7 @@ public sealed class HardeningTests
 
         var result = await ConnectionTools.GetEntities(
             repository,
+            new InMemoryEntityGraphRepository(),
             new McpRequestContext("tenant", false),
             "NetSuite",
             connectionId: "netsuite",
@@ -377,6 +378,7 @@ public sealed class HardeningTests
     public async Task McpEntityReadReturnsCanonicalAddressesAndRequestsVendorDetails()
     {
         using var repository = new InMemoryEntityConnectionRepository();
+        var graph = new InMemoryEntityGraphRepository();
         var adapter = new RecordingAdapter(
         [
             new ExternalEntity
@@ -404,6 +406,7 @@ public sealed class HardeningTests
 
         var result = await ConnectionTools.GetEntities(
             repository,
+            graph,
             new McpRequestContext("tenant", false),
             "NetSuite",
             connectionId: "netsuite",
@@ -419,6 +422,9 @@ public sealed class HardeningTests
         Assert.Equal("123 Main Street", entity.GetProperty("PrimaryAddress").GetProperty("Line1").GetString());
         Assert.Equal("PO Box 200", entity.GetProperty("BillingAddress").GetProperty("Line1").GetString());
         Assert.Equal("123 Main Street", entity.GetProperty("ShippingAddress").GetProperty("Line1").GetString());
+        var retained = Assert.Single(await graph.QueryEntitiesAsync(new EntityGraphQuery("tenant"), default));
+        Assert.Equal("1816", retained.Key.EntityId);
+        Assert.Equal("123 Main Street", retained.Entity.PrimaryAddress?.Line1);
     }
 
     private static McpRequestContext HttpContext(string issuer, string subject)

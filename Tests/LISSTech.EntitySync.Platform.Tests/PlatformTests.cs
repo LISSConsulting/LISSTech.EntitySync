@@ -263,6 +263,8 @@ public sealed class PlatformTests
             provider.GetRequiredService<IEntityExclusionRepository>());
         Assert.IsType<PostgresEntitySyncChangeStateRepository>(
             provider.GetRequiredService<IEntitySyncChangeStateRepository>());
+        Assert.IsType<PostgresEntityGraphRepository>(
+            provider.GetRequiredService<IEntityGraphRepository>());
         Assert.IsType<WeightedEntityMatcher>(provider.GetRequiredService<IEntityMatcher>());
         Assert.IsType<DefaultEntityMapper>(provider.GetRequiredService<IEntityMapper>());
         Assert.NotNull(provider.GetRequiredService<EntitySyncPlanner>());
@@ -1494,6 +1496,7 @@ public sealed class PlatformTests
         exclusions ??= new InMemoryEntityExclusionRepository();
         var changeStates = new InMemoryEntitySyncChangeStateRepository();
         var mapper = new DefaultEntityMapper();
+        var graph = new InMemoryEntityGraphRepository();
         return new EntitySyncService(
             new EntitySyncPlanner(
                 connections,
@@ -1501,12 +1504,14 @@ public sealed class PlatformTests
                 exclusions,
                 new WeightedEntityMatcher(),
                 mapper,
-                changeStates),
+                changeStates,
+                graph),
             connections,
             plans,
             exclusions,
             mapper,
             changeStates,
+            graph,
             TimeProvider.System);
     }
 

@@ -152,6 +152,7 @@ public sealed class EntitySyncSchedulerTests
         var states = new InMemoryEntitySyncChangeStateRepository();
         var exclusions = new InMemoryEntityExclusionRepository();
         var mapper = new DefaultEntityMapper();
+        var graph = new InMemoryEntityGraphRepository();
         var factory = new RecordingAdapterFactory(sources, targets);
         var service = new EntitySyncService(
             new EntitySyncPlanner(
@@ -160,12 +161,14 @@ public sealed class EntitySyncSchedulerTests
                 exclusions,
                 new WeightedEntityMatcher(),
                 mapper,
-                states),
+                states,
+                graph),
             connections,
             plans,
             exclusions,
             mapper,
             states,
+            graph,
             TimeProvider.System);
         var run = new EntitySyncScheduledRun(
             new EntitySyncSchedulerOptions([EntitySyncSchedulerOptions.NetSuiteToHalo]),
@@ -628,6 +631,7 @@ public sealed class EntitySyncSchedulerTests
             Plans = new RecordingPlanRepository(new InMemoryEntitySyncPlanRepository());
             ChangeStates = new InMemoryEntitySyncChangeStateRepository();
             var mapper = new DefaultEntityMapper();
+            var graph = new InMemoryEntityGraphRepository();
             var service = new EntitySyncService(
                 new EntitySyncPlanner(
                     connections,
@@ -635,12 +639,14 @@ public sealed class EntitySyncSchedulerTests
                     new InMemoryEntityExclusionRepository(),
                     new WeightedEntityMatcher(),
                     mapper,
-                    ChangeStates),
+                    ChangeStates,
+                    graph),
                 connections,
                 Plans,
                 new InMemoryEntityExclusionRepository(),
                 mapper,
                 ChangeStates,
+                graph,
                 TimeProvider.System);
             Status = new EntitySyncSchedulerStatus();
             Logger = new RecordingLogger<EntitySyncScheduledRun>();

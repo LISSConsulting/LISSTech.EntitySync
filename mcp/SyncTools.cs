@@ -10,7 +10,7 @@ namespace LISSTech.EntitySync.Mcp;
 public static class SyncTools
 {
     [McpServerTool]
-    [Description("Plan an EntitySync, Entity Sync, ES, client sync, customer sync, or account/company reconciliation between supported vendors. Planning is read-only. Use sourceSearch/sourceCount for focused work and sourceEntityId to assert the immutable source ID. Inspect every page and approve its digest before apply.")]
+    [Description("Plan an EntitySync, Entity Sync, ES, client sync, customer sync, or account/company reconciliation between supported vendors. Planning performs no vendor writes and retains observations in EntitySync's durable graph. Use sourceSearch/sourceCount for focused work and sourceEntityId to assert the immutable source ID. Inspect every page and approve its digest before apply.")]
     public static async Task<string> CreateSyncPlan(
         EntitySyncService service,
         McpRequestContext context,

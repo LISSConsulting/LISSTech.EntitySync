@@ -18,7 +18,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
-                "DATABASE_URL is required. EntitySync refuses to run without durable exclusion storage.");
+                "DATABASE_URL is required. EntitySync refuses to run without durable record, relationship, exclusion, and change-state storage.");
         }
 
         services.AddSingleton(NpgsqlDataSource.Create(connectionString.Trim()));
@@ -26,6 +26,7 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IEntitySyncPlanRepository, InMemoryEntitySyncPlanRepository>();
         services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
         services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
+        services.AddSingleton<IEntityGraphRepository, PostgresEntityGraphRepository>();
         services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
         services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
         services.AddSingleton<IServerManagedEntityAdapterFactory, ServerManagedEntityAdapterFactory>();
