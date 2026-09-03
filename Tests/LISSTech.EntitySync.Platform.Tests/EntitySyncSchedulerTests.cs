@@ -64,6 +64,50 @@ public sealed class EntitySyncSchedulerTests
     }
 
     [Fact]
+    public async Task BillComApplyFailureDoesNotPreventSophosRouteFromRunning()
+    {
+        using var fixture = SchedulerFixture.FullChainLinkedSources(1);
+        fixture.Factory.UpdateBehavior = (call, _) => Task.FromResult(new EntityWriteResult
+        {
+            Vendor = call == 3 ? EntitySyncVendors.BillCom : "Test",
+            EntityType = "Client",
+            Action = "Update",
+            Success = call != 3,
+            Message = call == 3 ? "failed" : "updated"
+        });
+
+        var result = await fixture.Run.RunAsync(default);
+
+        Assert.Equal("Failed", result.State);
+        Assert.Equal(4, result.Total);
+        Assert.Equal(4, result.Changed);
+        Assert.Equal(3, result.Succeeded);
+        Assert.Equal(1, result.Failed);
+        Assert.Equal(
+            ["HaloPSA", "NCentral", "Bill.com", "Sophos Central"],
+            fixture.Factory.UpdatedVendors);
+    }
+
+    [Fact]
+    public async Task BillComConnectionFailureDoesNotPreventOtherRoutesFromRunning()
+    {
+        using var fixture = SchedulerFixture.FullChainLinkedSources(1);
+        fixture.Factory.FailedConnectionVendor = EntitySyncVendors.BillCom;
+
+        var result = await fixture.Run.RunAsync(default);
+
+        Assert.Equal("Failed", result.State);
+        Assert.Equal("Vendor connection setup or validation failed.", result.Error);
+        Assert.Equal(3, result.Total);
+        Assert.Equal(3, result.Changed);
+        Assert.Equal(3, result.Succeeded);
+        Assert.Equal(0, result.Failed);
+        Assert.Equal(
+            ["HaloPSA", "NCentral", "Sophos Central"],
+            fixture.Factory.UpdatedVendors);
+    }
+
+    [Fact]
     public async Task BillComRouteBootstrapsMissingHaloLinkFromUniqueExactName()
     {
         var haloSource = new ExternalEntity
@@ -484,10 +528,13 @@ public sealed class EntitySyncSchedulerTests
         Assert.InRange(result.Error!.Length, 1, 512);
         Assert.DoesNotContain("Acme", result.Error, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("top-secret", result.Error, StringComparison.OrdinalIgnoreCase);
-        var log = Assert.Single(fixture.Logger.Messages);
-        Assert.Contains(nameof(InvalidOperationException), log, StringComparison.Ordinal);
-        Assert.DoesNotContain("Acme", log, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("top-secret", log, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEmpty(fixture.Logger.Messages);
+        Assert.All(fixture.Logger.Messages, log =>
+        {
+            Assert.Contains(nameof(InvalidOperationException), log, StringComparison.Ordinal);
+            Assert.DoesNotContain("Acme", log, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("top-secret", log, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
     [Fact]

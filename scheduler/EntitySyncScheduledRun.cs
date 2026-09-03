@@ -60,7 +60,7 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
         string? planId = null;
         var aggregate = PlanAggregate.Empty;
         var progress = ApplyAggregate.Empty;
-        var currentPlanProgress = ApplyAggregate.Empty;
+        var failureErrors = new HashSet<string>(StringComparer.Ordinal);
         var stage = RunStage.AcquireLock;
         status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
         dashboard.BeginRun(startedAt);
@@ -104,7 +104,6 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
 
             stage = RunStage.VendorConnections;
             dashboard.SetOperation("VendorConnections", null, null);
-            var registrations = new List<EntityConnectionRegistration>();
             var endpoints = options.Routes
                 .SelectMany(route => new[]
                 {
@@ -112,139 +111,197 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
                     new ConnectionEndpoint(route.TargetVendor, route.TargetConnectionId)
                 })
                 .DistinctBy(
-                    endpoint => $"{EntitySyncVendors.Normalize(endpoint.Vendor)}|{endpoint.ConnectionId}",
-                    StringComparer.OrdinalIgnoreCase);
+                    endpoint => EndpointKey(endpoint.Vendor, endpoint.ConnectionId),
+                    StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var unavailableEndpoints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var validatedConnections = 0;
             foreach (var endpoint in endpoints)
             {
-                registrations.Add(await RegisterFreshAdapterAsync(
-                    endpoint.Vendor,
-                    endpoint.ConnectionId,
-                    cancellationToken).ConfigureAwait(false));
+                try
+                {
+                    var registration = await RegisterFreshAdapterAsync(
+                        endpoint.Vendor,
+                        endpoint.ConnectionId,
+                        cancellationToken).ConfigureAwait(false);
+                    var probe = await ProbeConnectionAsync(
+                        registration.Adapter,
+                        cancellationToken).ConfigureAwait(false);
+                    if (probe.Exception is not null)
+                        ExceptionDispatchInfo.Capture(probe.Exception).Throw();
+                    if (!probe.Connected)
+                        throw new InvalidOperationException("A scheduled vendor connection test failed.");
+                    validatedConnections++;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    unavailableEndpoints.Add(EndpointKey(endpoint.Vendor, endpoint.ConnectionId));
+                    dashboard.RecordEvent(
+                        "Error",
+                        $"{endpoint.Vendor} connection setup or validation failed.");
+                    logger.LogError(
+                        "Scheduled vendor connection failed. Vendor={Vendor}; ExceptionType={ExceptionType}; Message={ErrorMessage}",
+                        endpoint.Vendor,
+                        exception.GetType().Name,
+                        "Vendor connection setup or validation failed.");
+                }
             }
-
-            var probes = new List<ConnectionProbe>(registrations.Count);
-            foreach (var registration in registrations)
-            {
-                probes.Add(await ProbeConnectionAsync(registration.Adapter, cancellationToken).ConfigureAwait(false));
-            }
-            var probeException = probes.Select(probe => probe.Exception).FirstOrDefault(exception => exception is not null);
-            if (probeException is not null)
-                ExceptionDispatchInfo.Capture(probeException).Throw();
-            if (probes.Any(probe => !probe.Connected))
-                throw new InvalidOperationException("A scheduled vendor connection test failed.");
-            dashboard.RecordEvent("Information", $"{probes.Count} vendor connections validated.");
+            dashboard.RecordEvent(
+                unavailableEndpoints.Count == 0 ? "Information" : "Warning",
+                $"{validatedConnections} vendor connections validated; {unavailableEndpoints.Count} unavailable.");
 
             foreach (var scopedRoute in scopedRoutes)
             {
                 var route = scopedRoute.Route;
-                stage = RunStage.Planning;
-                dashboard.SetOperation("Planning", route, null);
-                var createdPlan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
+                string? currentPlanId = null;
+                if (unavailableEndpoints.Contains(EndpointKey(route.SourceVendor, route.SourceConnectionId))
+                    || unavailableEndpoints.Contains(EndpointKey(route.TargetVendor, route.TargetConnectionId)))
                 {
-                    TenantId = EntitySyncSchedulerOptions.TenantId,
-                    SourceVendor = route.SourceVendor,
-                    SourceConnectionId = route.SourceConnectionId,
-                    SourceEntityType = route.SourceEntityType,
-                    TargetVendor = route.TargetVendor,
-                    TargetConnectionId = route.TargetConnectionId,
-                    TargetEntityType = route.TargetEntityType,
-                    IncludeInactive = true,
-                    CreateMissing = false,
-                    SourceExternalIdName = route.SourceExternalIdName,
-                    BootstrapExactNameLinks = EntitySyncVendors.IsBillCom(route.TargetVendor),
-                    UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
-                    ChangeStateScope = scopedRoute.ChangeStateScope
-                }, cancellationToken).ConfigureAwait(false);
-                planId = createdPlan.Id;
-                dashboard.RecordPlan(planId, route);
+                    const string connectionError = "Vendor connection setup or validation failed.";
+                    failureErrors.Add(connectionError);
+                    dashboard.SetOperation("VendorConnections", route, null);
+                    dashboard.RecordEvent(
+                        "Error",
+                        $"{RouteName(route)} skipped because a vendor connection was unavailable.");
+                    status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+                    continue;
+                }
 
-                stage = RunStage.PlanValidation;
-                dashboard.SetOperation("PlanValidation", route, planId);
-                var inspectedDigest = InspectEveryPage(planId);
-                var snapshot = plans.Get(EntitySyncSchedulerOptions.TenantId, planId);
-                ValidateScheduledRoute(snapshot, route, scopedRoute.ChangeStateScope);
-                if (!EntitySyncPlanDigest.Compute(snapshot).Equals(inspectedDigest, StringComparison.Ordinal))
-                    throw new InvalidOperationException("The plan changed after inspection.");
-                var routeAggregate = ValidateAndAggregate(snapshot);
-                aggregate = aggregate.Add(routeAggregate);
-                dashboard.RecordPlanValidation(
-                    planId,
-                    routeAggregate.Total,
-                    routeAggregate.Changed,
-                    routeAggregate.Unchanged,
-                    routeAggregate.PolicySkipped);
-                status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
-
-                stage = RunStage.Approval;
-                dashboard.SetOperation("Approval", route, planId);
-                var approvedDigest = service.ApprovePlan(
-                    EntitySyncSchedulerOptions.TenantId,
-                    planId,
-                    inspectedDigest);
-                if (!approvedDigest.Equals(inspectedDigest, StringComparison.Ordinal))
-                    throw new InvalidOperationException("The approved digest did not exactly match the inspected digest.");
-
-                stage = RunStage.Apply;
-                dashboard.SetOperation("Apply", route, planId);
-                currentPlanProgress = ApplyAggregate.Empty;
-                var completedProgress = progress;
-                var applyResult = await service.ApplyAsync(
-                    EntitySyncSchedulerOptions.TenantId,
-                    planId,
-                    apply: true,
-                    cancellationToken,
-                    update =>
+                try
+                {
+                    stage = RunStage.Planning;
+                    dashboard.SetOperation("Planning", route, null);
+                    var createdPlan = await service.CreatePlanAsync(new CreateEntitySyncPlanRequest
                     {
-                        currentPlanProgress = new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped);
-                        progress = completedProgress.Add(currentPlanProgress);
-                        dashboard.RecordPlanProgress(
-                            planId,
+                        TenantId = EntitySyncSchedulerOptions.TenantId,
+                        SourceVendor = route.SourceVendor,
+                        SourceConnectionId = route.SourceConnectionId,
+                        SourceEntityType = route.SourceEntityType,
+                        TargetVendor = route.TargetVendor,
+                        TargetConnectionId = route.TargetConnectionId,
+                        TargetEntityType = route.TargetEntityType,
+                        IncludeInactive = true,
+                        CreateMissing = false,
+                        SourceExternalIdName = route.SourceExternalIdName,
+                        BootstrapExactNameLinks = EntitySyncVendors.IsBillCom(route.TargetVendor),
+                        UpdatePolicy = EntitySyncUpdatePolicy.ChangedLinkedUpdatesOnly,
+                        ChangeStateScope = scopedRoute.ChangeStateScope
+                    }, cancellationToken).ConfigureAwait(false);
+                    currentPlanId = createdPlan.Id;
+                    planId = currentPlanId;
+                    dashboard.RecordPlan(currentPlanId, route);
+
+                    stage = RunStage.PlanValidation;
+                    dashboard.SetOperation("PlanValidation", route, currentPlanId);
+                    var inspectedDigest = InspectEveryPage(currentPlanId);
+                    var snapshot = plans.Get(EntitySyncSchedulerOptions.TenantId, currentPlanId);
+                    ValidateScheduledRoute(snapshot, route, scopedRoute.ChangeStateScope);
+                    if (!EntitySyncPlanDigest.Compute(snapshot).Equals(inspectedDigest, StringComparison.Ordinal))
+                        throw new InvalidOperationException("The plan changed after inspection.");
+                    var routeAggregate = ValidateAndAggregate(snapshot);
+                    aggregate = aggregate.Add(routeAggregate);
+                    dashboard.RecordPlanValidation(
+                        currentPlanId,
+                        routeAggregate.Total,
+                        routeAggregate.Changed,
+                        routeAggregate.Unchanged,
+                        routeAggregate.PolicySkipped);
+                    status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+
+                    stage = RunStage.Approval;
+                    dashboard.SetOperation("Approval", route, currentPlanId);
+                    var approvedDigest = service.ApprovePlan(
+                        EntitySyncSchedulerOptions.TenantId,
+                        currentPlanId,
+                        inspectedDigest);
+                    if (!approvedDigest.Equals(inspectedDigest, StringComparison.Ordinal))
+                        throw new InvalidOperationException("The approved digest did not exactly match the inspected digest.");
+
+                    stage = RunStage.Apply;
+                    dashboard.SetOperation("Apply", route, currentPlanId);
+                    var currentPlanProgress = ApplyAggregate.Empty;
+                    var completedProgress = progress;
+                    var applyResult = await service.ApplyAsync(
+                        EntitySyncSchedulerOptions.TenantId,
+                        currentPlanId,
+                        apply: true,
+                        cancellationToken,
+                        update =>
+                        {
+                            currentPlanProgress = new ApplyAggregate(update.Succeeded, update.Failed, update.Skipped);
+                            progress = completedProgress.Add(currentPlanProgress);
+                            dashboard.RecordPlanProgress(
+                                currentPlanId,
+                                currentPlanProgress.Succeeded,
+                                currentPlanProgress.Failed,
+                                currentPlanProgress.Skipped);
+                            status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+                        }).ConfigureAwait(false);
+                    currentPlanProgress = new ApplyAggregate(
+                        applyResult.Succeeded,
+                        applyResult.Failed,
+                        applyResult.Skipped);
+                    progress = completedProgress.Add(currentPlanProgress);
+                    if (!applyResult.Success)
+                    {
+                        const string applyError = "Synchronization apply completed with failures.";
+                        failureErrors.Add(applyError);
+                        dashboard.CompletePlan(
+                            currentPlanId,
+                            "Failed",
                             currentPlanProgress.Succeeded,
                             currentPlanProgress.Failed,
                             currentPlanProgress.Skipped);
                         status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
-                    }).ConfigureAwait(false);
-                currentPlanProgress = new ApplyAggregate(
-                    applyResult.Succeeded,
-                    applyResult.Failed,
-                    applyResult.Skipped);
-                progress = completedProgress.Add(currentPlanProgress);
-                if (!applyResult.Success)
-                {
-                    var failedApply = CreateStatus(
-                        "Failed",
-                        startedAt,
-                        timeProvider.GetUtcNow(),
-                        planId,
-                        aggregate,
-                        progress,
-                        "Synchronization apply completed with failures.");
-                    status.Publish(failedApply);
+                        continue;
+                    }
                     dashboard.CompletePlan(
-                        planId,
-                        "Failed",
+                        currentPlanId,
+                        "Applied",
                         currentPlanProgress.Succeeded,
                         currentPlanProgress.Failed,
                         currentPlanProgress.Skipped);
-                    dashboard.CompleteRun(failedApply);
-                    return failedApply;
                 }
-                dashboard.CompletePlan(
-                    planId,
-                    "Applied",
-                    currentPlanProgress.Succeeded,
-                    currentPlanProgress.Failed,
-                    currentPlanProgress.Skipped);
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    var safeError = SafeError(stage);
+                    failureErrors.Add(safeError);
+                    dashboard.FailPlan(currentPlanId, safeError);
+                    if (currentPlanId is null)
+                        dashboard.RecordEvent("Error", $"{RouteName(route)} failed: {safeError}");
+                    logger.LogError(
+                        "Scheduled synchronization route failed at {Stage}. Route={Route}; ExceptionType={ExceptionType}; Message={ErrorMessage}",
+                        stage,
+                        RouteName(route),
+                        exception.GetType().Name,
+                        safeError);
+                    status.Publish(CreateStatus("Running", startedAt, null, planId, aggregate, progress, null));
+                }
             }
 
+            var terminalState = failureErrors.Count == 0 ? "Applied" : "Failed";
+            var terminalError = failureErrors.Count switch
+            {
+                0 => null,
+                1 => failureErrors.Single(),
+                _ => "Multiple scheduled synchronization routes failed."
+            };
             var terminal = CreateStatus(
-                "Applied",
+                terminalState,
                 startedAt,
                 timeProvider.GetUtcNow(),
                 planId,
                 aggregate,
                 progress,
-                null);
+                terminalError);
             status.Publish(terminal);
             dashboard.CompleteRun(terminal);
             return terminal;
@@ -455,6 +512,12 @@ public sealed class EntitySyncScheduledRun : IEntitySyncScheduledRun
     private static bool IsLowercaseSha256(string? value) =>
         value is { Length: 64 }
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static string EndpointKey(string vendor, string connectionId) =>
+        $"{EntitySyncVendors.Normalize(vendor)}|{connectionId}";
+
+    private static string RouteName(EntitySyncSchedulerRoute route) =>
+        $"{route.SourceVendor} {route.SourceEntityType} → {route.TargetVendor} {route.TargetEntityType}";
 
     private static string ChainLockScope(IReadOnlyList<ScopedRoute> routes)
     {
