@@ -564,6 +564,43 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     }
 
     [Fact]
+    public async Task Stale_connection_test_generation_is_a_safe_state_conflict()
+    {
+        var service = new ConnectionDefinitionService(
+            null!,
+            null!,
+            new ThrowingConnectionRuntimeFactory(
+                new StaleConnectionGenerationException("halo-main", 3, 4)),
+            TimeProvider.System);
+        using var staleFactory = factory.WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<ConnectionDefinitionService>();
+                services.AddSingleton(service);
+                services.RemoveAll<IIdempotentCommandExecutor>();
+                services.AddSingleton<IIdempotentCommandExecutor>(
+                    new PassThroughIdempotentExecutor());
+            }));
+        using var client = staleFactory.CreateClient();
+        AddClaims(client, "tid=tenant-a;oid=user-a;scp=EntitySync.Manage");
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/control/connections/halo-main/test")
+        {
+            Content = Json("""{"expectedGeneration":3}""")
+        };
+        request.Headers.Add(IdempotencyEndpointFilter.HeaderName, "stale-test-generation");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("STATE_CONFLICT", await ProblemCode(response));
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("halo-main", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("generation", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Schedule_preview_returns_three_server_clocked_occurrences_without_state_access()
     {
         var baseline = new DateTimeOffset(2026, 3, 7, 7, 30, 0, TimeSpan.Zero);
@@ -1222,6 +1259,32 @@ public sealed class SensitiveLogRecorder : ILoggerProvider
         }
     }
 }
+
+public sealed class ThrowingConnectionRuntimeFactory(Exception error)
+    : IConnectionRuntimeFactory
+{
+    public Task<IConnectionRuntimeLease> AcquireAsync(
+        string tenantId,
+        string connectionId,
+        long expectedGeneration,
+        CancellationToken cancellationToken) =>
+        Task.FromException<IConnectionRuntimeLease>(error);
+
+    public Task<IConnectionRuntimeLease> AcquireCurrentAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+
+    public Task<EntitySyncConnectionDefinition> ResolveCurrentDefinitionAsync(
+        string tenantId,
+        string vendor,
+        string? connectionId,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException();
+}
+
 
 public sealed class TestAuthenticationHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,

@@ -71,6 +71,35 @@ public sealed class ConnectionDefinitionServiceTests
     }
 
     [Fact]
+    public async Task Test_preserves_stale_generation_from_runtime_acquisition()
+    {
+        var service = new ConnectionDefinitionService(
+            null!,
+            null!,
+            new ThrowingConnectionRuntimeFactory(
+                new StaleConnectionGenerationException("halo-main", 3, 4)),
+            TimeProvider.System);
+
+        await Assert.ThrowsAsync<StaleConnectionGenerationException>(
+            () => service.TestAsync("tenant", "halo-main", 3, default));
+    }
+
+    [Fact]
+    public async Task Test_still_wraps_non_generation_dependency_failures()
+    {
+        var service = new ConnectionDefinitionService(
+            null!,
+            null!,
+            new ThrowingConnectionRuntimeFactory(
+                new InvalidOperationException("vendor-sensitive-detail")),
+            TimeProvider.System);
+
+        var error = await Assert.ThrowsAsync<EntitySyncDependencyUnavailableException>(
+            () => service.TestAsync("tenant", "halo-main", 3, default));
+        Assert.IsType<InvalidOperationException>(error.InnerException);
+    }
+
+    [Fact]
     public async Task Updating_credentials_increments_generation_and_invalidates_old_lease()
     {
         var repository = new ConnectionRepository();

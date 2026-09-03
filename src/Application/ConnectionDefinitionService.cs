@@ -119,7 +119,9 @@ public sealed class ConnectionDefinitionService(
             return await lease.Adapter.TestConnectionAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (
+            exception is not OperationCanceledException
+            and not StaleConnectionGenerationException)
         {
             throw new EntitySyncDependencyUnavailableException(
                 "The connection adapter is unavailable.", exception);
