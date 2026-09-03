@@ -119,7 +119,8 @@ public sealed record EntityAdapterCapabilities
                     Capability(
                         "Customer",
                         [EntityAdapterActions.Read, EntityAdapterActions.Create, EntityAdapterActions.Update],
-                        ["Id", "NCentralCustomerId", "Name", "Phone", "Email", "Address", "IsActive"]),
+                        ["Id", "NCentralCustomerId", "Name", "Phone", "Email", "Address", "IsActive"],
+                        ["Name"]),
                     Capability(
                         "Site",
                         [EntityAdapterActions.Read, EntityAdapterActions.Create],

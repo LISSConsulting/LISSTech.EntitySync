@@ -1052,20 +1052,38 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
         new(StringComparer.Ordinal);
     private readonly IEntitySyncControlCommands? controlCommands;
     private readonly bool executeControlCommands;
+    private readonly bool preserveProductionQueries;
 
     public SensitiveLogRecorder LogRecorder { get; } = new();
 
     public ControlApiFactory()
-        : this(null, false)
+        : this(null, false, null, false)
     {
     }
 
     internal ControlApiFactory(
         IEntitySyncControlCommands? controlCommands,
         bool executeControlCommands)
+        : this(controlCommands, executeControlCommands, null, false)
+    {
+    }
+
+    internal ControlApiFactory(
+        string connectionString,
+        bool preserveProductionQueries)
+        : this(null, false, connectionString, preserveProductionQueries)
+    {
+    }
+
+    private ControlApiFactory(
+        IEntitySyncControlCommands? controlCommands,
+        bool executeControlCommands,
+        string? connectionString,
+        bool preserveProductionQueries)
     {
         this.controlCommands = controlCommands;
         this.executeControlCommands = executeControlCommands;
+        this.preserveProductionQueries = preserveProductionQueries;
         Directory.CreateDirectory(keyPath);
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -1073,7 +1091,10 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
         Set("MCP_OAUTH_AUTHORITY", "https://login.example.test/tenant/v2.0");
         Set("MCP_OAUTH_RESOURCE", "https://entitysync.example.test");
         Set("MCP_OAUTH_AUDIENCE", "api://entitysync-test");
-        Set("DATABASE_URL", "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=1");
+        Set(
+            "DATABASE_URL",
+            connectionString
+            ?? "Host=127.0.0.1;Port=1;Database=unused;Username=unused;Password=unused;Timeout=1");
         Set(
             "ORCHESTRA_BASE_URL",
             "https://directory.example.test/api/v1/internal/client-directory/");
@@ -1107,16 +1128,17 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
                 })
                 .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
                     TestAuthenticationHandler.Scheme, _ => { });
-            services.RemoveAll<IControlApiQueries>();
-            services.AddSingleton<IControlApiQueries>(
-                DispatchProxy.Create<IControlApiQueries, EmptyQueryProxy>());
-            services.RemoveAll<IControlReadinessProbe>();
-            services.AddSingleton<IControlReadinessProbe>(new ReadyProbe());
-            services.RemoveAll<IIdempotentCommandExecutor>();
-            services.AddSingleton<IIdempotentCommandExecutor>(
-                executeControlCommands
-                    ? new PassThroughIdempotentExecutor()
-                    : new RecordingIdempotentExecutor());
+            if (!preserveProductionQueries)
+            {
+                services.RemoveAll<IControlApiQueries>();
+                services.AddSingleton<IControlApiQueries>(
+                    DispatchProxy.Create<IControlApiQueries, EmptyQueryProxy>());
+                services.RemoveAll<IIdempotentCommandExecutor>();
+                services.AddSingleton<IIdempotentCommandExecutor>(
+                    executeControlCommands
+                        ? new PassThroughIdempotentExecutor()
+                        : new RecordingIdempotentExecutor());
+            }
             if (controlCommands is not null)
             {
                 services.RemoveAll<IEntitySyncControlCommands>();
