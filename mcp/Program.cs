@@ -89,8 +89,6 @@ static async Task RunHttpAsync(string[] args)
     if (string.IsNullOrWhiteSpace(requiredScope) || requiredScope.Any(char.IsWhiteSpace))
         throw new InvalidOperationException("MCP_OAUTH_REQUIRED_SCOPE must contain one access-token scope value.");
 
-    EntitySyncProductionConfiguration.ValidateOrchestraCurrentEnvironment(
-        builder.Environment.EnvironmentName);
     var workerSettings = EntitySyncWorkerSettings.FromCurrentEnvironment();
 
 

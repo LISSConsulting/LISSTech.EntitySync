@@ -28,9 +28,9 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine@sha256:b288317d8ed45bb763fa95dbc
 
 WORKDIR /app
 COPY --from=build /app/publish .
-RUN mkdir -p /var/lib/entitysync-dataprotection \
-    && chown 1654:1654 /var/lib/entitysync-dataprotection \
-    && chmod 0700 /var/lib/entitysync-dataprotection
+RUN mkdir -p /var/lib/entitysync/keys \
+    && chown 1654:1654 /var/lib/entitysync/keys \
+    && chmod 0700 /var/lib/entitysync/keys
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     DOTNET_EnableDiagnostics=0

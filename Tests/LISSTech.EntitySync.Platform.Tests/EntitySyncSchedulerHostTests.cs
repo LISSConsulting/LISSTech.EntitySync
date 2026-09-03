@@ -114,16 +114,9 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["ENTITYSYNC_DATA_PROTECTION_KEY_PATH"] =
                 Path.Combine(Path.GetTempPath(), "entitysync-scheduler-host-tests"),
             ["ENTITYSYNC_TENANT_IDS"] = "tenant-a,tenant-b",
-            ["ORCHESTRA_BASE_URL"] =
-                "https://directory.example.test/api/v1/internal/client-directory/",
-            ["ORCHESTRA_AUTHORITY"] = "https://login.example.test/tenant",
-            ["ORCHESTRA_TENANT_ID"] = "tenant",
-            ["ORCHESTRA_CLIENT_ID"] = "scheduler-host-test",
-            ["ORCHESTRA_RESOURCE"] = "api://orchestra-directory",
             ["ENTITYSYNC_WORKER_LEASE_SECONDS"] = "30",
             ["ENTITYSYNC_WORKER_HEARTBEAT_SECONDS"] = "10",
             ["ENTITYSYNC_WORKER_RETRY_SECONDS"] = "5",
-            ["ORCHESTRA_CLIENT_SECRET"] = Guid.NewGuid().ToString("N"),
             ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] =
                 "https://logfire-us.pydantic.dev/v1/logs",
             ["OTEL_EXPORTER_OTLP_HEADERS"] = $"Authorization={Guid.NewGuid():N}",
