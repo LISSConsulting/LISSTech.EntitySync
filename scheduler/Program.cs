@@ -1,9 +1,13 @@
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Scheduler;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Identity.Web;
 
 var app = EntitySyncSchedulerHost.Build(args);
 await app.RunAsync();
@@ -34,6 +38,28 @@ namespace LISSTech.EntitySync.Scheduler
                 builder.Environment.EnvironmentName,
                 serviceVersion);
             LogfireLogging.Configure(builder.Services, builder.Logging, logfireSettings);
+            var dashboardAuthentication =
+                EntitySyncSchedulerDashboardAuthentication.FromCurrentEnvironment();
+            builder.Services
+                .AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
+                .AddMicrosoftIdentityWebApp(dashboardAuthentication.Configure);
+            builder.Services.Configure<CookieAuthenticationOptions>(
+                CookieAuthenticationDefaults.AuthenticationScheme,
+                EntitySyncSchedulerDashboardAuthentication.ConfigureCookie);
+            builder.Services.AddAuthorization(options =>
+                options.AddPolicy(
+                    EntitySyncSchedulerDashboardAuthentication.PolicyName,
+                    policy => policy.RequireAuthenticatedUser()));
+            builder.Services.Configure<ForwardedHeadersOptions>(options =>
+            {
+                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+                    | ForwardedHeaders.XForwardedProto
+                    | ForwardedHeaders.XForwardedHost;
+                options.ForwardLimit = 1;
+                options.KnownNetworks.Clear();
+                options.KnownProxies.Clear();
+            });
+
 
             builder.Services.AddEntitySyncPlatform(
                 Environment.GetEnvironmentVariable("DATABASE_URL") ?? string.Empty);
@@ -69,11 +95,17 @@ namespace LISSTech.EntitySync.Scheduler
             app.Logger.LogInformation(
                 "Logfire logging configured: {LogfireConfiguration}",
                 logfireSettings);
+            app.UseForwardedHeaders();
+            app.UseAuthentication();
+            app.UseAuthorization();
+            app.RequireDashboardAuthenticationForAssets();
             app.MapDashboard();
-            app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+            app.MapGet("/health", () => Results.Ok(new { status = "healthy" }))
+                .AllowAnonymous();
             app.MapGet(
-                "/status",
-                (EntitySyncSchedulerStatus status) => Results.Ok(status.Snapshot));
+                    "/status",
+                    (EntitySyncSchedulerStatus status) => Results.Ok(status.Snapshot))
+                .RequireAuthorization(EntitySyncSchedulerDashboardAuthentication.PolicyName);
             app.MapPost(
                 "/run",
                 (HttpContext context,

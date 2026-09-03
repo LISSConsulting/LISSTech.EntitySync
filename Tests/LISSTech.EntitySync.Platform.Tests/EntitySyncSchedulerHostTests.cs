@@ -2,6 +2,9 @@ using System.Reflection;
 using System.Text.Json;
 using LISSTech.EntitySync.Hosting;
 using LISSTech.EntitySync.Scheduler;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -47,6 +50,9 @@ public sealed class EntitySyncSchedulerHostTests
         Assert.IsType<EntitySyncSchedulerDashboardStore>(app.Services.GetRequiredService<EntitySyncSchedulerDashboardStore>());
         Assert.IsType<EntitySyncScheduledRun>(app.Services.GetRequiredService<IEntitySyncScheduledRun>());
         Assert.IsType<PostgresEntitySyncSchedulerRunLock>(app.Services.GetRequiredService<IEntitySyncSchedulerRunLock>());
+        var schemes = app.Services.GetRequiredService<IAuthenticationSchemeProvider>();
+        var challengeScheme = await schemes.GetDefaultChallengeSchemeAsync();
+        Assert.Equal(OpenIdConnectDefaults.AuthenticationScheme, challengeScheme?.Name);
         var hostedServices = app.Services.GetServices<IHostedService>().ToArray();
         var migrationIndex = Array.FindIndex(
             hostedServices,
@@ -98,6 +104,76 @@ public sealed class EntitySyncSchedulerHostTests
             configurationError.Message,
             StringComparison.Ordinal);
     }
+    [Theory]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.TenantIdEnvironmentVariable, null, "required")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.TenantIdEnvironmentVariable, "not-a-guid", "GUID")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.ClientIdEnvironmentVariable, null, "required")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.ClientIdEnvironmentVariable, "not-a-guid", "GUID")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.ClientSecretEnvironmentVariable, null, "required")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.PublicOriginEnvironmentVariable, "http://dashboard.example.test", "HTTPS origin")]
+    [InlineData(EntitySyncSchedulerDashboardAuthentication.PublicOriginEnvironmentVariable, "https://dashboard.example.test/path", "HTTPS origin")]
+    public async Task SchedulerHostBuildRejectsInvalidDashboardAuthentication(
+        string variableName,
+        string? value,
+        string expectedMessage)
+    {
+        await using var environment = SchedulerHostEnvironment.Create(variableName, value);
+
+        var error = Assert.Throws<TargetInvocationException>(BuildSchedulerApplication);
+        var configurationError = Assert.IsType<InvalidOperationException>(error.InnerException);
+
+        Assert.Contains(expectedMessage, configurationError.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/dashboard")]
+    [InlineData("/dashboard/data")]
+    [InlineData("/status")]
+    public async Task DashboardAndTelemetryEndpointsRequireEntraAuthentication(string route)
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+
+        var authorization = FindEndpoint(app, route)
+            .Metadata
+            .GetOrderedMetadata<IAuthorizeData>();
+
+        Assert.Contains(
+            authorization,
+            item => item.Policy == EntitySyncSchedulerDashboardAuthentication.PolicyName);
+    }
+
+    [Fact]
+    public async Task AnonymousDashboardAssetRequestIsRedirectedToConfiguredEntraTenant()
+    {
+        await using var environment = SchedulerHostEnvironment.Create();
+        await using var app = BuildSchedulerApplication();
+        var pipeline = ((IApplicationBuilder)app).Build();
+        using var requestScope = app.Services.CreateScope();
+        var context = new DefaultHttpContext
+        {
+            RequestServices = requestScope.ServiceProvider,
+            Response = { Body = new MemoryStream() }
+        };
+        context.Request.Method = HttpMethods.Get;
+        context.Request.Scheme = Uri.UriSchemeHttps;
+        context.Request.Host = new HostString("dashboard.example.test");
+        context.Request.Path = "/assets/index-test.js";
+
+        await pipeline(context);
+
+        Assert.Equal(StatusCodes.Status302Found, context.Response.StatusCode);
+        Assert.StartsWith(
+            "https://login.microsoftonline.com/c62ea180-bf49-4018-a795-cdc170ead90d/oauth2/v2.0/authorize",
+            context.Response.Headers.Location,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "redirect_uri=https%3A%2F%2Fdashboard.example.test%2Fsignin-oidc",
+            context.Response.Headers.Location,
+            StringComparison.Ordinal);
+    }
+
 
     [Fact]
     public async Task StatusEndpointReturnsOnlyBoundedAggregateAllowlist()
@@ -378,6 +454,14 @@ internal sealed class SchedulerHostEnvironment : IAsyncDisposable
             ["OTEL_SERVICE_NAME"] = "lisstech-entitysync-scheduler-test",
             [EntitySyncSchedulerRunAuthorization.EnvironmentVariable] = RunToken,
             [EntitySyncSchedulerOptions.AutomaticRunsEnabledEnvironmentVariable] = "false",
+            [EntitySyncSchedulerDashboardAuthentication.TenantIdEnvironmentVariable] =
+                "c62ea180-bf49-4018-a795-cdc170ead90d",
+            [EntitySyncSchedulerDashboardAuthentication.ClientIdEnvironmentVariable] =
+                "0f099a83-c826-4c36-9256-8edbe82b4182",
+            [EntitySyncSchedulerDashboardAuthentication.ClientSecretEnvironmentVariable] =
+                "test-dashboard-client-secret",
+            [EntitySyncSchedulerDashboardAuthentication.PublicOriginEnvironmentVariable] =
+                "https://dashboard.example.test",
             ["NETSUITE_ACCOUNT_ID"] = "test-account",
             ["NETSUITE_CONSUMER_KEY"] = "test-consumer-key",
             ["NETSUITE_CONSUMER_SECRET"] = "test-consumer-secret",

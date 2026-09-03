@@ -28,10 +28,10 @@ HTTP mode is an OAuth resource server; it does not issue tokens or handle intera
    For OAuth clients that cannot resolve the authorization server's metadata layout, set `MCP_OAUTH_AUTHORIZATION_ENDPOINT`, `MCP_OAUTH_TOKEN_ENDPOINT`, and `MCP_OAUTH_PUBLIC_CLIENT_ID` together. The server then preserves the standard RFC 9728 challenge and adds explicit, non-secret endpoint and public-client hints. The client must use PKCE, and its loopback callback URI must be registered with the authorization server.
 7. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching PostgreSQL connection string. The Compose stack provisions one PostgreSQL 18 service and persistent volume for canonical vendor record snapshots and history, typed relationship edges, permanent exclusions, scheduler change-state checkpoints, and migration coordination.
 8. Set the HaloPSA, NetSuite, N-central, BILL.com, and Sophos Central variables listed below. They are required by `entitysync-scheduler`. Set `SCHEDULER_RUN_TOKEN` to a high-entropy secret of 32–256 non-whitespace characters for authenticated manual runs.
-9. Assign the public domain only to `entitysync-mcp` on container port `8080`. Do not assign a domain or host port to `entitysync-scheduler`; all scheduler routes are intentionally Compose-network-only.
-   The reverse proxy must overwrite, not append, forwarded headers. The MCP application does not trust arbitrary `X-Forwarded-*` headers and uses the configured canonical OAuth resource rather than request host data.
-10. Deploy and confirm that `https://<domain>/health` returns `{"status":"healthy"}` and `https://<domain>/.well-known/oauth-protected-resource/mcp` advertises the expected resource and authorization server. Coolify should also report `entitysync-scheduler` healthy from its internal `/health` probe.
-11. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
+9. Configure the single-tenant Entra application identified by `AGENTCONTROLLER_ENTRA_TENANT_ID`, `AGENTCONTROLLER_ENTRA_CLIENT_ID`, and `AGENTCONTROLLER_ENTRA_CLIENT_SECRET` as a web application. Register `https://<scheduler-domain>/signin-oidc` and set `DASHBOARD_PUBLIC_ORIGIN=https://<scheduler-domain>`.
+10. Assign public domains to `entitysync-mcp` and `entitysync-scheduler`, both on container port `8080`. The reverse proxy must overwrite forwarded headers rather than append untrusted values.
+11. Deploy. Confirm both `/health` endpoints return `{"status":"healthy"}`, MCP discovery advertises the expected authorization server, and an anonymous scheduler `/` request redirects to the configured tenant's Entra authorization endpoint.
+12. Configure the MCP client with URL `https://<domain>/mcp`. A compatible client discovers the authorization server from the protected-resource metadata and performs the OAuth authorization flow.
 
 Do not put credentials in `docker-compose.yaml` or commit a populated `.env` file. Coolify injects the values referenced by the Compose service.
 
@@ -55,18 +55,18 @@ NetSuite Customer -> HaloPSA Client -> N-central Customer
 - Changed-only detection compares each newly mapped desired payload with its successful PostgreSQL checkpoint. It does **not** detect target-side drift when source data and mapping behavior remain unchanged.
 - Every route plan is fully paged, digest-checked, approved, and applied by the sidecar. A connection, planning, validation, approval, or apply failure is bounded to the run and recorded without vendor payloads or credentials.
 
-The scheduler exposes only these internal routes:
+The scheduler exposes these routes:
 
 | Route | Meaning |
 |---|---|
-| `/` | Read-only operations dashboard with current stage, fixed route chain, bounded recent run and plan summaries, and a payload-free operational event log |
-| `/dashboard` | Redirect to `/` |
-| `/dashboard/data` | No-store JSON backing the dashboard; current aggregate plus at most 24 runs, 40 plans, and 200 scheduler-authored events retained in this process |
-| `/health` | Process liveness only; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
-| `/status` | Bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
-| `POST /run` | Queue one immediate full-chain reconciliation; requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
+| `/` | Entra-authenticated operations dashboard with current stage, fixed route chain, bounded recent run and plan summaries, and a payload-free operational event log |
+| `/dashboard` | Entra-authenticated redirect to `/` |
+| `/dashboard/data` | Entra-authenticated, no-store JSON backing the dashboard; current aggregate plus at most 24 runs, 40 plans, and 200 scheduler-authored events retained in this process |
+| `/health` | Anonymous process liveness probe; always `{"status":"healthy"}` while HTTP is serving, including after a failed reconciliation |
+| `/status` | Entra-authenticated bounded aggregate snapshot with exactly `state`, `lastStartedAt`, `lastCompletedAt`, `nextRunAt`, `planId`, `total`, `changed`, `unchanged`, `policySkipped`, `succeeded`, `failed`, `applySkipped`, and `error` |
+| `POST /run` | Queue one immediate full-chain reconciliation; independently requires `Authorization: Bearer <SCHEDULER_RUN_TOKEN>`, returns `202` when queued, and returns `409` while a run is queued or active |
 
-`/`, `/dashboard`, `/dashboard/data`, `/health`, and `/status` are unauthenticated for private-network inspection and probes. Dashboard history is process-local, bounded, and excludes vendor payloads and entity names. `POST /run` validates the bearer token with a constant-time digest comparison. Keep every scheduler route on the private Compose network and invoke it only from another service or the Coolify container console:
+The dashboard shell, compiled assets, `/dashboard/data`, and `/status` require an authenticated user from the configured Entra tenant. `/health` remains anonymous for orchestration. Dashboard history is process-local, bounded, and excludes vendor payloads and entity names. `POST /run` remains separate from the browser session and validates its bearer token with a constant-time digest comparison:
 
 The dashboard source lives in `scheduler-ui/` and uses React 19, Vite 8, an adapted Aceternity Background Lines component, and self-hosted Archivo/Nunito Sans variable fonts. `just dashboard-build` performs a locked `npm ci` and production build; `just dashboard-dev` starts Vite with `/dashboard/data` proxied to a scheduler on port `8080`. `just scheduler-build` and the production scheduler container build the frontend before publishing ASP.NET Core.
 
