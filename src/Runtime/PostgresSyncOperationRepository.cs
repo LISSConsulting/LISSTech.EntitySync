@@ -1686,7 +1686,8 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             SELECT @tenant_id, @operation_id, @plan_id, @run_id, @correlation_id,
                    @approval_id, @route_scope, @source_connection_generation,
                    @target_connection_generation, @mode, @status, @idempotency_key,
-                   @lease_owner, @lease_expires_at, @attempt, @created_at, clock_timestamp(),
+                   @lease_owner, @lease_expires_at, @attempt, @created_at,
+                   GREATEST(clock_timestamp(), @created_at),
                    @started_at, @completed_at, @request_sha256, @total_count,
                    @succeeded_count, @failed_count, @skipped_count, @unknown_count
             FROM entitysync.sync_plans plan
@@ -1814,12 +1815,12 @@ public sealed class PostgresSyncOperationRepository(NpgsqlDataSource dataSource)
             || replacement.TargetConnectionGeneration != current.TargetConnectionGeneration
             || replacement.Mode != current.Mode
             || replacement.IdempotencyKey != current.IdempotencyKey
-            || replacement.CreatedAt != current.CreatedAt
-            || replacement.QueuedAt != current.QueuedAt)
+            || replacement.CreatedAt != current.CreatedAt)
             throw new ArgumentException(
                 "Operation replacement cannot change immutable identity fields.",
                 nameof(replacement));
     }
+
 
     private static void ValidateTransition(
         EntitySyncOperation current,

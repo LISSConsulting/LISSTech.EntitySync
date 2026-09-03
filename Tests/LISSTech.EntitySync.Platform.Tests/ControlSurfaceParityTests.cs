@@ -72,6 +72,9 @@ public sealed class ControlSurfaceParityTests
         using var request = new HttpRequestMessage(HttpMethod.Post, path);
         request.Headers.Add(
             IdempotencyEndpointFilter.HeaderName, CallerKey(operation));
+        request.Headers.Add(
+            "X-Correlation-ID",
+            "11111111-1111-4111-8111-111111111111");
         var body = RequestBody(operation);
         if (body is not null)
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");

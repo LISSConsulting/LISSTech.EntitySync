@@ -422,19 +422,22 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         await using (var seed = Database.CreateCommand("""
             SET session_replication_role = replica;
             INSERT INTO entitysync.sync_operations (
-                tenant_id, operation_id, plan_id, route_scope,
+                tenant_id, operation_id, plan_id, run_id, correlation_id, route_scope,
                 source_connection_generation, target_connection_generation,
                 mode, status, idempotency_key, lease_owner, lease_expires_at,
                 attempt, created_at, queued_at, started_at)
-            VALUES (@tenant, @operation, @plan, 'route', 1, 1, 'DryRun', 'Running',
-                    'renewal-key', 'owner-a', clock_timestamp() + interval '2 seconds',
-                    1, clock_timestamp(), clock_timestamp(), clock_timestamp());
+            VALUES (@tenant, @operation, @plan, @run, @correlation, 'route',
+                    1, 1, 'DryRun', 'Running', 'renewal-key', 'owner-a',
+                    clock_timestamp() + interval '2 seconds', 1,
+                    clock_timestamp(), clock_timestamp(), clock_timestamp());
             SET session_replication_role = origin;
             """))
         {
             seed.Parameters.AddWithValue("tenant", NpgsqlDbType.Text, tenant);
             seed.Parameters.AddWithValue("operation", NpgsqlDbType.Uuid, operationId);
             seed.Parameters.AddWithValue("plan", NpgsqlDbType.Uuid, Guid.NewGuid());
+            seed.Parameters.AddWithValue("run", NpgsqlDbType.Uuid, Guid.NewGuid());
+            seed.Parameters.AddWithValue("correlation", NpgsqlDbType.Uuid, Guid.NewGuid());
             await seed.ExecuteNonQueryAsync();
         }
         var repository = new PostgresSyncOperationRepository(Database);

@@ -971,10 +971,15 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal(
             TimeSpan.FromSeconds(60),
             factory.Services.GetRequiredService<EntitySyncOperationWorkerOptions>().LeaseDuration);
+        Assert.Equal(
+            "ReadyProbe",
+            factory.Services.GetRequiredService<IControlReadinessProbe>().GetType().Name);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health")).StatusCode);
         using var ready = await client.GetAsync("/health/ready");
-        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
         var body = await ready.Content.ReadAsStringAsync();
+        Assert.True(
+            ready.StatusCode == HttpStatusCode.OK,
+            $"Readiness returned {(int)ready.StatusCode}: {body}");
         Assert.Contains("databaseMigrations", body);
         Assert.Contains("keyRing", body);
         Assert.Contains("workerHeartbeat", body);
@@ -1128,6 +1133,8 @@ public sealed class ControlApiFactory : WebApplicationFactory<mcp::Program>
                 })
                 .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
                     TestAuthenticationHandler.Scheme, _ => { });
+            services.RemoveAll<IControlReadinessProbe>();
+            services.AddSingleton<IControlReadinessProbe>(new ReadyProbe());
             if (!preserveProductionQueries)
             {
                 services.RemoveAll<IControlApiQueries>();

@@ -844,8 +844,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     public async Task Postgres_composed_creation_completes_and_concurrent_retry_plans_once()
     {
         var context = await SeedControlContextAsync("composed-create");
-        var poolOptions = new NpgsqlConnectionStringBuilder(
-            Environment.GetEnvironmentVariable("DATABASE_URL"))
+        var poolOptions = new NpgsqlConnectionStringBuilder(Database.ConnectionString)
         {
             Database = databaseName,
             Pooling = true,
@@ -3121,6 +3120,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             selection.SourceSearch,
             selection.SourceCount,
             selection.SourceEntityId,
+            request.PinnedCanonicalOnly,
             PinnedCanonicalSources = request.PinnedCanonicalSources
                 .OrderBy(source => source.CanonicalEntityId)
                 .Select(source => new
