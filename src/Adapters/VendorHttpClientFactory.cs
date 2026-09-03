@@ -12,7 +12,7 @@ internal static class VendorHttpClientFactory
     internal const int MaximumCachedEndpointGates = 256;
     internal static readonly TimeSpan EndpointGateIdleLifetime = TimeSpan.FromMinutes(30);
 
-    public static HttpClient Create(Uri? baseAddress = null)
+    public static HttpClient Create(Uri? baseAddress = null, TimeSpan? minimumRequestInterval = null)
     {
         var transport = new SocketsHttpHandler
         {
@@ -20,7 +20,12 @@ internal static class VendorHttpClientFactory
             MaxConnectionsPerServer = MaximumConnectionsPerOrigin,
             AutomaticDecompression = DecompressionMethods.None
         };
-        return Create(baseAddress, transport, MaximumResponseBytes, MaximumConnectionsPerOrigin, MinimumRequestInterval);
+        return Create(
+            baseAddress,
+            transport,
+            MaximumResponseBytes,
+            MaximumConnectionsPerOrigin,
+            minimumRequestInterval ?? MinimumRequestInterval);
     }
 
     internal static HttpClient Create(

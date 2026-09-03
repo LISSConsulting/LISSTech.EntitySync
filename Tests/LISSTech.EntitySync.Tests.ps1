@@ -158,6 +158,7 @@ namespace EntitySyncTests
         public string BaseUrl { get; private set; } = string.Empty;
 
         public List<string> Requests { get; } = new List<string>();
+        public List<DateTimeOffset> RequestTimes { get; } = new List<DateTimeOffset>();
 
         public void Start()
         {
@@ -214,6 +215,7 @@ namespace EntitySyncTests
                     builder.Append(Encoding.ASCII.GetString(buffer, 0, read));
                 }
 
+                RequestTimes.Add(DateTimeOffset.UtcNow);
                 Requests.Add(builder.ToString());
                 var spec = responses.Dequeue();
                 var bodyBytes = Encoding.UTF8.GetBytes(spec.ResponseBody);
@@ -890,6 +892,45 @@ namespace EntitySyncTests
       $server.Wait(2)
       $server.Requests[0] | Should -Match 'ApiToken: bill-token'
       $server.Requests[1] | Should -Match 'GET /cf1/values\?max=100 HTTP/1\.1'
+      ($server.RequestTimes[1] - $server.RequestTimes[0]).TotalMilliseconds | Should -BeGreaterOrEqual 900
+    }
+    finally {
+      $adapter.Dispose()
+      $server.Dispose()
+    }
+  }
+
+  It 'Reuses one complete Bill.com client snapshot across updates' {
+    $values = '{"results":[{"id":"100","uuid":"u-100","value":"Acme Corp","deleted":false},{"id":"200","uuid":"u-200","value":"Beta Corp","deleted":false}]}'
+    $server = [EntitySyncTests.MultiShotHttpServer]::new(
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', '{"results":[{"id":"cf1","name":"Client"}]}'),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $values),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $values),
+      [EntitySyncTests.MultiShotHttpServer+ResponseSpec]::new(200, 'OK', $values)
+    )
+    $server.Start()
+    $adapter = New-TestBillComAdapter -Options (New-TestBillComOptions -BaseUrl $server.BaseUrl -ApiToken 'bill-token')
+    try {
+      $query = [LISSTech.EntitySync.Core.EntityQuery]::new()
+      $query.EntityType = 'Client'
+      $null = $adapter.GetEntitiesAsync($query, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+
+      foreach ($client in @(
+        @{ Id = '100'; Name = 'Acme Corp' },
+        @{ Id = '200'; Name = 'Beta Corp' }
+      )) {
+        $request = [LISSTech.EntitySync.Core.EntityWriteRequest]::new()
+        $request.Vendor = 'Bill.com'
+        $request.EntityType = 'Client'
+        $request.Id = $client.Id
+        $request.Name = $client.Name
+        $result = $adapter.UpdateEntityAsync($request, [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+        $result.Success | Should -BeTrue
+        $result.Id | Should -Be $client.Id
+      }
+
+      $server.Wait(2)
+      $server.Requests.Count | Should -Be 2
     }
     finally {
       $adapter.Dispose()
