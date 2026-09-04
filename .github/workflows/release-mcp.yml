@@ -317,5 +317,5 @@ jobs:
           $existing = gh api "repos/LISSConsulting/scoop-bucket/contents/$path?ref=main" --jq '.sha' 2>$null
           if ($existing) { $payload.sha = $existing }
           $payloadJson = $payload | ConvertTo-Json
-          gh api "repos/LISSConsulting/scoop-bucket/contents/$path" -X PUT -f data=$payloadJson
+          $payloadJson | gh api "repos/LISSConsulting/scoop-bucket/contents/$path" -X PUT --input -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
