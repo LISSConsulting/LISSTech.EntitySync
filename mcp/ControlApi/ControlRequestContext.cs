@@ -15,6 +15,8 @@ public sealed record ControlRequestContext(
     ControlActorKind ActorKind,
     IReadOnlySet<string> Permissions)
 {
+    private const string WorkloadRoleSuffix = ".Application";
+
     public EntitySyncActor Actor => new(ActorId);
 
     public bool HasPermission(string permission) => Permissions.Contains(permission);
@@ -57,7 +59,8 @@ public sealed record ControlRequestContext(
             kind = ControlActorKind.Workload;
             actor = applicationIds[0];
             permissions = applicationRoles.Select(claim => claim.Value.Trim())
-                .Where(value => value.Length > 0);
+                .Where(value => value.EndsWith(WorkloadRoleSuffix, StringComparison.Ordinal))
+                .Select(value => value[..^WorkloadRoleSuffix.Length]);
         }
 
         context = new ControlRequestContext(
