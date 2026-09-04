@@ -55,7 +55,7 @@ public sealed class EntitySyncOperationWorker(
         if (operationRouteLock is not null && routeLease is null) return operation;
         using var ownership = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cancellationToken = ownership.Token;
-        var running = operation.Start(clock.GetUtcNow());
+        var running = operation.Start(MonotonicStartTime(operation, clock.GetUtcNow()));
         if (!await operations.TryReplaceAsync(
                 tenantId, operation.OperationId, EntitySyncOperationStatus.Leased,
                 running, cancellationToken).ConfigureAwait(false))
@@ -433,6 +433,10 @@ public sealed class EntitySyncOperationWorker(
             throw;
         }
     }
+
+    private static DateTimeOffset MonotonicStartTime(
+        EntitySyncOperation operation, DateTimeOffset now) =>
+        now < operation.QueuedAt ? operation.QueuedAt : now;
 
     public static string CreateVendorRequestId(Guid operationId, Guid itemId)
     {

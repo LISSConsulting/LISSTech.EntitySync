@@ -482,7 +482,8 @@ public sealed class DurableOperationTests : IAsyncLifetime
         var leased = await Fixture.Operations.TryLeaseNextAsync(
             Fixture.Tenant, "owner-a", DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow.AddMinutes(2), default);
-        var running = leased!.Start(DateTimeOffset.UtcNow);
+        var startNow = DateTimeOffset.UtcNow < leased!.QueuedAt ? leased.QueuedAt : DateTimeOffset.UtcNow;
+        var running = leased.Start(startNow);
         Assert.True(await Fixture.Operations.TryReplaceAsync(
             Fixture.Tenant, queued.OperationId, EntitySyncOperationStatus.Leased,
             running, default));

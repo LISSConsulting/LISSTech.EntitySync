@@ -548,7 +548,9 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
         await using var reader = await metadata.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.False(reader.IsDBNull(0));
-        Assert.Equal(expiry, reader.GetFieldValue<DateTimeOffset>(1));
+        var expiryAtPostgresPrecision = expiry.AddTicks(
+            -(expiry.Ticks % TimeSpan.TicksPerMicrosecond));
+        Assert.Equal(expiryAtPostgresPrecision, reader.GetFieldValue<DateTimeOffset>(1));
         Assert.False(reader.IsDBNull(2));
     }
 
