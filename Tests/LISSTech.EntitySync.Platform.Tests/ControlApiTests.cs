@@ -207,6 +207,19 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal(status, (int)response.StatusCode);
     }
 
+    [Fact]
+    public async Task Delegated_identity_accepts_authorized_party_client_claim()
+    {
+        using var client = factory.CreateClient();
+        AddClaims(
+            client,
+            "tid=tenant-a;oid=user-a;azp=orchestra;scp=EntitySync.Read");
+
+        using var response = await client.GetAsync("/api/v1/control/plans");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Theory]
     [InlineData("scp", ControlRoles.Operate, "/api/v1/control/plans", 400)]
     [InlineData("roles", ControlRoles.Operate, "/api/v1/control/plans", 400)]
@@ -253,7 +266,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     [InlineData("oid=user-a;scp=EntitySync.Read")]
     [InlineData("tid=tenant-a;scp=EntitySync.Read")]
     [InlineData("tid=tenant-a;oid=user-a;oid=user-b;scp=EntitySync.Read")]
-    [InlineData("tid=tenant-a;oid=user-a;azp=app-a;scp=EntitySync.Read")]
+    [InlineData("tid=tenant-a;oid=user-a;azp=app-a;azp=app-b;scp=EntitySync.Read")]
     [InlineData("tid=tenant-a;azp=app-a;roles=EntitySync.Read;scp=EntitySync.Read")]
     public async Task Ambiguous_or_mixed_identity_claims_fail_closed(string claims)
     {
