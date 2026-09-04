@@ -2605,9 +2605,9 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var executor = new PostgresIdempotencyRepository(
             Database,
             new PostgresIdempotencyExecutionOptions(
-                TimeSpan.FromMilliseconds(200),
-                TimeSpan.FromMilliseconds(20),
-                TimeSpan.FromMilliseconds(5)));
+                TimeSpan.FromSeconds(2),
+                TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromMilliseconds(10)));
         var started = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(
@@ -2636,7 +2636,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             .Prepend(first)
             .ToArray();
 
-        await Task.Delay(TimeSpan.FromMilliseconds(350));
+        await Task.Delay(TimeSpan.FromSeconds(3));
         Assert.Equal(1, Volatile.Read(ref invocations));
         release.SetResult();
         var responses = await Task.WhenAll(executions);

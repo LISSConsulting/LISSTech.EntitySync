@@ -62,49 +62,6 @@ jobs:
           test "$(docker run --rm --entrypoint id entitysync-mcp:release-check -u)" = '1654'
           test "$(docker run --rm --entrypoint id entitysync-scheduler:release-check -u)" = '1654'
           printf 'API image: %s\nScheduler image: %s\n' "$api_image_id" "$scheduler_image_id"
-
-      - name: Run migration, control, and end-to-end tests
-        run: >-
-          dotnet test
-          Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj
-          --configuration Release
-          --verbosity minimal
-
-      - name: Import the exact 16-command PowerShell module
-        shell: pwsh
-        run: |
-          dotnet build src/LISSTech.EntitySync.csproj --configuration Release
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Import-Module ./Build/Module/LISSTech.EntitySync.psd1 -Force
-          $expected = @(
-            'Connect-EntitySyncProfile',
-            'Connect-EntitySyncVendor',
-            'Export-EntitySyncPlan',
-            'Get-EntitySyncConnection',
-            'Get-EntitySyncEntity',
-            'Get-EntitySyncLookup',
-            'Get-EntitySyncProfile',
-            'Import-EntitySyncPlan',
-            'Invoke-EntitySyncChain',
-            'Invoke-EntitySyncNetSuiteSuiteQL',
-            'Invoke-EntitySyncPlan',
-            'New-EntitySyncPlan',
-            'Remove-EntitySyncProfile',
-            'Set-EntitySyncCustomProperty',
-            'Set-EntitySyncDefaultProfile',
-            'Test-EntitySyncConnection'
-          )
-          $expected = @($expected | Sort-Object)
-          $actual = @(Get-Command -Module LISSTech.EntitySync |
-            Select-Object -ExpandProperty Name | Sort-Object -Unique)
-          if ($actual.Count -ne 16) {
-            throw "Expected 16 imported commands, got $($actual.Count)."
-          }
-          if (Compare-Object $expected $actual) {
-            throw 'Imported command set differs from the exact release contract.'
-          }
-          $actual
-
       - name: Run built images and require PostgreSQL readiness
         shell: bash
         run: |
@@ -192,6 +149,49 @@ jobs:
           docker logs "$scheduler_container"
           docker logs "$api_container"
           exit 1
+
+      - name: Run migration, control, and end-to-end tests
+        run: >-
+          dotnet test
+          Tests/LISSTech.EntitySync.Platform.Tests/LISSTech.EntitySync.Platform.Tests.csproj
+          --configuration Release
+          --verbosity minimal
+
+      - name: Import the exact 16-command PowerShell module
+        shell: pwsh
+        run: |
+          dotnet build src/LISSTech.EntitySync.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Import-Module ./Build/Module/LISSTech.EntitySync.psd1 -Force
+          $expected = @(
+            'Connect-EntitySyncProfile',
+            'Connect-EntitySyncVendor',
+            'Export-EntitySyncPlan',
+            'Get-EntitySyncConnection',
+            'Get-EntitySyncEntity',
+            'Get-EntitySyncLookup',
+            'Get-EntitySyncProfile',
+            'Import-EntitySyncPlan',
+            'Invoke-EntitySyncChain',
+            'Invoke-EntitySyncNetSuiteSuiteQL',
+            'Invoke-EntitySyncPlan',
+            'New-EntitySyncPlan',
+            'Remove-EntitySyncProfile',
+            'Set-EntitySyncCustomProperty',
+            'Set-EntitySyncDefaultProfile',
+            'Test-EntitySyncConnection'
+          )
+          $expected = @($expected | Sort-Object)
+          $actual = @(Get-Command -Module LISSTech.EntitySync |
+            Select-Object -ExpandProperty Name | Sort-Object -Unique)
+          if ($actual.Count -ne 16) {
+            throw "Expected 16 imported commands, got $($actual.Count)."
+          }
+          if (Compare-Object $expected $actual) {
+            throw 'Imported command set differs from the exact release contract.'
+          }
+          $actual
+
 
   publish:
     needs: verify-control-plane
