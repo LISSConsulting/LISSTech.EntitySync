@@ -314,7 +314,7 @@ jobs:
             branch = 'main'
           }
           $path = 'bucket/lisstech-entitysync-mcp.json'
-          $existing = gh api "repos/LISSConsulting/scoop-bucket/contents/$path?ref=main" --jq '.sha' 2>$null
+          $existing = gh api "repos/LISSConsulting/scoop-bucket/contents/${path}?ref=main" --jq '.sha' 2>$null
           if ($existing) { $payload.sha = $existing }
           $payloadJson = $payload | ConvertTo-Json
           $payloadJson | gh api "repos/LISSConsulting/scoop-bucket/contents/$path" -X PUT --input -
