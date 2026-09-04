@@ -23,9 +23,16 @@ The scheduler is a separate lease-based worker. PostgreSQL is authoritative for 
 JWT validation checks signature, issuer, expiration, audience and the relevant permission. A control identity must contain exactly one `tid` and exactly one actor form:
 
 - delegated: one `oid`, no `azp`, and permissions in `scp`;
-- workload: one `azp`, no `oid`, and permissions in `roles`.
+- workload: one `azp`, no `oid`, and permissions in `roles`. Entra application-role
+  values use the `.Application` suffix and are normalized to the canonical permission
+  names before authorization.
 
-Mixing delegated scopes and application roles, omitting the actor ID, or supplying ambiguous claims fails closed. Permissions are `EntitySync.Read`, `EntitySync.Operate`, `EntitySync.Approve`, `EntitySync.Manage`, `EntitySync.Audit`, and `EntitySync.Expert`. Canonical-change intake additionally requires an `azp` listed in comma-separated `ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST`. The OAuth token is never forwarded to a vendor.
+Mixing delegated scopes and application roles, omitting the actor ID, or supplying
+ambiguous claims fails closed. Canonical permissions are `EntitySync.Read`,
+`EntitySync.Operate`, `EntitySync.Approve`, `EntitySync.Manage`, `EntitySync.Audit`, and
+`EntitySync.Expert`. Canonical-change intake additionally requires an `azp` listed in
+comma-separated `ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST`. The OAuth token is never
+forwarded to a vendor.
 
 ## Required production configuration
 
@@ -44,12 +51,16 @@ defaults or commit a populated `.env`.
 `MCP_OAUTH_AUTHORITY` is the exact HTTPS single-tenant issuer.
 `MCP_OAUTH_RESOURCE` is the canonical absolute HTTPS MCP URL advertised in protected
 resource metadata; it is not an `api://` Application ID URI.
-`MCP_OAUTH_AUDIENCE` separately matches the access token `aud`. The expected delegated
-scopes are `EntitySync.Read`, `EntitySync.Operate`, `EntitySync.Approve`,
-`EntitySync.Manage`, `EntitySync.Audit`, and `EntitySync.Expert`; define application
-roles with the same six values. The token has exactly one `tid` from the configured
-tenant. Delegated identities have one `oid` and permissions in `scp`; workloads have
-one `azp` and permissions in `roles`. Mixed identity forms fail closed.
+`MCP_OAUTH_AUDIENCE` separately matches the access token `aud`. The delegated scopes are
+`EntitySync.Read`, `EntitySync.Operate`, `EntitySync.Approve`, `EntitySync.Manage`,
+`EntitySync.Audit`, and `EntitySync.Expert`. Because Entra custom applications require
+scope and application-role values to be unique, define workload roles as
+`EntitySync.Read.Application`, `EntitySync.Operate.Application`,
+`EntitySync.Approve.Application`, `EntitySync.Manage.Application`,
+`EntitySync.Audit.Application`, and `EntitySync.Expert.Application`. EntitySync removes
+the `.Application` suffix before policy evaluation. The token has exactly one `tid` from
+the configured tenant. Delegated identities have one `oid` and permissions in `scp`;
+workloads have one `azp` and permissions in `roles`. Mixed identity forms fail closed.
 
 ## Encrypted connection creation
 

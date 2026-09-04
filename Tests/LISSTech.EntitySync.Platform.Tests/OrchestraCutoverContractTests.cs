@@ -183,13 +183,13 @@ public sealed class OrchestraCutoverContractTests
             using var wrongWorkload = first.CreateClient();
             AddClaims(
                 wrongWorkload,
-                $"tid={Tenant};azp=not-orchestra;roles=EntitySync.Operate");
+                $"tid={Tenant};azp=not-orchestra;roles=EntitySync.Operate.Application");
             using var wrongWorkloadDenied = await SendCanonicalAsync(
                 wrongWorkload, eventId, entityId, occurredAt);
             Assert.Equal(HttpStatusCode.Forbidden, wrongWorkloadDenied.StatusCode);
 
             using var workload = first.CreateClient();
-            AddClaims(workload, $"tid={Tenant};azp=om-workload;roles=EntitySync.Operate");
+            AddClaims(workload, $"tid={Tenant};azp=om-workload;roles=EntitySync.Operate.Application");
             using var accepted = await SendCanonicalAsync(workload, eventId, entityId, occurredAt);
             Assert.Equal(HttpStatusCode.Accepted, accepted.StatusCode);
             await DrainWorkerAsync(worker);
@@ -210,7 +210,7 @@ public sealed class OrchestraCutoverContractTests
             Assert.Contains(scheduleId.ToString("D"), schedulesJson, StringComparison.OrdinalIgnoreCase);
 
             using var workload = restarted.CreateClient();
-            AddClaims(workload, $"tid={Tenant};azp=om-workload;roles=EntitySync.Operate");
+            AddClaims(workload, $"tid={Tenant};azp=om-workload;roles=EntitySync.Operate.Application");
             using var replay = await SendCanonicalAsync(workload, eventId, entityId, occurredAt);
             Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
         }

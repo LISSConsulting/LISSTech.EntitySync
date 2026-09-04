@@ -198,7 +198,11 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         string claimType, string permission, string path, int status)
     {
         using var client = factory.CreateClient();
-        AddClaims(client, $"tid=tenant-a;oid=user-a;{claimType}={permission}", claimType == "roles");
+        var claimPermission = claimType == "roles" ? $"{permission}.Application" : permission;
+        AddClaims(
+            client,
+            $"tid=tenant-a;oid=user-a;{claimType}={claimPermission}",
+            claimType == "roles");
         using var response = await client.GetAsync(path);
         Assert.Equal(status, (int)response.StatusCode);
     }
@@ -215,7 +219,11 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         string claimType, string permission, string path, int status)
     {
         using var client = factory.CreateClient();
-        AddClaims(client, $"tid=tenant-a;oid=user-a;{claimType}={permission}", claimType == "roles");
+        var claimPermission = claimType == "roles" ? $"{permission}.Application" : permission;
+        AddClaims(
+            client,
+            $"tid=tenant-a;oid=user-a;{claimType}={claimPermission}",
+            claimType == "roles");
         using var response = await client.PostAsync(path, Json("{}"));
         Assert.Equal(status, (int)response.StatusCode);
         Assert.Equal("IDEMPOTENCY_KEY_REQUIRED", await ProblemCode(response));
@@ -257,9 +265,10 @@ public sealed class ControlApiTests(ControlApiFactory factory)
 
     [Theory]
     [InlineData("tid=tenant-a;oid=user-a;scp=EntitySync.Operate", 403)]
-    [InlineData("tid=tenant-a;azp=not-allowed;roles=EntitySync.Operate", 403)]
-    [InlineData("tid=tenant-a;azp=om-workload;roles=EntitySync.Read", 403)]
-    [InlineData("tid=tenant-a;azp=om-workload;roles=EntitySync.Operate", 400)]
+    [InlineData("tid=tenant-a;azp=not-allowed;roles=EntitySync.Operate.Application", 403)]
+    [InlineData("tid=tenant-a;azp=om-workload;roles=EntitySync.Read.Application", 403)]
+    [InlineData("tid=tenant-a;azp=om-workload;roles=EntitySync.Operate", 403)]
+    [InlineData("tid=tenant-a;azp=om-workload;roles=EntitySync.Operate.Application", 400)]
     public async Task Canonical_change_intake_is_allowlisted_workload_only(string claims, int status)
     {
         using var client = factory.CreateClient();
@@ -273,7 +282,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
     {
         var key = $"control-{Guid.NewGuid():N}";
         using var tenantA = factory.CreateClient();
-        AddClaims(tenantA, "tid=tenant-a;azp=om-workload;roles=EntitySync.Operate");
+        AddClaims(tenantA, "tid=tenant-a;azp=om-workload;roles=EntitySync.Operate.Application");
         using var first = await SendCanonicalAsync(tenantA, key, """{"outboxEventId":"a"}""");
         using var replay = await SendCanonicalAsync(tenantA, key, """{"outboxEventId":"a"}""");
 
@@ -289,7 +298,7 @@ public sealed class ControlApiTests(ControlApiFactory factory)
         Assert.Equal("IDEMPOTENCY_CONFLICT", await ProblemCode(conflict));
 
         using var tenantB = factory.CreateClient();
-        AddClaims(tenantB, "tid=tenant-b;azp=om-workload;roles=EntitySync.Operate");
+        AddClaims(tenantB, "tid=tenant-b;azp=om-workload;roles=EntitySync.Operate.Application");
         using var isolated = await SendCanonicalAsync(
             tenantB, key, """{"outboxEventId":"different"}""");
         Assert.Equal(HttpStatusCode.Accepted, isolated.StatusCode);
