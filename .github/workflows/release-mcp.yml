@@ -288,7 +288,7 @@ jobs:
       - name: Publish Scoop manifest to LISSTech/scoop-bucket
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
         run: |
           $tag = '${{ github.ref_name }}'
           $version = $tag -replace '^mcp-v', ''
