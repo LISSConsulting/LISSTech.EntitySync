@@ -24,7 +24,7 @@ public sealed class PostgresEntityRefreshStateRepository(
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         const string sql = """
-            SELECT s.connection_id, s.vendor, s.connection_generation, s.entity_type,
+            SELECT s.tenant_id, s.connection_id, s.vendor, s.connection_generation, s.entity_type,
                    s.status, s.mode, s.last_attempt_at, s.last_successful_at,
                    s.next_scheduled_at, s.observed_count, s.cursor, s.source_updated_at,
                    s.error_code, s.snapshot_started_at, s.snapshot_completed_at, s.is_stale,

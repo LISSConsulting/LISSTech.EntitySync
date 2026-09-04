@@ -16,6 +16,32 @@ public sealed class ControlSchedulerTestsPostgres : IAsyncLifetime
     private NpgsqlDataSource? database;
 
     [Fact]
+    public async Task Entity_refresh_list_materializes_persisted_rows()
+    {
+        const string tenant = "refresh-list";
+        var now = DateTimeOffset.UtcNow;
+        var actor = new EntitySyncActor("admin");
+        var definition = new EntitySyncConnectionDefinition(
+            tenant, "netsuite", "NetSuite", "Primary", 1, true,
+            new EntitySyncJsonValue("{}"), "ciphertext", now, actor, now, actor);
+        await new PostgresConnectionDefinitionRepository(Database).InsertAsync(
+            tenant, definition, default);
+        var repository = new PostgresEntityRefreshStateRepository(Database);
+        await repository.EnsureScheduledAsync(
+            tenant, definition, "Customer", now, default);
+
+        var listed = await repository.ListByConnectionAsync(
+            tenant, definition.ConnectionId, "Customer", default);
+
+        var state = Assert.Single(listed);
+        Assert.Equal(tenant, state.Key.TenantId);
+        Assert.Equal(definition.ConnectionId, state.Key.ConnectionId);
+        Assert.Equal(definition.Vendor, state.Vendor);
+        Assert.Equal("Customer", state.Key.EntityType);
+        Assert.Equal(EntityRefreshStatus.Pending, state.Status);
+    }
+
+    [Fact]
     public async Task Run_now_persists_distinct_durable_work_without_advancing_cadence()
     {
         const string tenant = "manual-run";
