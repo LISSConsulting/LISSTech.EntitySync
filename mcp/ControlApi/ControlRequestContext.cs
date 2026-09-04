@@ -45,7 +45,9 @@ public sealed record ControlRequestContext(
         IEnumerable<string> permissions;
         if (delegatedScopes.Length > 0)
         {
-            if (objectIds.Length != 1 || applicationIds.Length != 0
+            if (objectIds.Length != 1
+                || applicationIds.Length > 1
+                || (applicationIds.Length == 1 && string.IsNullOrWhiteSpace(applicationIds[0]))
                 || string.IsNullOrWhiteSpace(objectIds[0])) return false;
             kind = ControlActorKind.Delegated;
             actor = objectIds[0];
