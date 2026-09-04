@@ -41,7 +41,7 @@ jobs:
       MCP_OAUTH_REQUIRED_SCOPE: EntitySync.Read
       ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST: release-verification
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: https://logfire-us.pydantic.dev/v1/logs
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.ENTITYSYNC_TEST_OTEL_HEADERS }}
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=release-verification-placeholder
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
 
     steps:
@@ -73,6 +73,11 @@ jobs:
             docker rm --force "$api_container" "$scheduler_container" >/dev/null 2>&1 || true
             docker volume rm "$key_volume" >/dev/null 2>&1 || true
           }
+          diagnose() {
+            docker logs "$scheduler_container" || true
+            docker logs "$api_container" || true
+          }
+          trap diagnose ERR
           trap cleanup EXIT
           cleanup
           docker volume create "$key_volume" >/dev/null
