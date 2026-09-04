@@ -59,6 +59,10 @@ namespace LISSTech.EntitySync.Scheduler
             builder.Services.AddSingleton<EntitySyncControlWorker>();
             builder.Services.AddHostedService(
                 services => services.GetRequiredService<EntitySyncControlWorker>());
+            builder.Services.AddSingleton(EntityRefreshOptions.FromEnvironment());
+            builder.Services.AddSingleton<EntityRefreshWorker>();
+            builder.Services.AddHostedService(
+                services => services.GetRequiredService<EntityRefreshWorker>());
             builder.Services.AddSingleton<AuditRetentionWorker>(services =>
                 new AuditRetentionWorker(
                     services.GetRequiredService<LISSTech.EntitySync.Ports.ISyncAuditRepository>(),

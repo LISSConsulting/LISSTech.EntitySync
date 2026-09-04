@@ -132,7 +132,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     {
         var connectionRepository = new PostgresConnectionDefinitionRepository(Database);
         var policyRepository = new PostgresSyncPolicyRepository(Database);
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgresTimestamp();
         using var keyRing = new TemporaryDirectory();
         var protector = CreateProtector(keyRing.Path, "repository-test");
         var secret = protector.Protect(EntitySyncDataProtectionPurpose.ConnectionSecret, "plain-secret");
@@ -190,7 +190,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     public async Task Policy_idempotency_token_is_tenant_scoped_and_bound_to_exact_version()
     {
         const string tenantId = "policy-token-tenant";
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgresTimestamp();
         var connections = new PostgresConnectionDefinitionRepository(Database);
         var policies = new PostgresSyncPolicyRepository(Database);
         await connections.InsertAsync(
@@ -218,7 +218,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     {
         var repository = new PostgresConnectionDefinitionRepository(Database);
         var tenantId = $"tenant-aba-{Guid.NewGuid():N}";
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgresTimestamp();
         var first = Connection(tenantId, "shared", "NetSuite", 1, "cipher-one", now);
         await repository.InsertAsync(tenantId, first, default);
         Assert.Equal(
@@ -380,7 +380,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     {
         var context = await SeedControlContextAsync("import-receipt-isolation");
         var idempotency = new PostgresIdempotencyRepository(Database);
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgresTimestamp();
         foreach (var key in new[] { "x", "plan.import:x" })
         {
             Assert.True(await idempotency.TryInsertAsync(
@@ -478,18 +478,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     [Fact]
     public async Task Durable_import_rejects_database_expired_plan_without_mutation()
     {
-        var context = await SeedControlContextAsync("import-expired-boundary");
-        await using var clock = Database.CreateCommand(
-            "SELECT clock_timestamp()");
-        var databaseClock = await clock.ExecuteScalarAsync()
-            ?? throw new InvalidOperationException("Database clock unavailable.");
-        var databaseNow = databaseClock switch
-        {
-            DateTimeOffset value => value,
-            DateTime value => new DateTimeOffset(
-                DateTime.SpecifyKind(value, DateTimeKind.Utc)),
-            _ => throw new InvalidOperationException("Database clock type unavailable.")
-        };
+        var databaseNow = await DatabaseTimestampAsync();
+        var context = await SeedControlContextAsync(
+            "import-expired-boundary",
+            databaseNow.AddMinutes(-1));
         var expired = ManifestWithExpiration(context, databaseNow);
         IDurableSyncPlanRepository plans =
             new PostgresDurableSyncPlanRepository(Database);
@@ -1837,7 +1829,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     [Fact]
     public async Task Run_keyset_pages_preserve_ties_and_original_rows_after_concurrent_insert()
     {
-        var context = await SeedControlContextAsync("run-keyset-ties");
+        var databaseNow = await DatabaseTimestampAsync();
+        var context = await SeedControlContextAsync(
+            "run-keyset-ties",
+            databaseNow.AddMinutes(-1));
         var plans = new PostgresDurableSyncPlanRepository(Database);
         var operations = new PostgresSyncOperationRepository(Database);
         var manifest = Manifest(context, 1);
@@ -2425,7 +2420,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             context.TenantId, DateTimeOffset.UtcNow, 1, default));
 
         var idempotency = new PostgresIdempotencyRepository(Database);
-        var createdAt = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var createdAt = PostgresTimestamp().AddMinutes(-2);
         var receipt = new EntitySyncIdempotencyReceipt(
             context.TenantId, "direct-key", new EntitySyncSha256(new string('1', 64)),
             null, null, createdAt, null, createdAt.AddHours(1));
@@ -2838,7 +2833,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         var tenantId = $"atomic-stale-{suffix}";
         var key = $"atomic-stale-key-{suffix}";
         var hash = new string(ownerThrows ? '6' : '5', 64);
-        var now = DateTimeOffset.UtcNow;
+        var now = PostgresTimestamp();
         var connections = new PostgresConnectionDefinitionRepository(Database);
         var executor = new PostgresIdempotencyRepository(
             Database,
@@ -3004,10 +2999,12 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         }
     }
 
-    private async Task<ControlContext> SeedControlContextAsync(string suffix)
+    private async Task<ControlContext> SeedControlContextAsync(
+        string suffix,
+        DateTimeOffset? timestamp = null)
     {
         var tenantId = $"tenant-{suffix}-{Guid.NewGuid():N}";
-        var now = DateTimeOffset.UtcNow;
+        var now = timestamp ?? await DatabaseTimestampAsync();
         var connections = new PostgresConnectionDefinitionRepository(Database);
         var policies = new PostgresSyncPolicyRepository(Database);
         var source = Connection(tenantId, $"source-{suffix}", "NetSuite", 1, "cipher-source", now);
@@ -3421,6 +3418,24 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
         EntitySyncConnectionDefinition Source,
         EntitySyncConnectionDefinition Target,
         EntitySyncPolicy Policy);
+
+    private static DateTimeOffset PostgresTimestamp()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return now.AddTicks(-(now.Ticks % TimeSpan.TicksPerMicrosecond));
+    }
+
+    private async Task<DateTimeOffset> DatabaseTimestampAsync()
+    {
+        await using var command = Database.CreateCommand("SELECT clock_timestamp()");
+        return await command.ExecuteScalarAsync() switch
+        {
+            DateTimeOffset value => value,
+            DateTime value => new DateTimeOffset(
+                DateTime.SpecifyKind(value, DateTimeKind.Utc)),
+            _ => throw new InvalidOperationException("Database clock type unavailable.")
+        };
+    }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {

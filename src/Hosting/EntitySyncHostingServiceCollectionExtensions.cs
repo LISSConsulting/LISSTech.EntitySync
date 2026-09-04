@@ -53,6 +53,10 @@ public static class EntitySyncHostingServiceCollectionExtensions
         {
             services.AddSingleton<IConnectionRuntimeFactory, ConnectionRuntimeFactory>();
         }
+        services.AddSingleton<IEntityGraphRepository, PostgresEntityGraphRepository>();
+        services.AddSingleton<IEntityRefreshStateRepository, PostgresEntityRefreshStateRepository>();
+        services.AddSingleton<IEntityRefreshEventRepository, PostgresEntityRefreshEventRepository>();
+        services.AddSingleton<IEntityRefreshCapabilityRepository, PostgresEntityRefreshCapabilityRepository>();
         services.AddSingleton<IEntityExclusionRepository, PostgresEntityExclusionRepository>();
         services.AddSingleton<IEntitySyncChangeStateRepository, PostgresEntitySyncChangeStateRepository>();
         services.AddSingleton<IConnectionDefinitionRepository, PostgresConnectionDefinitionRepository>();
@@ -68,18 +72,17 @@ public static class EntitySyncHostingServiceCollectionExtensions
         services.AddSingleton<IIdempotentCommandExecutor>(
             provider => provider.GetRequiredService<PostgresIdempotencyRepository>());
         services.AddSingleton<IEntitySyncDataProtector, EntitySyncDataProtector>();
-        services.AddSingleton<IEntityGraphRepository, PostgresEntityGraphRepository>();
         services.AddSingleton<IEntityMatcher, WeightedEntityMatcher>();
         services.AddSingleton<IEntityMapper, DefaultEntityMapper>();
         services.AddSingleton<IServerManagedEntityAdapterFactory, ServerManagedEntityAdapterFactory>();
-
-        services.AddSingleton(TimeProvider.System);
         if (workerSettings is not null)
         {
             services.AddSingleton(workerSettings);
             services.AddSingleton(
                 new EntitySyncOperationWorkerOptions(workerSettings.LeaseDuration));
         }
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<EntityRefreshService>();
         services.AddSingleton<EntitySyncPlanner>();
         services.AddSingleton<PlanManifestBuilder>();
         services.AddSingleton<DurablePlanService>();

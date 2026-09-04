@@ -4,7 +4,7 @@ namespace LISSTech.EntitySync.Mcp.ControlApi;
 
 public sealed record CreateConnectionRequest(
     string Vendor,
-    string ConnectionId,
+    string? ConnectionId,
     string DisplayName,
     Guid? PlatformInstanceId = null);
 

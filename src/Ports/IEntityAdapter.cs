@@ -136,6 +136,16 @@ public sealed record EntityAdapterCapabilities
                     [EntityAdapterActions.Read, EntityAdapterActions.Create],
                     ["Id", "BillSpendClientId", "Name", "IsActive"])]);
         }
+        if (EntitySyncVendors.IsSophosCentral(normalized))
+        {
+            return new(
+                normalized,
+                [Capability(
+                    "Customer",
+                    [EntityAdapterActions.Read, EntityAdapterActions.Create, EntityAdapterActions.Update],
+                    ["Id", "Name", "Email", "Phone", "IsActive"],
+                    [])]);
+        }
         if (EntitySyncVendors.IsAgentController(normalized))
         {
             return new(

@@ -17,8 +17,9 @@ public sealed record EntityGraphObservation(
     EntityGraphScope Scope,
     IReadOnlyCollection<ExternalEntity> Entities,
     DateTimeOffset ObservedAt,
-    string? PlanId = null);
-
+    string? PlanId = null,
+    string? Cursor = null,
+    DateTimeOffset? SourceUpdatedAt = null);
 public sealed record EntityGraphRelationshipObservation(
     EntityGraphNodeKey Source,
     EntityGraphNodeKey Target,
@@ -57,8 +58,9 @@ public sealed record EntityGraphQuery(
     string? ConnectionId = null,
     string? EntityType = null,
     string? Search = null,
+    bool IncludeInactive = false,
+    int Offset = 0,
     int Count = 100);
-
 public sealed record EntityGraphRelationshipQuery(
     EntityGraphNodeKey Node,
     string? RelationshipType = null,

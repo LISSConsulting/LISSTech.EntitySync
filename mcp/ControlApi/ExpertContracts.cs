@@ -47,4 +47,6 @@ public sealed record EntityQueryResponse(
     string? Email,
     string? Phone,
     string? Website,
-    bool? IsActive);
+    bool? IsActive,
+    DateTimeOffset FirstObservedAt,
+    DateTimeOffset LastObservedAt);

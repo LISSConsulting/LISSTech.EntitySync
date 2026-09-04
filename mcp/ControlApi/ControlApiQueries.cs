@@ -52,8 +52,14 @@ public interface IControlApiQueries
     Task<CapabilityResponse> GetCapabilitiesAsync(
         string tenantId, string connectionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<EntityQueryResponse>> GetEntitiesAsync(
-        string tenantId, string connectionId, string entityType, string? search,
-        bool includeInactive, int maximumRows, CancellationToken cancellationToken);
+        string tenantId,
+        string connectionId,
+        string entityType,
+        string? search,
+        bool includeInactive,
+        int offset,
+        int maximumRows,
+        CancellationToken cancellationToken);
 }
 
 public sealed class ControlApiQueries(
@@ -67,6 +73,7 @@ public sealed class ControlApiQueries(
     EntityExclusionService exclusions,
     IConnectionDefinitionRepository connectionDefinitions,
     IConnectionRuntimeFactory runtimes,
+    IEntityGraphRepository graph,
     TimeProvider timeProvider) : IControlApiQueries
 {
     public async Task<IReadOnlyList<ConnectionResponse>> ListConnectionsAsync(
@@ -221,41 +228,44 @@ public sealed class ControlApiQueries(
                 "The entity adapter is unavailable.", exception);
         }
     }
-
     public async Task<IReadOnlyList<EntityQueryResponse>> GetEntitiesAsync(
         string tenantId, string connectionId, string entityType, string? search,
-        bool includeInactive, int maximumRows, CancellationToken cancellationToken)
+        bool includeInactive, int offset, int maximumRows, CancellationToken cancellationToken)
     {
-        var definition = await RequireDefinitionAsync(
-            tenantId, connectionId, cancellationToken).ConfigureAwait(false);
-        await using var lease = await runtimes.AcquireAsync(
-            tenantId, definition.ConnectionId, definition.Generation, cancellationToken)
+        var definition = await RequireDefinitionAsync(tenantId, connectionId, cancellationToken)
             .ConfigureAwait(false);
-        try
-        {
-            var entities = await lease.Adapter.GetEntitiesAsync(new EntityQuery
-            {
-                EntityType = entityType,
-                Search = search,
-                IncludeInactive = includeInactive,
-                FullObjects = false,
-                Count = maximumRows
-            }, cancellationToken).ConfigureAwait(false);
-            return entities.Take(maximumRows).Select(entity => new EntityQueryResponse(
-                entity.Vendor,
-                entity.EntityType,
-                entity.Id,
-                entity.Name,
-                entity.Email,
-                entity.Phone,
-                entity.Website,
-                entity.IsActive)).ToArray();
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            throw new EntitySyncDependencyUnavailableException(
-                "The entity adapter is unavailable.", exception);
-        }
+        ValidateCount(maximumRows);
+        // The graph repository pushes IncludeInactive + Offset into the SQL WHERE/LIMIT
+        // clauses so empty pages cannot occur while active records exist beyond offset.
+        var records = await graph.QueryEntitiesAsync(
+            new EntityGraphQuery(
+                tenantId,
+                Vendor: definition.Vendor,
+                ConnectionId: definition.ConnectionId,
+                EntityType: entityType,
+                Search: search,
+                IncludeInactive: includeInactive,
+                Offset: offset,
+                Count: maximumRows),
+            cancellationToken).ConfigureAwait(false);
+        return records.Select(record => new EntityQueryResponse(
+            record.Entity.Vendor,
+            record.Entity.EntityType,
+            record.Entity.Id,
+            record.Entity.Name,
+            record.Entity.Email,
+            record.Entity.Phone,
+            record.Entity.Website,
+            record.Entity.IsActive,
+            record.FirstObservedAt,
+            record.LastObservedAt)).ToArray();
+    }
+
+    private static void ValidateCount(int maximumRows)
+    {
+        if (maximumRows is < 1 or > 1000)
+            throw new ArgumentOutOfRangeException(nameof(maximumRows),
+                maximumRows, "Maximum rows must be between 1 and 1000.");
     }
 
     private async Task<EntitySyncConnectionDefinition> RequireDefinitionAsync(

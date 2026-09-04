@@ -201,7 +201,7 @@ public sealed class DeploymentContractTests
     {
         var repository = Repository;
         var envFile = Path.Combine(Path.GetTempPath(), $"entitysync-compose-{Guid.NewGuid():N}.env");
-        File.WriteAllLines(envFile,
+        string[] environmentLines =
         [
             "DATABASE_URL=Host=entitysync-db;Port=5432;Database=entitysync;Username=entitysync;Password=placeholder",
             "ENTITYSYNC_OM_WORKLOAD_AZP_ALLOWLIST=00000000-0000-0000-0000-000000000001",
@@ -217,7 +217,8 @@ public sealed class DeploymentContractTests
             "OTEL_EXPORTER_OTLP_HEADERS=k=v",
             "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://telemetry.example.invalid/v1/logs",
             "POSTGRES_PASSWORD=x"
-        ]);
+        ];
+        File.WriteAllLines(envFile, environmentLines);
         try
         {
             var start = new ProcessStartInfo("docker")
@@ -227,6 +228,8 @@ public sealed class DeploymentContractTests
                 RedirectStandardError = true,
                 UseShellExecute = false
             };
+            foreach (var line in environmentLines)
+                start.Environment.Remove(line[..line.IndexOf('=')]);
             foreach (var argument in new[]
                      {
                          "compose", "--env-file", envFile, "-f", "docker-compose.yaml",

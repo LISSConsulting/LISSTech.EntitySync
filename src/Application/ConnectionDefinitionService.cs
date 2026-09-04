@@ -23,15 +23,6 @@ public sealed record ConnectionDeleteResult(
     ConnectionDeleteOutcome Outcome,
     EntitySyncConnectionDefinition? Definition);
 
-public sealed class ConnectionGenerationConflictException : InvalidOperationException
-{
-    public ConnectionGenerationConflictException(string connectionId, long expectedGeneration)
-        : base(
-            $"Connection '{connectionId}' is no longer at expected generation "
-            + $"{expectedGeneration}.")
-    {
-    }
-}
 
 public sealed class ConnectionDefinitionService(
     IConnectionDefinitionRepository repository,

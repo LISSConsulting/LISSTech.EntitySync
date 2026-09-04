@@ -22,6 +22,10 @@ using Xunit;
 
 namespace LISSTech.EntitySync.Platform.Tests;
 
+[CollectionDefinition(nameof(ProfileEnvironmentCollection), DisableParallelization = true)]
+public sealed class ProfileEnvironmentCollection;
+
+[Collection(nameof(ProfileEnvironmentCollection))]
 public sealed class PlatformTests
 {
     [Fact]
@@ -1074,6 +1078,7 @@ public sealed class PlatformTests
         factory.PlatformInstanceId = platformInstanceId;
         var explicitPlatformInstanceId =
             Guid.Parse("55555555-5555-5555-5555-555555555555");
+        using var profilePath = new ProfilePathScope();
         var context = new McpRequestContext("tenant", true);
         using var services = new ServiceCollection()
             .AddSingleton<IEntityConnectionRepository>(connections)
@@ -1990,6 +1995,24 @@ public sealed class PlatformTests
 
         public void Dispose() => Disposed = true;
     }
+    private sealed class ProfilePathScope : IDisposable
+    {
+        private const string EnvironmentVariable = "LISSTECH_ENTITYSYNC_PROFILE_PATH";
+        private readonly string? original = Environment.GetEnvironmentVariable(EnvironmentVariable);
+        private readonly string path = Path.Combine(
+            Path.GetTempPath(),
+            $"entitysync-profile-test-{Guid.NewGuid():N}.json");
+
+        public ProfilePathScope() =>
+            Environment.SetEnvironmentVariable(EnvironmentVariable, path);
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable(EnvironmentVariable, original);
+            File.Delete(path);
+        }
+    }
+
     private static string NetSuiteHaloScope(IServerManagedEntityAdapterFactory factory) =>
         factory.GetChangeStateScope(
             "NetSuite",

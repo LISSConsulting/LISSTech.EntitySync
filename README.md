@@ -413,6 +413,20 @@ record plus payload-hash history. EntitySync owns typed cross-vendor relationshi
 and their proposed, confirmed, or removed lifecycle. MCP clients can query the retained
 graph with `get_entity_records` and `get_entity_relationships`.
 
+Entity inventory is refreshed by durable scheduler work even when a vendor also delivers
+atomic changes. Full authoritative reads run every 60 minutes by default, upsert the
+complete observed snapshot, and tombstone only records absent from a successfully completed
+read. Partial or failed reads never tombstone. Trusted internal adapters can submit
+idempotent normalized events to
+`POST /api/v1/control/connections/{connectionId}/entity-events`; event receipts, cursor and
+source timestamp fences, and graph mutations commit atomically. Webhook traffic therefore
+reduces staleness without replacing scheduled reconciliation.
+
+Tune full reconciliation with `ENTITYSYNC_REFRESH_INTERVAL_MINUTES` (default `60`),
+`ENTITYSYNC_REFRESH_DISCOVERY_SECONDS` (default `300`), and
+`ENTITYSYNC_REFRESH_SCHEDULER_SECONDS` (default `30`). Manual refresh requests use the same
+durable work and generation fencing as scheduled refreshes.
+
 `scheduler/` leases durable policy, canonical-change, and operation work from PostgreSQL.
 It uses tenant and route fencing, renews leases with database time, consumes each approval
 once, and reconciles unknown vendor outcomes before retry. No fixed vendor chain,
