@@ -19,6 +19,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     private readonly string databaseName = $"entitysync_control_repo_{Guid.NewGuid():N}";
     private NpgsqlDataSource? admin;
     private NpgsqlDataSource? database;
+    private string? databaseConnectionString;
 
     [Fact]
     public void Data_protection_isolated_by_purpose_application_and_key_ring()
@@ -836,7 +837,7 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
     public async Task Postgres_composed_creation_completes_and_concurrent_retry_plans_once()
     {
         var context = await SeedControlContextAsync("composed-create");
-        var poolOptions = new NpgsqlConnectionStringBuilder(Database.ConnectionString)
+        var poolOptions = new NpgsqlConnectionStringBuilder(DatabaseConnectionString)
         {
             Database = databaseName,
             Pooling = true,
@@ -2984,7 +2985,8 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             Database = databaseName,
             Pooling = false
         };
-        database = NpgsqlDataSource.Create(databaseBuilder.ConnectionString);
+        databaseConnectionString = databaseBuilder.ConnectionString;
+        database = NpgsqlDataSource.Create(databaseConnectionString);
         await EntitySyncDatabaseMigrator.ApplyAsync(Database);
     }
 
@@ -2998,6 +3000,10 @@ public sealed class ControlRepositoryTests : IAsyncLifetime
             await admin.DisposeAsync();
         }
     }
+
+    private string DatabaseConnectionString =>
+        databaseConnectionString
+        ?? throw new InvalidOperationException("The test database is not initialized.");
 
     private async Task<ControlContext> SeedControlContextAsync(
         string suffix,
