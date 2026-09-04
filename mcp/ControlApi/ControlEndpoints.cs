@@ -144,8 +144,27 @@ public static class ControlEndpoints
 
         Read(group.MapGet("/capabilities", GetCapabilitiesAsync),
             "GetControlCapabilities").Produces<CapabilityResponse>();
+        Read(group.MapGet("/vendors", ListVendorsAsync),
+            "ListControlVendors").Produces<VendorCatalogResponse>();
         Read(group.MapGet("/entities", GetEntitiesAsync),
             "ListControlEntities").Produces<ControlPage<EntityQueryResponse>>();
+        Read(group.MapGet(
+                "/connections/{connectionId}/entity-refreshes",
+                ListEntityRefreshesAsync),
+            "ListEntityRefreshes")
+            .Produces<EntityRefreshListResponse>();
+        Mutate(group.MapPost(
+                "/connections/{connectionId}/entity-refreshes",
+                QueueEntityRefreshAsync),
+            "QueueEntityRefresh", ControlPolicies.Operate,
+            IdempotencyExecutionMode.AtomicDatabase)
+            .Produces<EntityRefreshResponse>(StatusCodes.Status202Accepted);
+        Mutate(group.MapPost(
+                "/connections/{connectionId}/entity-events",
+                AcceptAtomicEntityEventAsync),
+            "AcceptAtomicEntityEvent", ControlPolicies.CanonicalChanges,
+            IdempotencyExecutionMode.AtomicDatabase)
+            .Produces<AtomicEntityEventResponse>(StatusCodes.Status202Accepted);
         Mutate(group.MapPost("/canonical-changes", AcceptCanonicalChangeAsync),
             "AcceptCanonicalChange", ControlPolicies.CanonicalChanges)
             .Produces<CanonicalChangeIntakeResponse>(StatusCodes.Status202Accepted);
@@ -223,11 +242,14 @@ public static class ControlEndpoints
         {
             var configuration = factory.GetConnectionConfiguration(request.Vendor, null);
             secrets = configuration.SecretConfiguration;
+            var generatedId = string.IsNullOrWhiteSpace(request.ConnectionId)
+                ? EntityRefreshService.GenerateConnectionId()
+                : request.ConnectionId.Trim();
             var created = await service.CreateAsync(
                 control.TenantId,
                 new ConnectionDefinitionRequest(
                     request.Vendor,
-                    request.ConnectionId,
+                    generatedId,
                     request.DisplayName,
                     configuration.PublicConfiguration,
                     configuration.SecretConfiguration,
@@ -877,18 +899,24 @@ public static class ControlEndpoints
     {
         var resource = $"entities:{connectionId}:{entityType}:{search}:{includeInactive}";
         var offset = Offset(cursors, cursor, resource, control, pageSize);
+        // Page semantics: fetch pageSize + 1; if we got more than pageSize rows, there
+        // is a next page and we drop the sentinel row before returning the slice.
         var values = await queries.GetEntitiesAsync(
             control.TenantId,
             connectionId,
             entityType,
             search,
             includeInactive,
-            checked(offset + pageSize + 1),
+            offset,
+            pageSize + 1,
             cancellationToken).ConfigureAwait(false);
-        return Page(
-            values.Skip(offset).ToArray(), pageSize, offset, cursors, resource, control);
+        var hasMore = values.Count > pageSize;
+        var page = hasMore ? values.Take(pageSize).ToArray() : values;
+        var next = hasMore
+            ? cursors.ProtectOffset(resource, control.TenantId, offset + page.Count)
+            : null;
+        return Results.Ok(new ControlPage<EntityQueryResponse>(page, next));
     }
-
     private static async Task<IResult> AcceptCanonicalChangeAsync(
         HttpContext http,
         CanonicalChangeIntakeRequest request,
@@ -915,7 +943,6 @@ public static class ControlEndpoints
             receipt.ReceivedAt,
             http.TraceIdentifier), statusCode: StatusCodes.Status202Accepted);
     }
-
     private static async Task<IResult> ExecuteSuiteQlAsync(
         HttpContext http,
         SuiteQlRequest request,
@@ -1024,6 +1051,122 @@ public static class ControlEndpoints
         return string.IsNullOrWhiteSpace(cursor)
             ? 0
             : cursors.UnprotectOffset(cursor, resource, control.TenantId);
+    }
+
+    private static IResult ListVendorsAsync()
+    {
+        return Results.Ok(new VendorCatalogResponse(new[]
+        {
+                BuildVendor("HaloPSA", "HaloPSA",
+                    "PSA platform integration"),
+                BuildVendor("NetSuite", "NetSuite",
+                    "Oracle NetSuite ERP integration"),
+                BuildVendor("NCentral", "N-central",
+                    "N-able N-central RMM integration"),
+                BuildVendor(EntitySyncVendors.AgentController, "AgentController",
+                    "LISS Tech AgentController integration"),
+                BuildVendor(EntitySyncVendors.BillCom, "Bill.com",
+                    "Bill.com spend management integration"),
+                BuildVendor(EntitySyncVendors.OrchestraMSP, "OrchestraMSP",
+                    "OrchestraMSP platform integration"),
+                BuildVendor(EntitySyncVendors.SophosCentral, "Sophos Central",
+                    "Sophos Central cybersecurity platform integration")
+            }));
+    }
+
+    private static VendorCatalogItem BuildVendor(string vendor, string displayName, string description)
+    {
+        var capabilities = EntityAdapterCapabilities.ForVendor(vendor);
+        var entityTypes = capabilities.EntityTypes
+            .Select(entityType => entityType.EntityType)
+            .ToArray();
+        return new VendorCatalogItem(vendor, $"{displayName} ({description})", entityTypes);
+    }
+
+    private static async Task<IResult> ListEntityRefreshesAsync(
+        string connectionId,
+        IEntityRefreshStateRepository states,
+        ControlRequestContext control,
+        string? entityType = null,
+        CancellationToken cancellationToken = default)
+    {
+        var items = await states.ListByConnectionAsync(
+            control.TenantId, connectionId, entityType, cancellationToken)
+            .ConfigureAwait(false);
+        return Results.Ok(new EntityRefreshListResponse(
+            items.Select(EntityRefreshResponse.From).ToArray()));
+    }
+
+    private static async Task<IResult> QueueEntityRefreshAsync(
+        string connectionId,
+        QueueEntityRefreshRequest request,
+        EntityRefreshService service,
+        ControlRequestContext control,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (request is null) throw new BadHttpRequestException("A request body is required.");
+        var state = await service.QueueAsync(
+            control.TenantId, connectionId, request.EntityType,
+            request.ExpectedGeneration, timeProvider.GetUtcNow(), cancellationToken)
+            .ConfigureAwait(false);
+        return Results.Json(EntityRefreshResponse.From(state),
+            statusCode: StatusCodes.Status202Accepted);
+    }
+
+    private static async Task<IResult> AcceptAtomicEntityEventAsync(
+        string connectionId,
+        AtomicEntityEventRequest request,
+        EntityRefreshService service,
+        ControlRequestContext control,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (request is null) throw new BadHttpRequestException("A request body is required.");
+        ExternalEntity? entity = null;
+        if (request.Operation == EntityAtomicOperation.Upsert && request.Entity is null)
+            throw new BadHttpRequestException("Upsert events require an entity payload.");
+        if (request.Entity is not null)
+        {
+            entity = new ExternalEntity
+            {
+                Id = request.Entity.Id,
+                Name = request.Entity.Name ?? string.Empty,
+                Email = request.Entity.Email,
+                Phone = request.Entity.Phone,
+                Website = request.Entity.Website,
+                Domain = request.Entity.Domain,
+                ParentId = request.Entity.ParentId,
+                ParentEntityType = request.Entity.ParentEntityType,
+                Version = request.Entity.Version,
+                LifecycleStatus = request.Entity.LifecycleStatus,
+                IsActive = request.Entity.IsActive
+            };
+            foreach (var pair in request.Entity.CustomFields)
+                entity.CustomFields[pair.Key] = pair.Value;
+        }
+        var atomicEvent = new EntityAtomicEvent(
+            request.EventId,
+            connectionId,
+            request.EntityType,
+            request.Operation,
+            entity,
+            request.SourceCursor,
+            request.SourceUpdatedAt);
+        var outcome = await service.AcceptAtomicEventAsync(
+            control.TenantId, connectionId, atomicEvent,
+            request.ExpectedGeneration, cancellationToken).ConfigureAwait(false);
+        var entityId = entity?.Id ?? string.Empty;
+        var response = new AtomicEntityEventResponse(
+            request.EventId,
+            connectionId,
+            request.EntityType,
+            entityId,
+            request.Operation.ToString(),
+            outcome.Kind.ToString(),
+            outcome.AppliedAt,
+            outcome.Record?.PayloadHash);
+        return Results.Json(response, statusCode: StatusCodes.Status202Accepted);
     }
 
     private static IResult Page<T>(

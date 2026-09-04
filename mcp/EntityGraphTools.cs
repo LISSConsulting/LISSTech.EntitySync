@@ -30,12 +30,13 @@ public static class EntityGraphTools
         {
             var records = await graph.QueryEntitiesAsync(
                 new EntityGraphQuery(
-                    context.TenantId,
-                    vendor,
-                    connectionId,
-                    entityType,
-                    search,
-                    count),
+                    TenantId: context.TenantId,
+                    Vendor: vendor,
+                    ConnectionId: connectionId,
+                    EntityType: entityType,
+                    Search: search,
+                    IncludeInactive: true,
+                    Count: count),
                 cancellationToken).ConfigureAwait(false);
             var result = records.Select(record => new
             {

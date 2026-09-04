@@ -68,9 +68,8 @@ internal static class EntityGraphPersistence
 
     internal static string Serialize(ExternalEntity entity)
     {
-        ArgumentNullException.ThrowIfNull(entity);
-        if (string.IsNullOrWhiteSpace(entity.Id)) throw new ArgumentException("Entity ID is required.", nameof(entity));
-        return JsonSerializer.Serialize(entity, JsonOptions);
+        var sanitized = EntityCredentialSanitizer.Sanitize(entity);
+        return JsonSerializer.Serialize(sanitized, JsonOptions);
     }
 
     internal static ExternalEntity Deserialize(string payload)
